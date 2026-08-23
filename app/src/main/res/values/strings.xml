@@ -1,3 +1,12 @@
 <resources>
-    <string name="app_name">IntelRAM Shield</string>
+    <string name="app_name">Threat Protection</string>
+
+    <!--
+      Real Google Sign-In needs an OAuth 2.0 WEB client ID from a Google Cloud
+      project you control (APIs & Services > Credentials > Create Credentials >
+      OAuth client ID > Web application), with this app's release/debug SHA-1
+      fingerprint registered on an "Android" OAuth client in the same project.
+      Until you replace this placeholder, Sign In runs in an offline demo mode.
+    -->
+    <string name="google_web_client_id" translatable="false">YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID</string>
 </resources>

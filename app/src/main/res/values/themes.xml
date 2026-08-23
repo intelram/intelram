@@ -1,3 +1,3 @@
 <resources>
-    <style name="Theme.IntelRamShield" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.ThreatProtection" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

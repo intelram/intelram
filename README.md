@@ -1,24 +1,52 @@
-# IntelRAM Shield
+# Threat Protection
 
-An on-device Android threat-scanning app. It enumerates installed apps and flags
-risky ones using local heuristics — no data leaves the device and no backend is
-required.
+An on-device Android security app matching the published "Threat Protection"
+design (see the app's design canvas). It scans installed apps, device
+settings, and QR codes using local heuristics — no data leaves the device
+unless you sign in with Google, and no paid third-party APIs are called.
 
-## What it checks
+## Screens
 
-- **Installed apps** (`app/src/main/java/com/intelram/shield/scan/AppScanner.kt`)
-  - Known-malware package name / APK SHA-256 matches against
-    `ThreatIntel` (a small illustrative sample list — swap in a real,
-    regularly-updated feed for production use).
-  - Dangerous permission exposure and risky permission *combinations*
-    (e.g. SMS + boot-persistence, overlay + accessibility-service — common
-    banking-trojan / SMS-fraud patterns).
-  - Sideloaded apps (unknown installer) requesting sensitive permissions.
-- **Device posture** (`.../scan/DeviceScanner.kt`): root indicators, USB
-  debugging, "install from unknown sources", missing screen lock.
+Onboarding → Sign In (Google) → Home / Dashboard → Scanning (animated) →
+Results → Threat Detail (with a real Fix action) → QR Code Scanner →
+Settings. Home, Results, and Settings share a bottom nav bar.
 
-Each app gets a 0-100 risk score and a `CRITICAL`/`HIGH`/`MEDIUM`/`LOW`/`CLEAN`
-level; the dashboard rolls these up into an overall device score.
+## What it checks — for real
+
+- **Installed apps** (`scan/AppScanner.kt`): known-malware package name / APK
+  SHA-256 matches against `ThreatIntel` (a small illustrative sample list —
+  swap in a real, regularly-updated feed for production use), dangerous
+  permission exposure, risky permission *combinations* (SMS + boot
+  persistence, overlay + accessibility — common banking-trojan patterns),
+  sideloaded apps with sensitive permissions.
+- **Device posture** (`scan/DeviceScanner.kt`): root indicators, USB
+  debugging, "install from unknown sources", missing screen lock, an Android
+  security patch older than ~120 days, and a no-VPN-on-Wi-Fi advisory (via
+  `ConnectivityManager`, not simulated).
+- **QR codes** (`qr/`): CameraX + ZXing decode entirely on-device (no Play
+  Services model download), then `QrLinkHeuristic` flags common red flags —
+  raw-IP hosts, punycode, link shorteners, http instead of https, risky TLDs.
+
+Each finding carries a category, a plain-language explanation, and — where
+one exists — a real **Fix Now** action: `Intent.ACTION_DELETE` for an
+uninstall, or a deep link into the matching system Settings screen. Nothing
+claims to be "resolved" until you actually complete that system flow.
+
+### What's intentionally left out
+
+Data-breach checking, a generic phishing/link scanner, and file/download
+scanning are **not** wired to fabricated results — they'd need a real paid
+API or backend this repo doesn't have credentials for. The dashboard only
+advertises detection categories the code actually implements.
+
+## Google Sign-In
+
+`auth/AuthViewModel.kt` uses Android's real Credential Manager / Google
+Identity Services APIs. It needs an OAuth 2.0 **Web** client ID from a
+Google Cloud project you control, with this app's SHA-1 fingerprint
+registered — see the comment in `res/values/strings.xml`
+(`google_web_client_id`). Until that placeholder is replaced, Sign In runs
+in a clearly-labeled offline demo mode instead of failing.
 
 ## Building
 
@@ -34,7 +62,11 @@ export ANDROID_HOME=/opt/android-sdk   # wherever the SDK is installed
 
 ```
 app/src/main/java/com/intelram/shield/
-  scan/    ThreatIntel, AppScanner, DeviceScanner, ScanViewModel, ScanModels
-  ui/      Compose screens (Dashboard, App detail) + theme
-  MainActivity.kt
+  scan/        ThreatIntel, AppScanner, DeviceScanner, ScanViewModel, ScanModels
+  auth/        AuthViewModel (real Google Sign-In + demo-mode fallback)
+  qr/          QrAnalyzer (CameraX + ZXing), QrLinkHeuristic
+  ui/theme/    Color, Type (Plus Jakarta Sans), Theme
+  ui/components/  Shared buttons, toggle, score ring, bottom nav, badges
+  ui/screens/  One file per screen
+  MainActivity.kt  Navigation graph
 ```

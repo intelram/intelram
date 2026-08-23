@@ -29,47 +29,76 @@ class AppScanner(private val context: Context) {
             val sha256 = appInfo?.sourceDir?.let { sha256OfFile(it) }
 
             val findings = mutableListOf<Finding>()
+            val uninstall = FixAction.UninstallApp(packageName)
 
             if (packageName in ThreatIntel.knownMalwarePackageNames) {
                 findings += Finding(
-                    RiskLevel.CRITICAL,
-                    "Matches known-malware package name",
-                    "Package name matches an entry in the on-device threat-intel list.",
+                    severity = RiskLevel.CRITICAL,
+                    category = FindingCategory.APP,
+                    title = "Matches a known-malware package name",
+                    description = "\"$appName\" matches an entry in the on-device threat list.",
+                    whyItMatters = "Apps that match known-malware naming patterns are frequently " +
+                        "repackaged scams or trojans distributed outside official app stores.",
+                    fixAction = uninstall,
+                    sourceApp = appName,
                 )
             }
 
             if (sha256 != null && sha256 in ThreatIntel.knownMalwareSha256) {
                 findings += Finding(
-                    RiskLevel.CRITICAL,
-                    "Matches known-malware APK hash",
-                    "SHA-256 of the installed APK matches a known-malicious sample.",
+                    severity = RiskLevel.CRITICAL,
+                    category = FindingCategory.APP,
+                    title = "Matches a known-malware APK signature",
+                    description = "The installed APK's SHA-256 matches a known-malicious sample.",
+                    whyItMatters = "A hash match means this exact file has already been " +
+                        "identified as malicious elsewhere — this is a strong signal.",
+                    fixAction = uninstall,
+                    sourceApp = appName,
                 )
             }
 
             for ((label, combo) in ThreatIntel.riskyPermissionCombos) {
                 if (dangerous.toSet().containsAll(combo)) {
                     findings += Finding(
-                        RiskLevel.HIGH,
-                        "Risky permission combination: $label",
-                        "Requests all of: ${combo.joinToString { it.substringAfterLast('.') }}.",
+                        severity = RiskLevel.HIGH,
+                        category = FindingCategory.PRIVACY,
+                        title = "\"$appName\" has a risky permission combination",
+                        description = "$label — requests all of: " +
+                            combo.joinToString { it.substringAfterLast('.') } + ".",
+                        whyItMatters = "This combination is a common pattern in banking trojans " +
+                            "and SMS-fraud apps: individually the permissions look ordinary, but " +
+                            "together they let an app act without your knowledge.",
+                        fixAction = uninstall,
+                        sourceApp = appName,
                     )
                 }
             }
 
             if (!isSystemApp && installer == null && dangerous.isNotEmpty()) {
                 findings += Finding(
-                    RiskLevel.MEDIUM,
-                    "Sideloaded app with sensitive permissions",
-                    "Installed outside of a known app store and requests ${dangerous.size} " +
-                        "sensitive permission(s).",
+                    severity = RiskLevel.MEDIUM,
+                    category = FindingCategory.PRIVACY,
+                    title = "\"$appName\" was sideloaded and requests sensitive permissions",
+                    description = "Installed outside of a known app store and requests " +
+                        "${dangerous.size} sensitive permission(s).",
+                    whyItMatters = "Apps installed outside an app store skip the review process " +
+                        "that usually catches obviously malicious behavior.",
+                    fixAction = uninstall,
+                    sourceApp = appName,
                 )
             }
 
             if (!isSystemApp && dangerous.size >= 6) {
                 findings += Finding(
-                    RiskLevel.MEDIUM,
-                    "Broad permission footprint",
-                    "Requests ${dangerous.size} sensitive permissions, well above typical apps.",
+                    severity = RiskLevel.MEDIUM,
+                    category = FindingCategory.PRIVACY,
+                    title = "\"$appName\" has a broad permission footprint",
+                    description = "Requests ${dangerous.size} sensitive permissions, well above " +
+                        "typical apps of its kind.",
+                    whyItMatters = "The more sensitive permissions an app holds, the more it can " +
+                        "do if it's ever compromised or turns out to be untrustworthy.",
+                    fixAction = uninstall,
+                    sourceApp = appName,
                 )
             }
 

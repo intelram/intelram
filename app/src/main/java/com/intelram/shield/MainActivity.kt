@@ -4,55 +4,179 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.intelram.shield.auth.AuthViewModel
+import com.intelram.shield.scan.ScanUiState
 import com.intelram.shield.scan.ScanViewModel
-import com.intelram.shield.ui.screens.AppDetailScreen
-import com.intelram.shield.ui.screens.DashboardScreen
-import com.intelram.shield.ui.theme.IntelRamShieldTheme
-import java.net.URLDecoder
-import java.net.URLEncoder
+import com.intelram.shield.ui.components.BottomNavBar
+import com.intelram.shield.ui.components.NavTab
+import com.intelram.shield.ui.screens.HomeScreen
+import com.intelram.shield.ui.screens.OnboardingScreen
+import com.intelram.shield.ui.screens.QrScanScreen
+import com.intelram.shield.ui.screens.ResultsScreen
+import com.intelram.shield.ui.screens.ScanningScreen
+import com.intelram.shield.ui.screens.SettingsScreen
+import com.intelram.shield.ui.screens.SignInScreen
+import com.intelram.shield.ui.screens.ThreatDetailScreen
+import com.intelram.shield.ui.theme.ThreatProtectionTheme
+
+private object Routes {
+    const val ONBOARDING = "onboarding"
+    const val SIGNIN = "signin"
+    const val HOME = "home"
+    const val SCANNING = "scanning"
+    const val RESULTS = "results"
+    const val THREAT_DETAIL = "threat/{findingId}"
+    const val QR_SCAN = "qrscan"
+    const val SETTINGS = "settings"
+
+    fun threatDetail(id: String) = "threat/$id"
+}
+
+private val TAB_ROUTES = setOf(Routes.HOME, Routes.RESULTS, Routes.SETTINGS)
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: ScanViewModel by viewModels()
+    private val scanViewModel: ScanViewModel by viewModels()
+    private val authViewModel: AuthViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            IntelRamShieldTheme {
+            ThreatProtectionTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
-                    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                    val backStackEntry by navController.currentBackStackEntryAsState()
+                    val currentRoute = backStackEntry?.destination?.route
 
-                    NavHost(navController = navController, startDestination = "dashboard") {
-                        composable("dashboard") {
-                            DashboardScreen(
-                                state = uiState,
-                                onScan = viewModel::startScan,
-                                onAppClick = { app ->
-                                    val encoded = URLEncoder.encode(app.packageName, "UTF-8")
-                                    navController.navigate("app/$encoded")
-                                },
-                            )
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            NavHost(navController = navController, startDestination = Routes.ONBOARDING) {
+                                composable(Routes.ONBOARDING) {
+                                    OnboardingScreen(
+                                        onGetStarted = { navController.navigate(Routes.SIGNIN) },
+                                        onSignIn = { navController.navigate(Routes.SIGNIN) },
+                                    )
+                                }
+                                composable(Routes.SIGNIN) {
+                                    SignInScreen(
+                                        authViewModel = authViewModel,
+                                        onContinue = {
+                                            navController.navigate(Routes.HOME) {
+                                                popUpTo(Routes.ONBOARDING) { inclusive = true }
+                                            }
+                                        },
+                                    )
+                                }
+                                composable(Routes.HOME) {
+                                    val authState by authViewModel.state.collectAsStateWithLifecycle()
+                                    val name = (authState as? com.intelram.shield.auth.AuthUiState.SignedIn)
+                                        ?.displayName?.substringBefore(" ") ?: "there"
+                                    HomeScreen(
+                                        scanViewModel = scanViewModel,
+                                        greetingName = name,
+                                        onScanNow = {
+                                            scanViewModel.startScan()
+                                            navController.navigate(Routes.SCANNING)
+                                        },
+                                        onOpenQrScanner = { navController.navigate(Routes.QR_SCAN) },
+                                    )
+                                }
+                                composable(Routes.SCANNING) {
+                                    val uiState by scanViewModel.uiState.collectAsStateWithLifecycle()
+
+                                    LaunchedEffect(Unit) {
+                                        if (uiState == ScanUiState.Idle) scanViewModel.startScan()
+                                    }
+                                    LaunchedEffect(uiState) {
+                                        if (uiState is ScanUiState.Done) {
+                                            navController.navigate(Routes.RESULTS) {
+                                                popUpTo(Routes.SCANNING) { inclusive = true }
+                                            }
+                                        }
+                                    }
+
+                                    val state = uiState
+                                    ScanningScreen(
+                                        progress = (state as? ScanUiState.Scanning)?.progress ?: 0,
+                                        stepLabel = (state as? ScanUiState.Scanning)?.stepLabel ?: "Starting scan…",
+                                        onCancel = { navController.popBackStack() },
+                                    )
+                                }
+                                composable(Routes.RESULTS) {
+                                    ResultsScreen(
+                                        scanViewModel = scanViewModel,
+                                        onBack = { navController.navigate(Routes.HOME) { popUpTo(Routes.HOME) { inclusive = true } } },
+                                        onRescan = {
+                                            scanViewModel.startScan()
+                                            navController.navigate(Routes.SCANNING)
+                                        },
+                                        onOpenFinding = { id -> navController.navigate(Routes.threatDetail(id)) },
+                                    )
+                                }
+                                composable(
+                                    route = Routes.THREAT_DETAIL,
+                                    arguments = listOf(navArgument("findingId") { type = NavType.StringType }),
+                                ) { backEntry ->
+                                    val id = backEntry.arguments?.getString("findingId").orEmpty()
+                                    ThreatDetailScreen(
+                                        finding = scanViewModel.findFinding(id),
+                                        onBack = { navController.popBackStack() },
+                                    )
+                                }
+                                composable(Routes.QR_SCAN) {
+                                    QrScanScreen()
+                                }
+                                composable(Routes.SETTINGS) {
+                                    SettingsScreen(
+                                        scanViewModel = scanViewModel,
+                                        authViewModel = authViewModel,
+                                        onSignOut = {
+                                            authViewModel.signOut()
+                                            navController.navigate(Routes.ONBOARDING) {
+                                                popUpTo(0) { inclusive = true }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
                         }
-                        composable(
-                            route = "app/{packageName}",
-                            arguments = listOf(navArgument("packageName") { type = NavType.StringType }),
-                        ) { backStackEntry ->
-                            val encoded = backStackEntry.arguments?.getString("packageName").orEmpty()
-                            val packageName = URLDecoder.decode(encoded, "UTF-8")
-                            val app = viewModel.findApp(packageName)
-                            if (app != null) {
-                                AppDetailScreen(app = app, onBack = { navController.popBackStack() })
+
+                        if (currentRoute in TAB_ROUTES) {
+                            val activeTab = when (currentRoute) {
+                                Routes.HOME -> NavTab.HOME
+                                Routes.RESULTS -> NavTab.ALERTS
+                                else -> NavTab.SETTINGS
+                            }
+                            BottomNavBar(current = activeTab) { tab ->
+                                when (tab) {
+                                    NavTab.HOME -> navController.navigate(Routes.HOME) {
+                                        popUpTo(Routes.HOME) { inclusive = true }
+                                    }
+                                    NavTab.SCAN -> {
+                                        scanViewModel.startScan()
+                                        navController.navigate(Routes.SCANNING)
+                                    }
+                                    NavTab.ALERTS -> {
+                                        val done = scanViewModel.uiState.value is ScanUiState.Done
+                                        navController.navigate(if (done) Routes.RESULTS else Routes.HOME) {
+                                            popUpTo(Routes.HOME) { inclusive = false }
+                                        }
+                                    }
+                                    NavTab.SETTINGS -> navController.navigate(Routes.SETTINGS)
+                                }
                             }
                         }
                     }
