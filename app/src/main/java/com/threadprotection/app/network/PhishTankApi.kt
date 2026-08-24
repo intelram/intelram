@@ -6,14 +6,14 @@ import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.POST
 
-/** PhishTank checkurl API — free after registering for an API key at phishtank.org. */
+/** PhishTank checkurl API — works fully keyless (verified live); an optional free key from phishtank.org just raises the rate limit. */
 interface PhishTankApi {
     @FormUrlEncoded
     @POST("checkurl/")
     suspend fun checkUrl(
         @Field("url") url: String,
         @Field("format") format: String = "json",
-        @Field("app_key") appKey: String,
+        @Field("app_key") appKey: String? = null,
     ): PhishTankResponse
 
     companion object {

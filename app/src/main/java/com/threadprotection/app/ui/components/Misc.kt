@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.threadprotection.app.network.TechnicalDetails
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.Severity
 import com.threadprotection.app.ui.theme.TpType
@@ -142,5 +143,77 @@ private fun NavTabItem(label: String, active: Boolean, onClick: () -> Unit, modi
             color = if (active) palette.accent else palette.muted,
             modifier = Modifier.padding(top = 3.dp),
         )
+    }
+}
+
+/**
+ * Real, independently-verifiable facts about a site, gathered live at check time — the "proof"
+ * behind a URL verdict. Shared by the Scan-a-website and QR-scanner result screens since both
+ * run the same [com.threadprotection.app.network.ThreatIntelRepository.checkUrl] pipeline.
+ */
+@Composable
+fun TechnicalDetailsCard(tech: TechnicalDetails, modifier: Modifier = Modifier) {
+    val palette = LocalTpPalette.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(palette.card2)
+            .border(BorderStroke(1.dp, palette.line2), RoundedCornerShape(18.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("Technical details", style = TpType.cardTitle.copy(fontSize = 15.sp), color = palette.fg)
+
+        DetailRow("Host", tech.host)
+        if (tech.resolvedIps.isNotEmpty()) DetailRow("Resolved IP", tech.resolvedIps.joinToString())
+        tech.ipIntel?.let { ip ->
+            DetailRow("Hosted by", listOfNotNull(ip.org ?: ip.isp, ip.asn?.let { "AS$it" }).joinToString(" · ").ifBlank { "Unknown" })
+            listOfNotNull(ip.city, ip.country).joinToString(", ").takeIf { it.isNotBlank() }?.let { DetailRow("Location", it) }
+        }
+
+        val domain = tech.domain
+        when {
+            domain?.ageDays != null -> {
+                DetailRow("Domain age", "${domain.ageDays} day${if (domain.ageDays == 1L) "" else "s"} (registered ${domain.registeredOn?.take(10) ?: "?"})")
+                domain.registrar?.let { DetailRow("Registrar", it) }
+            }
+            else -> DetailRow("Domain age", "Not available for this domain's registry")
+        }
+
+        val tls = tech.tls
+        when {
+            tls == null -> DetailRow("TLS certificate", "Could not connect on port 443")
+            tls.error != null -> DetailRow("TLS certificate", tls.error)
+            tls.trusted -> DetailRow(
+                "TLS certificate",
+                "Trusted · issued by ${tls.issuer?.substringBefore(',') ?: "unknown"} · expires in ${tls.daysUntilExpiry ?: "?"} days",
+            )
+        }
+
+        tech.http?.let { http ->
+            if (http.error != null) {
+                DetailRow("Live request", "Could not connect: ${http.error}")
+            } else {
+                DetailRow("Live request", "HTTP ${http.statusCode ?: "?"}${http.serverHeader?.let { " · server: $it" }.orEmpty()}")
+                if (http.redirectCount > 0) {
+                    DetailRow("Redirected", "${http.redirectCount} hop${if (http.redirectCount == 1) "" else "s"} → ${http.finalUrl}")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    val palette = LocalTpPalette.current
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = TpType.caption.copy(fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold),
+            color = palette.muted,
+            modifier = Modifier.width(96.dp),
+        )
+        Text(value, style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp), color = palette.fg2, modifier = Modifier.weight(1f))
     }
 }

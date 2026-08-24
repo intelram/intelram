@@ -49,11 +49,30 @@ Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
   | AbuseIPDB | Free key, 1,000 checks/day | Malicious-host IP reputation |
   | URLhaus (abuse.ch) | Free key (`auth.abuse.ch`) | Malware-distribution URL database |
   | ThreatFox (abuse.ch) | Free key (`auth.abuse.ch`) | IOC (host/IP) reputation |
-  | PhishTank | Free key | Phishing URL database |
+  | PhishTank | **Fully keyless** (verified live) — a free key just raises the rate limit | Phishing URL database |
 
   Have I Been Pwned is **not** integrated: its breach-lookup API stopped being free in 2024
   (paid from ~$4.39/mo). The free, keyless **XposedOrNot** breach-analytics API is used instead
   — see *Data breach security* below.
+- **Scan a website — technical proof, not just a verdict**: every check runs the full pipeline
+  above (PhishTank always, the keyed sources whenever configured) plus four more live, fully
+  keyless lookups that need no API key at all — the same ones power the QR scanner's result
+  screen:
+  - **DNS + IP hosting** — resolves the real IP(s) on-device, then `ipwho.is` (free, keyless,
+    HTTPS) for the hosting org/ISP/ASN/country. A "safe-looking" domain hosted by an unrelated
+    org on the other side of the world is a real signal.
+  - **Domain registration age (RDAP)** — `rdap.org`, the IETF/ICANN-mandated free successor to
+    WHOIS, gives the real registrar and registration date. A domain registered days ago is one
+    of the most reliable phishing signals there is, and factors directly into the verdict.
+  - **Live TLS certificate** — the app actually connects to the site on port 443 and reads the
+    real certificate off the handshake: issuer, validity dates, and whether Android's own trust
+    store considers it valid. An untrusted/invalid certificate is treated as malicious.
+  - **Live HTTP trace** — a real request to the URL, following redirects: final URL, status
+    code, `Server` header, and the full redirect chain — cloaked or hop-through links show up
+    here even when the pasted link itself looks clean.
+
+  All of this is real-time and connection-based — nothing here is a database lookup pretending
+  to be a live check.
 - **App Permissions**: (renamed from "What apps are allowed to do"). Every app's granted
   dangerous permissions, real reasoning, and — since Android does not let one app revoke
   another app's permissions (there's no such API, by design) — a "Change in system settings ›"

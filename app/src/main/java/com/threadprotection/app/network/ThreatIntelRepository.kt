@@ -27,6 +27,7 @@ data class UrlVerdict(
     val signals: List<UrlSignal>,
     val onDeviceFlags: List<String>,
     val sourcesQueried: Int,
+    val technical: TechnicalDetails? = null,
 ) {
     val matchedBy: String get() = signals.firstOrNull { it.verdict == Verdict.MALICIOUS }?.source
         ?: signals.firstOrNull { it.verdict == Verdict.SUSPICIOUS }?.source
@@ -74,6 +75,8 @@ class ThreatIntelRepository {
         val onDeviceFlags = UrlHeuristics.analyze(rawUrl).sortedByDescending { it.severity }
         val host = runCatching { URI(normalize(rawUrl)).host }.getOrNull()?.let { IDN.toASCII(it) }
 
+        val technicalDeferred = async { runCatching { TechnicalInspector.inspect(rawUrl) }.getOrNull() }
+
         val jobs = buildList {
             add(async { safeBrowsingSignal(rawUrl, keys) })
             add(async { virusTotalSignal(rawUrl, keys) })
@@ -82,7 +85,9 @@ class ThreatIntelRepository {
             add(async { phishTankSignal(rawUrl, keys) })
             if (host != null) add(async { abuseIpdbSignal(host, keys) })
         }
-        val signals = jobs.mapNotNull { it.await() }
+        val networkSignals = jobs.mapNotNull { it.await() }
+        val technical = technicalDeferred.await()
+        val signals = networkSignals + listOfNotNull(domainAgeSignal(technical), tlsSignal(technical))
 
         val maliciousCount = signals.count { it.verdict == Verdict.MALICIOUS }
         val suspiciousCount = signals.count { it.verdict == Verdict.SUSPICIOUS }
@@ -108,7 +113,25 @@ class ThreatIntelRepository {
             signals = signals,
             onDeviceFlags = onDeviceFlags.map { it.message },
             sourcesQueried = signals.size,
+            technical = technical,
         )
+    }
+
+    private fun domainAgeSignal(technical: TechnicalDetails?): UrlSignal? {
+        val ageDays = technical?.domain?.ageDays ?: return null
+        return when {
+            ageDays < 30 -> UrlSignal("Domain registration (RDAP)", Verdict.SUSPICIOUS, "Registered only $ageDays day${if (ageDays == 1L) "" else "s"} ago — many phishing sites use brand-new domains")
+            else -> UrlSignal("Domain registration (RDAP)", Verdict.SAFE, "Registered $ageDays days ago${technical.domain.registrar?.let { " via $it" }.orEmpty()}")
+        }
+    }
+
+    private fun tlsSignal(technical: TechnicalDetails?): UrlSignal? {
+        val tls = technical?.tls ?: return null
+        return when {
+            tls.error != null -> UrlSignal("TLS certificate (live check)", Verdict.MALICIOUS, tls.error)
+            tls.trusted -> UrlSignal("TLS certificate (live check)", Verdict.SAFE, "Valid, trusted certificate issued by ${tls.issuer ?: "a recognised authority"}")
+            else -> null
+        }
     }
 
     private suspend fun <T> withGuard(sourceLabel: String, block: suspend () -> T?): T? =
@@ -173,9 +196,8 @@ class ThreatIntelRepository {
 
     private suspend fun phishTankSignal(url: String, keys: ApiKeys): UrlSignal? {
         val key = keys[ApiKeyId.PHISHTANK]
-        if (key.isEmpty()) return null
         return withGuard("PhishTank") {
-            val response = phishTank.checkUrl(url = url, appKey = key)
+            val response = phishTank.checkUrl(url = url, appKey = key.ifEmpty { null })
             val result = response.results
             when {
                 result == null -> null

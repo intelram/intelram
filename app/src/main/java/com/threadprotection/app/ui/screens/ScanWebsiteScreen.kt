@@ -36,6 +36,7 @@ import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
 import com.threadprotection.app.ui.components.NavTab
 import com.threadprotection.app.ui.components.PrimaryPillButton
+import com.threadprotection.app.ui.components.TechnicalDetailsCard
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
 
@@ -62,7 +63,7 @@ fun ScanWebsiteScreen(
                 Text("Scan a website", style = TpType.screenTitle, color = palette.fg)
             }
             Text(
-                "Paste any link before you open it — on-device analysis plus every live feed you've configured in Settings.",
+                "Paste any link before you open it — on-device analysis, live domain/IP/certificate checks, PhishTank, and every extra feed you've configured in Settings, all at once.",
                 style = TpType.body.copy(fontSize = 15.5.sp, lineHeight = 24.5.sp),
                 color = palette.muted,
             )
@@ -147,4 +148,5 @@ private fun WebsiteVerdictCard(verdict: UrlVerdict) {
         }
         Text("${verdict.confidence}% confidence · matched by ${verdict.matchedBy}", style = TpType.caption.copy(fontSize = 12.sp), color = palette.muted2)
     }
+    verdict.technical?.let { tech -> TechnicalDetailsCard(tech) }
 }

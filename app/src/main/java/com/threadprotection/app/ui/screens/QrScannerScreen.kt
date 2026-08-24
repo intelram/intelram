@@ -49,6 +49,7 @@ import com.threadprotection.app.ui.components.OutlinedPillButton
 import com.threadprotection.app.ui.components.PrimaryPillButton
 import com.threadprotection.app.ui.components.QrCameraPreview
 import com.threadprotection.app.ui.components.SectionHeading
+import com.threadprotection.app.ui.components.TechnicalDetailsCard
 import com.threadprotection.app.ui.components.sweepLineFraction
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
@@ -308,6 +309,7 @@ private fun QrResultDetails(verdict: UrlVerdict) {
             )
         }
         Text("Matched by ${verdict.matchedBy} · ${verdict.confidence}% confidence", style = TpType.caption.copy(fontSize = 13.sp), color = palette.muted2)
+        verdict.technical?.let { tech -> TechnicalDetailsCard(tech) }
     }
 }
 
