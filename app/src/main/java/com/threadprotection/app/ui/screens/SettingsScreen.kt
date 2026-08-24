@@ -17,16 +17,28 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.threadprotection.app.R
+import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.ProtectionSettings
 import com.threadprotection.app.ui.components.BottomNavBar
@@ -70,6 +82,7 @@ fun SettingsScreen(
     onSignInGoogle: () -> Unit,
     onPickTheme: (TpThemeMode) -> Unit,
     onToggleSetting: (String) -> Unit,
+    onSetApiKey: (ApiKeyId, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -175,6 +188,18 @@ fun SettingsScreen(
                 }
             }
 
+            SectionHeading("Threat intelligence sources")
+            Text(
+                "Free API keys from each provider — only NVD works with no key at all (just rate-limited). Add any of these and its feed lights up immediately across scans and QR checks.",
+                style = TpType.caption.copy(fontSize = 14.sp, lineHeight = 20.sp),
+                color = palette.muted,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ApiKeyId.entries.forEach { id ->
+                    ApiKeyRow(id = id, value = state.apiKeys[id], onValueChange = { onSetApiKey(id, it) })
+                }
+            }
+
             SectionHeading("About")
             Column(
                 modifier = Modifier
@@ -191,6 +216,65 @@ fun SettingsScreen(
         }
 
         BottomNavBar(active = NavTab.SETTINGS, onHome = onGoHome, onQr = onGoQr, onBrain = onGoBrain, onSettings = {})
+    }
+}
+
+@Composable
+private fun ApiKeyRow(id: ApiKeyId, value: String, onValueChange: (String) -> Unit) {
+    val palette = LocalTpPalette.current
+    val uriHandler = LocalUriHandler.current
+    var draft by remember(id) { mutableStateOf(value) }
+    val configured = value.isNotEmpty()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(palette.card)
+            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+            Text(id.label, style = TpType.cardTitle.copy(fontSize = 16.sp), color = palette.fg)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (configured) palette.accent else palette.muted3),
+                )
+                Text(
+                    if (configured) "Live" else "Off",
+                    style = TpType.badgeSmall,
+                    color = if (configured) palette.accent else palette.muted,
+                )
+            }
+        }
+        TextField(
+            value = draft,
+            onValueChange = { draft = it; onValueChange(it) },
+            singleLine = true,
+            placeholder = { Text("Paste your free API key", color = palette.muted3) },
+            visualTransformation = if (draft.isNotEmpty()) PasswordVisualTransformation('•') else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(12.dp)),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = palette.card2,
+                unfocusedContainerColor = palette.card2,
+                focusedTextColor = palette.fg,
+                unfocusedTextColor = palette.fg,
+                focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+                cursorColor = palette.accent,
+            ),
+        )
+        Text(
+            "Get a free key → ${id.signupUrl}",
+            style = TpType.caption.copy(fontSize = 13.sp),
+            color = palette.accent,
+            modifier = Modifier.clickable { runCatching { uriHandler.openUri(id.signupUrl) } },
+        )
     }
 }
 

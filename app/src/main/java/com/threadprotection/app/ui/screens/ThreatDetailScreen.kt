@@ -50,6 +50,10 @@ fun ThreatDetailScreen(
 ) {
     val palette = LocalTpPalette.current
     val sel = Derived.selectedFinding(state)
+    if (sel == null) {
+        androidx.compose.runtime.LaunchedEffect(Unit) { onBack() }
+        return
+    }
     val fixed = sel.id in state.fixed
     val sev = if (fixed) Severity.FIXED else sel.sev
     val sevColor = palette.severityColor(sev)

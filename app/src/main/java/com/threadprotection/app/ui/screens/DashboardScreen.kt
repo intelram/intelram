@@ -348,10 +348,10 @@ private fun HardwareWatchCard(state: AppUiState, onToggleOpen: () -> Unit, onSim
             color = palette.muted,
         )
         if (!state.hwOpen) {
-            Text(Derived.hwSummary(), style = TpType.cardTitle.copy(fontSize = 15.5.sp), color = palette.fg2)
+            Text(Derived.hwSummary(state), style = TpType.cardTitle.copy(fontSize = 15.5.sp), color = palette.fg2)
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                DemoData.hwDevices.forEach { d ->
+                state.liveHwDevices.forEach { d ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
                         Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(if (d.ok) palette.accent else palette.danger))
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -380,7 +380,7 @@ private fun HardwareWatchCard(state: AppUiState, onToggleOpen: () -> Unit, onSim
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(if (state.hwOpen) "Hide the details" else "Show all ${DemoData.hwDevices.size} devices", style = TpType.cardTitle.copy(fontSize = 16.sp), color = palette.fg2)
+            Text(if (state.hwOpen) "Hide the details" else "Show all ${state.liveHwDevices.size} devices", style = TpType.cardTitle.copy(fontSize = 16.sp), color = palette.fg2)
             Text(if (state.hwOpen) " ⌃" else " ⌄", style = TpType.cardTitle.copy(fontSize = 15.sp), color = palette.fg2)
         }
         Row(

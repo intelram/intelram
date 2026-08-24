@@ -1,8 +1,6 @@
 package com.threadprotection.app.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,25 +18,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.threadprotection.app.data.DemoData
+import com.threadprotection.app.state.ScanPhaseState
 import com.threadprotection.app.ui.components.ConicProgressRing
 import com.threadprotection.app.ui.components.OutlinedPillButton
 import com.threadprotection.app.ui.components.RadarSweep
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
 import kotlin.math.floor
-import kotlin.math.min
 
 @Composable
 fun ScanningScreen(
     progress: Float,
     scannedCount: Int,
+    phase: ScanPhaseState,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
-    val phaseIdx = min(DemoData.phases.size - 1, floor(progress / 100f * DemoData.phases.size).toInt())
-    val phase = DemoData.phases[phaseIdx]
 
     Column(
         modifier = modifier.fillMaxSize().padding(top = 28.dp, start = 24.dp, end = 24.dp, bottom = 32.dp),
@@ -72,19 +68,24 @@ fun ScanningScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(phase.label, style = TpType.cardTitle.copy(fontSize = 19.5.sp), color = palette.fg, textAlign = TextAlign.Center)
+                    Text(
+                        phase.label.ifBlank { "Starting scan…" },
+                        style = TpType.cardTitle.copy(fontSize = 19.5.sp),
+                        color = palette.fg,
+                        textAlign = TextAlign.Center,
+                    )
                     Text(phase.meta, style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted, textAlign = TextAlign.Center)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    DemoData.phases.forEachIndexed { i, _ ->
+                    (0 until phase.total).forEach { i ->
                         Box(
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
                                 .background(
                                     when {
-                                        i < phaseIdx -> palette.accent
-                                        i == phaseIdx -> palette.fg
+                                        i < phase.index -> palette.accent
+                                        i == phase.index -> palette.fg
                                         else -> palette.line3
                                     },
                                 ),

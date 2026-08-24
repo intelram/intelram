@@ -49,19 +49,8 @@ data class Assurance(val title: String, val body: String)
 
 data class TrustPoint(val title: String, val body: String)
 
-enum class QrVerdict { SAFE, WARN, DANGER }
-
-data class QrSample(
-    val label: String,
-    val url: String,
-    val verdict: QrVerdict,
-    val title: String,
-    val detail: String,
-    val feed: String,
-    val action: String,
-)
-
-data class ScanPhase(val label: String, val meta: String)
+/** Seed URLs for the QR screen's "try a code" grid — each is run through the real, live URL checker. */
+data class QrSample(val label: String, val url: String)
 
 data class Stat(val value: String, val label: String)
 

@@ -1,10 +1,15 @@
 package com.threadprotection.app.state
 
 import com.threadprotection.app.data.Account
+import com.threadprotection.app.data.ApiKeys
+import com.threadprotection.app.data.Finding
+import com.threadprotection.app.data.HwDevice
 import com.threadprotection.app.data.HwSim
+import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.network.UrlVerdict
 import com.threadprotection.app.ui.theme.TpThemeMode
 
-enum class Screen { SIGNIN, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS }
+enum class Screen { SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS }
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
 
@@ -20,7 +25,23 @@ data class ProtectionSettings(
     val hardware: Boolean = true,
 )
 
-/** Mirrors the prototype's `state = {...}` object 1:1 — see README §State. */
+/** Real, on-device results from the last completed `DeviceScanner.scan()` — see README §Threat intelligence. */
+data class ScanData(
+    val findings: List<Finding> = emptyList(),
+    val permApps: List<PermApp> = emptyList(),
+    val hwDevices: List<HwDevice> = emptyList(),
+    val appsScanned: Int = 0,
+    val portsFound: Int = 0,
+    val portsProbed: Boolean = false,
+    val osPatchLabel: String = "",
+    val feedsConfigured: Int = 0,
+    val feedsTotal: Int = 0,
+)
+
+/** Live phase text shown on the Scanning screen while `DeviceScanner.scan()` runs. */
+data class ScanPhaseState(val index: Int = 0, val total: Int = 7, val label: String = "", val meta: String = "")
+
+/** Mirrors the prototype's `state = {...}` object — see README §State — extended with real scan/auth/API-key state. */
 data class AppUiState(
     val screen: Screen = Screen.SIGNIN,
     val account: Account? = null,
@@ -34,6 +55,7 @@ data class AppUiState(
     val qrPhase: QrPhase = QrPhase.IDLE,
     val qrIndex: Int = 0,
     val qrProgress: Int = 0,
+    val qrVerdict: UrlVerdict? = null,
     val gsiError: String? = null,
     val theme: TpThemeMode = TpThemeMode.NIGHT,
     val learned: Int = 148_392,
@@ -45,4 +67,9 @@ data class AppUiState(
     val hwOpen: Boolean = false,
     val blocked: Long = 41_827_384,
     val tickIdx: Int = 0,
+    val apiKeys: ApiKeys = ApiKeys(),
+    val scanData: ScanData = ScanData(),
+    val scanPhase: ScanPhaseState = ScanPhaseState(),
+    val liveHwDevices: List<HwDevice> = emptyList(),
+    val createAccountError: String? = null,
 )

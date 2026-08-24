@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.Derived
 import com.threadprotection.app.ui.components.BackCircleButton
@@ -34,10 +33,11 @@ import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
 
 /**
- * README: "On Android, revoking another app's permission is not possible programmatically —
- * the switch must deep-link to that app's system permission page." The demo apps here are
- * fictional (no installed package to deep-link to), so toggling flips the local "turned off by
- * you" state shown in the UI; a production build would resolve a real package name per app and
+ * Real, on-device audit from `PermissionAudit` — every app, permission and "why" line here comes
+ * from `PackageManager` on this phone, not demo data. README: "On Android, revoking another
+ * app's permission is not possible programmatically — the switch must deep-link to that app's
+ * system permission page." Toggling here flips the local "turned off by you" state shown in the
+ * UI; a full production build would additionally resolve the real package name per app and
  * launch `ACTION_APPLICATION_DETAILS_SETTINGS` for it, then read the grant back on resume.
  */
 @Composable
@@ -81,7 +81,15 @@ fun AppPermissionsScreen(
                 PrimaryPillButton(text = "Turn all of them off", onClick = onTurnOffAllRisky)
             }
 
-            DemoData.appPerms.forEach { app ->
+            if (state.scanData.permApps.isEmpty()) {
+                Text(
+                    "Reading installed apps and their permissions…",
+                    style = TpType.body.copy(fontSize = 15.5.sp),
+                    color = palette.muted,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                )
+            }
+            state.scanData.permApps.forEach { app ->
                 val riskyCount = app.perms.count { it.risk && "${app.app}|${it.id}" !in state.permOff }
                 Column(
                     modifier = Modifier

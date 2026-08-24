@@ -52,7 +52,7 @@ fun SignInScreen(
     tickerText: String,
     gsiError: String?,
     onSignedIn: (com.threadprotection.app.data.Account) -> Unit,
-    onSkip: () -> Unit,
+    onCreateAccount: () -> Unit,
     onGsiError: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -122,7 +122,7 @@ fun SignInScreen(
                 Text(gsiError, style = TpType.caption.copy(fontSize = androidx.compose.ui.unit.TextUnit(14.5f, androidx.compose.ui.unit.TextUnitType.Sp)), color = palette.warn, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             }
 
-            OutlinedPillButton(text = "Use without an account", onClick = onSkip, borderColor = palette.line4)
+            OutlinedPillButton(text = "Create an account", onClick = onCreateAccount, borderColor = palette.line4)
 
             Text(
                 text = if (GoogleAuthClient.isConfigured) {

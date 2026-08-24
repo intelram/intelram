@@ -8,18 +8,19 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
 import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
+import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
 import com.threadprotection.app.ui.screens.OnboardingScreen
@@ -42,7 +43,7 @@ class MainActivity : ComponentActivity() {
                 factory = object : ViewModelProvider.Factory {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        AppViewModel(app.settingsRepository) as T
+                        AppViewModel(app.applicationContext, app.settingsRepository) as T
                 },
             )
             val state by viewModel.state.collectAsStateWithLifecycle()
@@ -53,12 +54,21 @@ class MainActivity : ComponentActivity() {
                     when (state.screen) {
                         Screen.SIGNIN -> SignInScreen(
                             blockedCount = state.blocked,
-                            tickerText = com.threadprotection.app.data.DemoData.ticker[state.tickIdx],
+                            tickerText = DemoData.ticker[state.tickIdx],
                             gsiError = state.gsiError,
                             onSignedIn = viewModel::signInWithGoogle,
-                            onSkip = viewModel::skipSignIn,
+                            onCreateAccount = viewModel::goCreateAccount,
                             onGsiError = viewModel::setGsiError,
                         )
+
+                        Screen.CREATE_ACCOUNT -> {
+                            BackHandler(enabled = true) { viewModel.backToSignIn() }
+                            CreateAccountScreen(
+                                error = state.createAccountError,
+                                onBack = viewModel::backToSignIn,
+                                onCreate = viewModel::createAccount,
+                            )
+                        }
 
                         Screen.ONBOARDING -> {
                             BackHandler(enabled = true) { /* no-op: must complete onboarding */ }
@@ -83,6 +93,7 @@ class MainActivity : ComponentActivity() {
                             ScanningScreen(
                                 progress = state.progress,
                                 scannedCount = state.scannedCount,
+                                phase = state.scanPhase,
                                 onCancel = viewModel::cancelScan,
                             )
                         }
@@ -114,6 +125,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onPick = viewModel::startQr,
+                                onDecoded = viewModel::analyzeScannedPayload,
                                 onRescan = viewModel::rescanQr,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
@@ -154,6 +166,7 @@ class MainActivity : ComponentActivity() {
                                 onSignInGoogle = { viewModel.signInWithGoogle() },
                                 onPickTheme = viewModel::applyTheme,
                                 onToggleSetting = viewModel::toggleProtectionSetting,
+                                onSetApiKey = viewModel::setApiKey,
                             )
                         }
                     }

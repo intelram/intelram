@@ -1,0 +1,194 @@
+package com.threadprotection.app.network
+
+import android.util.Base64
+import com.threadprotection.app.data.ApiKeyId
+import com.threadprotection.app.data.ApiKeys
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.net.IDN
+import java.net.InetAddress
+import java.net.URI
+
+enum class Verdict { SAFE, SUSPICIOUS, MALICIOUS, UNKNOWN }
+
+data class UrlSignal(val source: String, val verdict: Verdict, val detail: String)
+
+data class UrlVerdict(
+    val url: String,
+    val overall: Verdict,
+    val confidence: Int,
+    val signals: List<UrlSignal>,
+    val onDeviceFlags: List<String>,
+    val sourcesQueried: Int,
+) {
+    val matchedBy: String get() = signals.firstOrNull { it.verdict == Verdict.MALICIOUS }?.source
+        ?: signals.firstOrNull { it.verdict == Verdict.SUSPICIOUS }?.source
+        ?: signals.firstOrNull { it.verdict == Verdict.SAFE }?.source
+        ?: "On-device analysis only"
+}
+
+/**
+ * Aggregates every free threat-intel source the user has configured (README §Threat intelligence)
+ * plus always-on on-device heuristics, into a single verdict. Every network source degrades
+ * silently (contributes UNKNOWN, not a crash) when its key is missing or the request fails —
+ * the app must stay useful with zero configuration, and get stronger as keys are added.
+ */
+class ThreatIntelRepository {
+    private val safeBrowsing by lazy { NetworkModule.create<SafeBrowsingApi>(SafeBrowsingApi.BASE_URL) }
+    private val virusTotal by lazy { NetworkModule.create<VirusTotalApi>(VirusTotalApi.BASE_URL) }
+    private val abuseIpdb by lazy { NetworkModule.create<AbuseIpdbApi>(AbuseIpdbApi.BASE_URL) }
+    private val nvd by lazy { NetworkModule.create<NvdApi>(NvdApi.BASE_URL) }
+    private val phishTank by lazy { NetworkModule.create<PhishTankApi>(PhishTankApi.BASE_URL) }
+    private val urlhaus by lazy { NetworkModule.create<UrlhausApi>(UrlhausApi.BASE_URL) }
+    private val threatFox by lazy { NetworkModule.create<ThreatFoxApi>(ThreatFoxApi.BASE_URL) }
+
+    suspend fun checkUrl(rawUrl: String, keys: ApiKeys): UrlVerdict = coroutineScope {
+        val onDeviceFlags = UrlHeuristics.analyze(rawUrl).sortedByDescending { it.severity }
+        val host = runCatching { URI(normalize(rawUrl)).host }.getOrNull()?.let { IDN.toASCII(it) }
+
+        val jobs = buildList {
+            add(async { safeBrowsingSignal(rawUrl, keys) })
+            add(async { virusTotalSignal(rawUrl, keys) })
+            add(async { urlhausSignal(rawUrl, keys) })
+            if (host != null) add(async { threatFoxSignal(host, keys) })
+            add(async { phishTankSignal(rawUrl, keys) })
+            if (host != null) add(async { abuseIpdbSignal(host, keys) })
+        }
+        val signals = jobs.mapNotNull { it.await() }
+
+        val maliciousCount = signals.count { it.verdict == Verdict.MALICIOUS }
+        val suspiciousCount = signals.count { it.verdict == Verdict.SUSPICIOUS }
+        val worstHeuristic = onDeviceFlags.firstOrNull()?.severity ?: 0
+
+        val overall = when {
+            maliciousCount > 0 -> Verdict.MALICIOUS
+            worstHeuristic >= 3 -> Verdict.MALICIOUS
+            suspiciousCount > 0 || worstHeuristic >= 1 -> Verdict.SUSPICIOUS
+            signals.any { it.verdict == Verdict.SAFE } -> Verdict.SAFE
+            else -> Verdict.UNKNOWN
+        }
+
+        val confidence = when {
+            signals.isEmpty() && onDeviceFlags.isEmpty() -> 40
+            else -> (55 + signals.size * 8 + onDeviceFlags.size * 4).coerceAtMost(99)
+        }
+
+        UrlVerdict(
+            url = rawUrl,
+            overall = overall,
+            confidence = confidence,
+            signals = signals,
+            onDeviceFlags = onDeviceFlags.map { it.message },
+            sourcesQueried = signals.size,
+        )
+    }
+
+    private suspend fun <T> withGuard(sourceLabel: String, block: suspend () -> T?): T? =
+        runCatching { withTimeoutOrNull(8_000) { block() } }.getOrNull()
+
+    private suspend fun safeBrowsingSignal(url: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.SAFE_BROWSING]
+        if (key.isEmpty()) return null
+        return withGuard("Google Safe Browsing") {
+            val response = safeBrowsing.findThreatMatches(key, SafeBrowsingRequest(threatInfo = SbThreatInfo(threatEntries = listOf(SbThreatEntry(url)))))
+            if (response.matches.isNotEmpty()) {
+                val types = response.matches.joinToString { it.threatType.lowercase().replace('_', ' ') }
+                UrlSignal("Google Safe Browsing", Verdict.MALICIOUS, "Flagged for: $types")
+            } else {
+                UrlSignal("Google Safe Browsing", Verdict.SAFE, "No known threats found")
+            }
+        }
+    }
+
+    private suspend fun virusTotalSignal(url: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.VIRUS_TOTAL]
+        if (key.isEmpty()) return null
+        return withGuard("VirusTotal") {
+            val id = Base64.encodeToString(url.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+            val report = runCatching { virusTotal.getUrlReport(key, id) }.getOrNull()
+            val stats = report?.data?.attributes?.lastAnalysisStats
+            when {
+                stats == null -> null
+                stats.malicious > 0 -> UrlSignal("VirusTotal", Verdict.MALICIOUS, "${stats.malicious}/${stats.engineTotal} engines flagged this")
+                stats.suspicious > 0 -> UrlSignal("VirusTotal", Verdict.SUSPICIOUS, "${stats.suspicious}/${stats.engineTotal} engines marked this suspicious")
+                else -> UrlSignal("VirusTotal", Verdict.SAFE, "0/${stats.engineTotal} engines flagged this")
+            }
+        }
+    }
+
+    private suspend fun urlhausSignal(url: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.URLHAUS]
+        if (key.isEmpty()) return null
+        return withGuard("URLhaus") {
+            val response = urlhaus.lookupUrl(key, url)
+            if (response.isListed) {
+                UrlSignal("URLhaus", Verdict.MALICIOUS, "Listed as ${response.threat ?: "malware distribution"} (${response.urlStatus ?: "unknown"})")
+            } else {
+                UrlSignal("URLhaus", Verdict.SAFE, "Not listed in the malware URL database")
+            }
+        }
+    }
+
+    private suspend fun threatFoxSignal(host: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.THREATFOX]
+        if (key.isEmpty()) return null
+        return withGuard("ThreatFox") {
+            val response = threatFox.searchIoc(key, ThreatFoxRequest(searchTerm = host))
+            if (response.isListed) {
+                val ioc = response.data?.firstOrNull()
+                UrlSignal("ThreatFox", Verdict.MALICIOUS, "Reported as IOC for ${ioc?.malwarePrintable ?: "malware"} (confidence ${ioc?.confidenceLevel ?: 0}%)")
+            } else {
+                UrlSignal("ThreatFox", Verdict.SAFE, "No IOC reports for this host")
+            }
+        }
+    }
+
+    private suspend fun phishTankSignal(url: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.PHISHTANK]
+        if (key.isEmpty()) return null
+        return withGuard("PhishTank") {
+            val response = phishTank.checkUrl(url = url, appKey = key)
+            val result = response.results
+            when {
+                result == null -> null
+                result.inDatabase && result.valid == "y" -> UrlSignal("PhishTank", Verdict.MALICIOUS, "Confirmed phishing report on file")
+                result.inDatabase -> UrlSignal("PhishTank", Verdict.SUSPICIOUS, "Reported, not yet verified")
+                else -> UrlSignal("PhishTank", Verdict.SAFE, "Not in the phishing database")
+            }
+        }
+    }
+
+    private suspend fun abuseIpdbSignal(host: String, keys: ApiKeys): UrlSignal? {
+        val key = keys[ApiKeyId.ABUSEIPDB]
+        if (key.isEmpty()) return null
+        return withGuard("AbuseIPDB") {
+            val ip = resolveHost(host) ?: return@withGuard null
+            val response = abuseIpdb.check(apiKey = key, ipAddress = ip)
+            val score = response.data?.abuseConfidenceScore ?: return@withGuard null
+            when {
+                score >= 60 -> UrlSignal("AbuseIPDB", Verdict.MALICIOUS, "Host IP has a $score% abuse confidence score")
+                score >= 25 -> UrlSignal("AbuseIPDB", Verdict.SUSPICIOUS, "Host IP has a $score% abuse confidence score")
+                else -> UrlSignal("AbuseIPDB", Verdict.SAFE, "Host IP has a low ($score%) abuse confidence score")
+            }
+        }
+    }
+
+    private suspend fun resolveHost(host: String): String? = withContext(Dispatchers.IO) {
+        runCatching { InetAddress.getByName(host).hostAddress }.getOrNull()
+    }
+
+    /** Best-effort real CVE lookup for an app/library name — README's "outdated software" finding. */
+    suspend fun searchCves(productName: String, apiKey: String?): List<NvdCve> = withGuard("NVD") {
+        nvd.searchCves(apiKey = apiKey?.takeIf { it.isNotBlank() }, keyword = productName, resultsPerPage = 5)
+            .vulnerabilities.map { it.cve }
+    }.orEmpty()
+
+    private fun normalize(rawUrl: String): String {
+        var s = rawUrl.trim()
+        if (!s.contains("://")) s = "https://$s"
+        return s
+    }
+}

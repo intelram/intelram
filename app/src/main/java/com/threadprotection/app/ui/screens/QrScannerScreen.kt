@@ -1,5 +1,6 @@
 package com.threadprotection.app.ui.screens
 
+import android.Manifest
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,7 +12,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,7 +27,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -35,56 +34,40 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import com.threadprotection.app.data.DemoData
-import com.threadprotection.app.data.QrVerdict
+import com.threadprotection.app.network.UrlVerdict
+import com.threadprotection.app.network.Verdict
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.QrPhase
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
 import com.threadprotection.app.ui.components.NavTab
 import com.threadprotection.app.ui.components.OutlinedPillButton
+import com.threadprotection.app.ui.components.PrimaryPillButton
+import com.threadprotection.app.ui.components.QrCameraPreview
 import com.threadprotection.app.ui.components.SectionHeading
 import com.threadprotection.app.ui.components.sweepLineFraction
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
 
+@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun QrScannerScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onPick: (Int) -> Unit,
+    onDecoded: (String) -> Unit,
     onRescan: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
-    val sample = DemoData.qrSamples.getOrElse(state.qrIndex) { DemoData.qrSamples[0] }
-    val verdictColor = when (sample.verdict) {
-        QrVerdict.SAFE -> palette.accent
-        QrVerdict.WARN -> palette.warn
-        QrVerdict.DANGER -> palette.danger
-    }
-    val verdictTint = when (sample.verdict) {
-        QrVerdict.SAFE -> palette.accentTint12
-        QrVerdict.WARN -> palette.warnTint12
-        QrVerdict.DANGER -> palette.dangerTint12
-    }
-    val verdictBorder = when (sample.verdict) {
-        QrVerdict.SAFE -> palette.accentBorder35
-        QrVerdict.WARN -> palette.warnBorder35
-        QrVerdict.DANGER -> palette.dangerBorder35
-    }
-    val verdictLabel = when (sample.verdict) {
-        QrVerdict.SAFE -> "SAFE"
-        QrVerdict.WARN -> "SUSPICIOUS"
-        QrVerdict.DANGER -> "MALICIOUS"
-    }
-    val glyph = when (sample.verdict) {
-        QrVerdict.SAFE -> "✓"
-        QrVerdict.WARN -> "!"
-        QrVerdict.DANGER -> "✕"
-    }
+    val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
+    val verdict = state.qrVerdict
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -105,24 +88,48 @@ fun QrScannerScreen(
                     .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(20.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                ViewfinderCorners(palette.accent)
-
                 when (state.qrPhase) {
-                    QrPhase.IDLE -> Column(
-                        modifier = Modifier.padding(horizontal = 36.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text("Point the camera at a QR code", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg2, textAlign = TextAlign.Center)
-                        Text(
-                            "Every code is checked against all connected intelligence feeds before it opens.",
-                            style = TpType.caption.copy(fontSize = 14.5.sp),
-                            color = palette.muted2,
-                            textAlign = TextAlign.Center,
-                        )
+                    QrPhase.IDLE -> {
+                        if (cameraPermission.status.isGranted) {
+                            QrCameraPreview(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(20.dp)), onDecoded = onDecoded)
+                            ViewfinderCorners(palette.accent)
+                            Column(
+                                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(
+                                    "Point at a QR code — it's checked automatically",
+                                    style = TpType.caption.copy(fontSize = 13.sp),
+                                    color = Color.White,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        } else {
+                            ViewfinderCorners(palette.accent)
+                            Column(
+                                modifier = Modifier.padding(horizontal = 36.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp),
+                            ) {
+                                Text("Point the camera at a QR code", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg2, textAlign = TextAlign.Center)
+                                Text(
+                                    "Every code is decoded on this phone, then checked against every intelligence feed you've configured.",
+                                    style = TpType.caption.copy(fontSize = 14.5.sp),
+                                    color = palette.muted2,
+                                    textAlign = TextAlign.Center,
+                                )
+                                OutlinedPillButton(
+                                    text = "Grant camera access",
+                                    onClick = { cameraPermission.launchPermissionRequest() },
+                                    borderColor = palette.accentBorder40,
+                                    textColor = palette.accent,
+                                )
+                            }
+                        }
                     }
 
                     QrPhase.SCANNING -> {
+                        ViewfinderCorners(palette.accent)
                         val fraction = sweepLineFraction()
                         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                             Box(
@@ -130,11 +137,7 @@ fun QrScannerScreen(
                                     .fillMaxWidth()
                                     .height(2.dp)
                                     .offset(y = maxHeight * fraction)
-                                    .background(
-                                        Brush.horizontalGradient(
-                                            listOf(Color.Transparent, palette.accent, Color.Transparent),
-                                        ),
-                                    ),
+                                    .background(Brush.horizontalGradient(listOf(Color.Transparent, palette.accent, Color.Transparent))),
                             )
                         }
                         Column(
@@ -153,75 +156,53 @@ fun QrScannerScreen(
                                 )
                             }
                             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                QrCheckStep("Decoded payload", state.qrProgress > 15)
-                                QrCheckStep("URL reputation · Safe Browsing", state.qrProgress > 40)
-                                QrCheckStep("Live phishing feeds · OpenPhish", state.qrProgress > 65)
-                                QrCheckStep("Host & certificate check", state.qrProgress > 90)
+                                QrCheckStep("Decoded payload", state.qrProgress > 10)
+                                QrCheckStep("On-device link analysis", state.qrProgress > 30)
+                                QrCheckStep("Live threat-intel feeds", state.qrProgress > 55)
+                                QrCheckStep("Combining verdicts", state.qrProgress > 80)
                             }
                         }
                     }
 
-                    QrPhase.RESULT -> Column(
-                        modifier = Modifier.padding(horizontal = 30.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(62.dp)
-                                .clip(CircleShape)
-                                .background(verdictTint)
-                                .border(BorderStroke(1.dp, verdictBorder), CircleShape),
-                            contentAlignment = Alignment.Center,
+                    QrPhase.RESULT -> if (verdict != null) {
+                        val vc = verdictColors(verdict.overall)
+                        Column(
+                            modifier = Modifier.padding(horizontal = 26.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Text(glyph, style = TpType.cardTitleBold.copy(fontSize = 32.sp), color = verdictColor)
+                            Box(
+                                modifier = Modifier.size(62.dp).clip(CircleShape).background(vc.tint).border(BorderStroke(1.dp, vc.border), CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(vc.glyph, style = TpType.cardTitleBold.copy(fontSize = 32.sp), color = vc.color)
+                            }
+                            Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(vc.tint).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                                Text(vc.label, style = TpType.badge.copy(letterSpacing = 1.35.sp), color = vc.color)
+                            }
+                            Text(vc.title, style = TpType.cardTitleBold.copy(fontSize = 19.5.sp), color = palette.fg, textAlign = TextAlign.Center)
+                            Text(
+                                verdict.url,
+                                style = TpType.caption.copy(fontSize = 13.5.sp, fontFamily = FontFamily.Monospace),
+                                color = palette.muted,
+                                textAlign = TextAlign.Center,
+                                maxLines = 3,
+                            )
                         }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(verdictTint)
-                                .padding(horizontal = 12.dp, vertical = 5.dp),
-                        ) {
-                            Text(verdictLabel, style = TpType.badge.copy(letterSpacing = 1.35.sp), color = verdictColor)
-                        }
-                        Text(sample.title, style = TpType.cardTitleBold.copy(fontSize = 19.5.sp), color = palette.fg, textAlign = TextAlign.Center)
-                        Text(
-                            sample.url,
-                            style = TpType.caption.copy(fontSize = 14.5.sp, fontFamily = FontFamily.Monospace),
-                            color = palette.muted,
-                            textAlign = TextAlign.Center,
-                        )
                     }
                 }
             }
 
-            if (state.qrPhase == QrPhase.RESULT) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        sample.detail,
-                        style = TpType.body.copy(fontSize = 16.sp, lineHeight = 25.6.sp),
-                        color = palette.fg2,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(palette.card)
-                            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(palette.accent))
-                        Text("Matched by ${sample.feed}", style = TpType.caption, color = palette.muted)
-                    }
-                }
+            if (state.qrPhase == QrPhase.RESULT && verdict != null) {
+                QrResultDetails(verdict)
             }
 
             if (state.qrPhase == QrPhase.IDLE) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SectionHeading("Try a code")
-                    val rows = DemoData.qrSamples.chunked(2)
-                    rows.forEach { pair ->
+                    DemoData.qrSamples.chunked(2).forEach { pair ->
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            pair.forEachIndexed { i, q ->
+                            pair.forEach { q ->
                                 val index = DemoData.qrSamples.indexOf(q)
                                 Box(
                                     modifier = Modifier
@@ -248,10 +229,11 @@ fun QrScannerScreen(
         ) {
             when (state.qrPhase) {
                 QrPhase.RESULT -> {
-                    if (sample.verdict == QrVerdict.SAFE) {
-                        com.threadprotection.app.ui.components.PrimaryPillButton(text = sample.action, onClick = onRescan)
-                    } else {
-                        OutlinedPillButton(text = sample.action, onClick = onRescan, borderColor = verdictBorder, textColor = verdictColor)
+                    val vc = verdict?.let { verdictColors(it.overall) }
+                    if (vc != null && verdict?.overall == Verdict.SAFE) {
+                        PrimaryPillButton(text = "Open link", onClick = onRescan)
+                    } else if (vc != null) {
+                        OutlinedPillButton(text = "Don't open — go back", onClick = onRescan, borderColor = vc.border, textColor = vc.color)
                     }
                     OutlinedPillButton(text = "Scan another code", onClick = onRescan, borderColor = palette.line3)
                 }
@@ -261,6 +243,71 @@ fun QrScannerScreen(
         }
 
         BottomNavBar(active = NavTab.QR, onHome = onBack, onQr = {}, onBrain = onGoBrain, onSettings = onGoSettings)
+    }
+}
+
+private data class VerdictColors(val color: Color, val tint: Color, val border: Color, val label: String, val glyph: String, val title: String)
+
+@Composable
+private fun verdictColors(verdict: Verdict): VerdictColors {
+    val palette = LocalTpPalette.current
+    return when (verdict) {
+        Verdict.SAFE -> VerdictColors(palette.accent, palette.accentTint12, palette.accentBorder35, "SAFE", "✓", "Looks safe to open")
+        Verdict.SUSPICIOUS -> VerdictColors(palette.warn, palette.warnTint12, palette.warnBorder35, "SUSPICIOUS", "!", "Suspicious — proceed with care")
+        Verdict.MALICIOUS -> VerdictColors(palette.danger, palette.dangerTint12, palette.dangerBorder35, "MALICIOUS", "✕", "Malicious — don't open this")
+        Verdict.UNKNOWN -> VerdictColors(palette.muted, palette.mutedTint14, palette.line3, "UNKNOWN", "?", "Not enough data to verify")
+    }
+}
+
+@Composable
+private fun QrResultDetails(verdict: UrlVerdict) {
+    val palette = LocalTpPalette.current
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (verdict.onDeviceFlags.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(palette.card)
+                    .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("On-device analysis", style = TpType.sectionHeading.copy(fontSize = 12.5.sp), color = palette.muted)
+                verdict.onDeviceFlags.forEach { flag ->
+                    Text("• $flag", style = TpType.body.copy(fontSize = 15.sp, lineHeight = 22.sp), color = palette.fg2)
+                }
+            }
+        }
+        if (verdict.signals.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(palette.card)
+                    .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp)),
+            ) {
+                verdict.signals.forEachIndexed { i, signal ->
+                    Column {
+                        if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(palette.line2))
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(signal.source, style = TpType.cardTitle.copy(fontSize = 15.sp), color = palette.fg)
+                            Text(signal.detail, style = TpType.caption.copy(fontSize = 13.sp), color = palette.muted, textAlign = TextAlign.End, modifier = Modifier.weight(1f, fill = false))
+                        }
+                    }
+                }
+            }
+        } else {
+            Text(
+                "No live threat-intel sources are configured yet — add free API keys in Settings for stronger results.",
+                style = TpType.caption.copy(fontSize = 13.5.sp),
+                color = palette.muted,
+            )
+        }
+        Text("Matched by ${verdict.matchedBy} · ${verdict.confidence}% confidence", style = TpType.caption.copy(fontSize = 13.sp), color = palette.muted2)
     }
 }
 

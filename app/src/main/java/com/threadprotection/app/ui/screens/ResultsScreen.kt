@@ -95,14 +95,14 @@ fun ResultsScreen(
                 }
             }
 
+            val scan = state.scanData
             val inventory = listOf(
-                "Apps & packages" to "252",
-                "Services & tasks" to "61",
-                "Ports probed" to "65,535",
-                "Hardware devices" to "6",
-                "Licences verified" to "214",
-                "Leaked records searched" to "14B",
-                "Breaches matching you" to if (state.account != null) "${com.threadprotection.app.data.DemoData.breachSites.size}" else "—",
+                "Apps & packages" to "${scan.appsScanned}",
+                "Apps with permission risks" to "${scan.permApps.size}",
+                "Ports probed" to if (scan.portsProbed) "${scan.portsFound} listening" else "Restricted",
+                "Hardware devices" to "${scan.hwDevices.size}",
+                "OS patch level" to scan.osPatchLabel.ifBlank { "—" },
+                "Threat-intel feeds live" to "${scan.feedsConfigured}/${scan.feedsTotal}",
             )
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 inventory.chunked(2).forEach { pair ->

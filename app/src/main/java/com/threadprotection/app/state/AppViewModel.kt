@@ -1,32 +1,44 @@
 package com.threadprotection.app.state
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.threadprotection.app.data.Account
+import com.threadprotection.app.data.ApiKeyId
+import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.data.SettingsRepository
+import com.threadprotection.app.network.ThreatIntelRepository
+import com.threadprotection.app.scan.DeviceScanner
+import com.threadprotection.app.scan.HardwareWatcher
+import com.threadprotection.app.scan.PermissionAudit
 import com.threadprotection.app.ui.theme.TpThemeMode
 import kotlin.random.Random
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-private const val TOTAL_SCAN_ITEMS = 2384
-private const val SCAN_DURATION_MS = 8_000
-private const val SCAN_TICK_MS = 60L
-private const val QR_DURATION_MS = 750
-private const val QR_TICK_MS = 60L
-
-class AppViewModel(private val settingsRepository: SettingsRepository? = null) : ViewModel() {
+class AppViewModel(
+    private val appContext: Context? = null,
+    private val settingsRepository: SettingsRepository? = null,
+) : ViewModel() {
 
     private val _state = MutableStateFlow(AppUiState())
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
+    private val threatIntel = ThreatIntelRepository()
+    private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
+    private val permissionAudit by lazy { appContext?.let { PermissionAudit(it) } }
+    private val hardwareWatcher by lazy { appContext?.let { HardwareWatcher(it) } }
+
     private var scanJob: Job? = null
     private var qrJob: Job? = null
+    private var permJob: Job? = null
 
     init {
         startAmbientTimers()
@@ -41,7 +53,11 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
                     }
                 }
             }
+            viewModelScope.launch {
+                repo.apiKeysFlow.collect { keys -> _state.update { it.copy(apiKeys = keys) } }
+            }
         }
+        refreshHardwareStatus()
     }
 
     private inline fun MutableStateFlow<AppUiState>.update(block: (AppUiState) -> AppUiState) {
@@ -76,13 +92,17 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
 
     fun goDashboard() = setScreen(Screen.DASHBOARD)
     fun goSettings() = setScreen(Screen.SETTINGS)
-    fun goPerms() = setScreen(Screen.PERMS)
     fun goBrain() = setScreen(Screen.BRAIN)
     fun backToResults() = setScreen(Screen.RESULTS)
 
+    fun goPerms() {
+        setScreen(Screen.PERMS)
+        ensurePermissionsLoaded()
+    }
+
     fun goQr() {
         qrJob?.cancel()
-        _state.update { it.copy(screen = Screen.QR, qrPhase = QrPhase.IDLE, qrProgress = 0) }
+        _state.update { it.copy(screen = Screen.QR, qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
     }
 
     private fun setScreen(screen: Screen) {
@@ -96,11 +116,37 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
         persistAccount(account)
     }
 
-    fun skipSignIn() = setScreen(Screen.ONBOARDING)
+    fun goCreateAccount() {
+        _state.update { it.copy(screen = Screen.CREATE_ACCOUNT, createAccountError = null) }
+    }
+
+    fun backToSignIn() {
+        _state.update { it.copy(screen = Screen.SIGNIN, createAccountError = null) }
+    }
+
+    fun createAccount(name: String, email: String, password: String) {
+        val trimmedName = name.trim()
+        val trimmedEmail = email.trim()
+        when {
+            trimmedName.isEmpty() -> setCreateAccountError("Enter your name")
+            !trimmedEmail.contains("@") || !trimmedEmail.contains(".") -> setCreateAccountError("Enter a valid email address")
+            password.length < 8 -> setCreateAccountError("Use a password with at least 8 characters")
+            else -> {
+                val account = Account(name = trimmedName, email = trimmedEmail, initial = trimmedName.take(1).uppercase())
+                _state.update { it.copy(account = account, screen = Screen.ONBOARDING, createAccountError = null) }
+                persistAccount(account)
+                settingsRepository?.let { repo -> viewModelScope.launch { repo.setLocalCredential(trimmedEmail, password) } }
+            }
+        }
+    }
+
+    private fun setCreateAccountError(message: String) {
+        _state.update { it.copy(createAccountError = message) }
+    }
 
     fun signOut() {
         _state.update {
-            it.copy(screen = Screen.SIGNIN, account = null, hasScanned = false, fixed = emptySet())
+            it.copy(screen = Screen.SIGNIN, account = null, hasScanned = false, fixed = emptySet(), scanData = ScanData())
         }
         persistAccount(null)
     }
@@ -156,22 +202,51 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
         }
     }
 
-    // ───────────────────────── scanning ─────────────────────────
+    // ───────────────────────── threat-intel API keys ─────────────────────────
+
+    fun setApiKey(id: ApiKeyId, value: String) {
+        _state.update { it.copy(apiKeys = ApiKeys(it.apiKeys.values + (id to value))) }
+        settingsRepository?.let { repo -> viewModelScope.launch { repo.setApiKey(id, value) } }
+    }
+
+    // ───────────────────────── scanning (real device scan) ─────────────────────────
 
     fun startScan() {
+        val scanner = deviceScanner ?: return
         scanJob?.cancel()
-        _state.update { it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet()) }
+        _state.update {
+            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), scanPhase = ScanPhaseState())
+        }
         scanJob = viewModelScope.launch {
-            val steps = SCAN_DURATION_MS / SCAN_TICK_MS
-            val stepSize = 100f / steps
-            while (_state.value.progress < 100f) {
-                delay(SCAN_TICK_MS)
+            val result = scanner.scan(_state.value.apiKeys) { update ->
                 _state.update {
-                    val p = (it.progress + stepSize * (0.6f + Random.nextFloat() * 0.8f)).coerceAtMost(100f)
-                    it.copy(progress = p, scannedCount = ((p / 100f) * TOTAL_SCAN_ITEMS).toInt())
+                    val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
+                    it.copy(
+                        progress = pct,
+                        scannedCount = (pct / 100f * ESTIMATED_ITEMS).toInt(),
+                        scanPhase = ScanPhaseState(update.index, update.total, update.label, update.meta),
+                    )
                 }
             }
-            delay(500)
+            _state.update {
+                it.copy(
+                    progress = 100f,
+                    scanData = ScanData(
+                        findings = result.findings,
+                        permApps = result.permApps,
+                        hwDevices = result.hwDevices,
+                        appsScanned = result.appsScanned,
+                        portsFound = result.ports.size,
+                        portsProbed = result.portsProbed,
+                        osPatchLabel = result.osPatchLabel,
+                        feedsConfigured = result.feedsConfigured,
+                        feedsTotal = result.feedsTotal,
+                    ),
+                    liveHwDevices = result.hwDevices,
+                    scannedCount = result.appsScanned,
+                )
+            }
+            delay(400)
             _state.update { it.copy(screen = Screen.RESULTS, hasScanned = true) }
         }
     }
@@ -187,7 +262,7 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
     }
 
     fun fixSelected() {
-        val sel = Derived.selectedFinding(_state.value)
+        val sel = Derived.selectedFinding(_state.value) ?: return
         _state.update { it.copy(fixed = it.fixed + sel.id) }
     }
 
@@ -196,52 +271,27 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
     }
 
     fun voteUp() {
-        val sel = Derived.selectedFinding(_state.value)
+        val sel = Derived.selectedFinding(_state.value) ?: return
         _state.update { it.copy(votes = it.votes + (sel.id to Vote.UP), learned = it.learned + 1) }
     }
 
     fun voteDown() {
-        val sel = Derived.selectedFinding(_state.value)
+        val sel = Derived.selectedFinding(_state.value) ?: return
         _state.update { it.copy(votes = it.votes + (sel.id to Vote.DOWN), learned = it.learned + 1) }
     }
 
-    // ───────────────────────── QR scanner ─────────────────────────
+    // ───────────────────────── app permissions (independent quick audit) ─────────────────────────
 
-    fun startQr(index: Int) {
-        qrJob?.cancel()
-        _state.update { it.copy(qrPhase = QrPhase.SCANNING, qrIndex = index, qrProgress = 0) }
-        qrJob = viewModelScope.launch {
-            while (_state.value.qrProgress < 100) {
-                delay(QR_TICK_MS)
-                _state.update { it.copy(qrProgress = (it.qrProgress + 8).coerceAtMost(100)) }
+    fun ensurePermissionsLoaded() {
+        val audit = permissionAudit ?: return
+        if (_state.value.scanData.permApps.isNotEmpty() || permJob?.isActive == true) return
+        permJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { audit.audit() }
+            _state.update {
+                it.copy(scanData = it.scanData.copy(permApps = result.apps, appsScanned = result.totalInstalledCount))
             }
-            _state.update { it.copy(qrPhase = QrPhase.RESULT) }
         }
     }
-
-    fun rescanQr() {
-        qrJob?.cancel()
-        _state.update { it.copy(qrPhase = QrPhase.IDLE, qrProgress = 0) }
-    }
-
-    // ───────────────────────── hardware watch ─────────────────────────
-
-    fun toggleHwOpen() {
-        _state.update { it.copy(hwOpen = !it.hwOpen) }
-    }
-
-    fun simulateHw() {
-        _state.update {
-            val sim = DemoData.hwSim[it.hwIdx % DemoData.hwSim.size]
-            it.copy(hwAlert = sim, hwIdx = it.hwIdx + 1, hwHandled = null)
-        }
-    }
-
-    fun hwBlock() = _state.update { it.copy(hwHandled = HwHandled.BLOCK) }
-    fun hwAllow() = _state.update { it.copy(hwHandled = HwHandled.ALLOW) }
-    fun hwDismiss() = _state.update { it.copy(hwAlert = null, hwHandled = null) }
-
-    // ───────────────────────── app permissions ─────────────────────────
 
     fun togglePermission(app: String, permId: String) {
         val key = "$app|$permId"
@@ -255,10 +305,72 @@ class AppViewModel(private val settingsRepository: SettingsRepository? = null) :
     fun turnOffAllRiskyPermissions() {
         _state.update { s ->
             val off = s.permOff.toMutableSet()
-            DemoData.appPerms.forEach { app ->
+            s.scanData.permApps.forEach { app ->
                 app.perms.forEach { p -> if (p.risk) off.add("${app.app}|${p.id}") }
             }
             s.copy(permOff = off)
         }
+    }
+
+    // ───────────────────────── QR scanner (real reputation checks) ─────────────────────────
+
+    fun startQr(index: Int) {
+        val sample = DemoData.qrSamples.getOrNull(index) ?: return
+        runQrCheck(sample.url, index)
+    }
+
+    /** Entry point for a real camera-decoded payload — README §QR scanner. */
+    fun analyzeScannedPayload(rawPayload: String) {
+        runQrCheck(rawPayload, -1)
+    }
+
+    private fun runQrCheck(payload: String, index: Int) {
+        qrJob?.cancel()
+        _state.update { it.copy(qrPhase = QrPhase.SCANNING, qrIndex = index, qrProgress = 0, qrVerdict = null) }
+        qrJob = viewModelScope.launch {
+            val progressJob = launch {
+                while (_state.value.qrProgress < 92) {
+                    delay(60)
+                    _state.update { it.copy(qrProgress = (it.qrProgress + 8).coerceAtMost(92)) }
+                }
+            }
+            val verdict = threatIntel.checkUrl(payload, _state.value.apiKeys)
+            progressJob.cancel()
+            _state.update { it.copy(qrProgress = 100, qrPhase = QrPhase.RESULT, qrVerdict = verdict) }
+        }
+    }
+
+    fun rescanQr() {
+        qrJob?.cancel()
+        _state.update { it.copy(qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
+    }
+
+    // ───────────────────────── hardware watch ─────────────────────────
+
+    fun toggleHwOpen() {
+        _state.update { it.copy(hwOpen = !it.hwOpen) }
+    }
+
+    fun refreshHardwareStatus() {
+        val watcher = hardwareWatcher ?: return
+        viewModelScope.launch {
+            val devices = withContext(Dispatchers.IO) { watcher.scan() }
+            _state.update { it.copy(liveHwDevices = devices) }
+        }
+    }
+
+    fun simulateHw() {
+        _state.update {
+            val sim = DemoData.hwSim[it.hwIdx % DemoData.hwSim.size]
+            it.copy(hwAlert = sim, hwIdx = it.hwIdx + 1, hwHandled = null)
+        }
+    }
+
+    fun hwBlock() = _state.update { it.copy(hwHandled = HwHandled.BLOCK) }
+    fun hwAllow() = _state.update { it.copy(hwHandled = HwHandled.ALLOW) }
+    fun hwDismiss() = _state.update { it.copy(hwAlert = null, hwHandled = null) }
+
+    companion object {
+        private const val ESTIMATED_ITEMS = 300
     }
 }
