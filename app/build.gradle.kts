@@ -88,4 +88,5 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.mlkit.barcode.scanning)
     implementation(libs.accompanist.permissions)
+    implementation(libs.androidx.work.runtime.ktx)
 }

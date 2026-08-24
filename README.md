@@ -52,14 +52,36 @@ Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
   | PhishTank | Free key | Phishing URL database |
 
   Have I Been Pwned is **not** integrated: its breach-lookup API stopped being free in 2024
-  (paid from ~$4.39/mo). Rather than fake it, the email-breach finding from the original
-  prototype was dropped entirely — nothing here claims to check your email against breaches.
+  (paid from ~$4.39/mo). The free, keyless **XposedOrNot** breach-analytics API is used instead
+  — see *Data breach security* below.
+- **App Permissions**: (renamed from "What apps are allowed to do"). Every app's granted
+  dangerous permissions, real reasoning, and — since Android does not let one app revoke
+  another app's permissions (there's no such API, by design) — a "Change in system settings ›"
+  row per app that deep-links straight to that app's real permission page
+  (`ACTION_APPLICATION_DETAILS_SETTINGS`) so you can flip it yourself in one tap. Also available
+  as an Android **Quick Settings tile** (Settings → *Add Quick Settings tile*, or drag it in
+  from the notification shade's tile editor) that jumps straight to this screen.
+- **OTP security**: lists every installed app holding `READ_SMS`/`RECEIVE_SMS`/`SEND_SMS` — the
+  permissions an app would need to intercept one-time codes — with the same one-tap deep-link
+  to review/revoke each in system settings.
+- **Data breach security**: checks your signed-in email against the free **XposedOrNot**
+  breach-analytics API (`api.xposedornot.com`, no key, no cost) and lists which breaches it
+  appeared in, when, and what data was exposed.
+- **Scan a website**: paste any URL and it runs through the same live reputation pipeline as
+  the QR scanner (on-device heuristics + whichever free threat-intel sources you've configured)
+  and returns a plain verdict.
+- **Runs in the background**: a foreground service keeps watching for new USB/Bluetooth
+  hardware and posts an alert notification the moment something connects, even after you close
+  the app — persistent low-priority notification, survives a reboot (restarts itself via a boot
+  receiver if you left real-time protection on), toggled by the same *real-time protection*
+  switch on the dashboard.
+- **2-step verification reminder**: Android has no way to see whether another app (your bank,
+  email, etc.) has 2FA turned on — that state lives on that service's own server, not on the
+  phone. Rather than fake a detector, a background job posts a periodic reminder notification
+  every two weeks nudging you to check your important accounts.
 
 ## What's still demo/illustrative
 
-- Revoking another app's permission isn't possible on Android without being that app — the
-  toggle here flips local "turned off by you" state (matches the design spec); wiring it to
-  `ACTION_APPLICATION_DETAILS_SETTINGS` deep-links per real package is the natural next step.
 - "Show me what an alert looks like" on the dashboard is an explicitly-labelled demo trigger
   for the hardware-alert overlay (the design's own intent), not a claim of a live detection.
 - The AI brain screen's "learning loop" narrative and audit/certification claims are unchanged

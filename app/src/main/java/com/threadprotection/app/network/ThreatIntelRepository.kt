@@ -14,6 +14,10 @@ import java.net.URI
 
 enum class Verdict { SAFE, SUSPICIOUS, MALICIOUS, UNKNOWN }
 
+data class BreachRecord(val name: String, val date: String, val dataExposed: String, val records: Long?, val domain: String?)
+
+data class BreachCheckResult(val email: String, val breaches: List<BreachRecord>, val checked: Boolean, val error: String? = null)
+
 data class UrlSignal(val source: String, val verdict: Verdict, val detail: String)
 
 data class UrlVerdict(
@@ -44,6 +48,27 @@ class ThreatIntelRepository {
     private val phishTank by lazy { NetworkModule.create<PhishTankApi>(PhishTankApi.BASE_URL) }
     private val urlhaus by lazy { NetworkModule.create<UrlhausApi>(UrlhausApi.BASE_URL) }
     private val threatFox by lazy { NetworkModule.create<ThreatFoxApi>(ThreatFoxApi.BASE_URL) }
+    private val xposedOrNot by lazy { NetworkModule.create<XposedOrNotApi>(XposedOrNotApi.BASE_URL) }
+
+    /** Real, free, keyless breach lookup — README §Data breach security. */
+    suspend fun checkEmailBreaches(email: String): BreachCheckResult {
+        val result = withGuard("XposedOrNot") { xposedOrNot.breachAnalytics(email) }
+            ?: return BreachCheckResult(email, emptyList(), checked = false, error = "Couldn't reach the breach database — check your connection and try again.")
+        val details = result.exposedBreaches?.breachesDetails.orEmpty()
+        return BreachCheckResult(
+            email = email,
+            breaches = details.map { d ->
+                BreachRecord(
+                    name = d.breach ?: "Unknown site",
+                    date = d.xposedDate ?: "",
+                    dataExposed = d.xposedData?.replace(";", ", ") ?: "",
+                    records = d.xposedRecords,
+                    domain = d.domain,
+                )
+            },
+            checked = true,
+        )
+    }
 
     suspend fun checkUrl(rawUrl: String, keys: ApiKeys): UrlVerdict = coroutineScope {
         val onDeviceFlags = UrlHeuristics.analyze(rawUrl).sortedByDescending { it.severity }

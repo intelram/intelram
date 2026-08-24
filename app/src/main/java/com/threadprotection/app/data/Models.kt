@@ -39,7 +39,7 @@ data class Feed(val name: String, val kind: String, val items: String)
 
 data class AppPermission(val id: String, val name: String, val why: String, val risk: Boolean)
 
-data class PermApp(val app: String, val kind: String, val perms: List<AppPermission>)
+data class PermApp(val app: String, val packageName: String, val kind: String, val perms: List<AppPermission>)
 
 data class BrainSource(val name: String, val detail: String, val metric: String)
 

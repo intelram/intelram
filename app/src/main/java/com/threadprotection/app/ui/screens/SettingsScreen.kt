@@ -83,6 +83,7 @@ fun SettingsScreen(
     onPickTheme: (TpThemeMode) -> Unit,
     onToggleSetting: (String) -> Unit,
     onSetApiKey: (ApiKeyId, String) -> Unit,
+    onAddQuickSettingsTile: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -198,6 +199,25 @@ fun SettingsScreen(
                 ApiKeyId.entries.forEach { id ->
                     ApiKeyRow(id = id, value = state.apiKeys[id], onValueChange = { onSetApiKey(id, it) })
                 }
+            }
+
+            SectionHeading("Quick access")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.card)
+                    .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(18.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Quick Settings tile", style = TpType.cardTitle.copy(fontSize = 16.5.sp), color = palette.fg)
+                Text(
+                    "Add an App Permissions tile to your notification shade for one-tap access, even with the app closed.",
+                    style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp),
+                    color = palette.muted,
+                )
+                OutlinedPillButton(text = "Add Quick Settings tile", onClick = onAddQuickSettingsTile, borderColor = palette.accentBorder40, textColor = palette.accent)
             }
 
             SectionHeading("About")

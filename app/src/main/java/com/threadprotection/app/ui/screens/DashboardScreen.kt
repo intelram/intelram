@@ -50,6 +50,9 @@ fun DashboardScreen(
     onGoPerms: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
+    onGoOtpSecurity: () -> Unit,
+    onGoDataBreach: () -> Unit,
+    onGoScanWebsite: () -> Unit,
     onToggleHwOpen: () -> Unit,
     onSimulateHw: () -> Unit,
     modifier: Modifier = Modifier,
@@ -171,8 +174,61 @@ fun DashboardScreen(
                     Text("⚿", color = palette.warn, fontSize = 22.sp)
                 }
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("What apps are allowed to do", style = TpType.cardTitle, color = palette.fg)
+                    Text("App Permissions", style = TpType.cardTitle, color = palette.fg)
                     Text("${Derived.riskyPermTotal(state)} permissions look unnecessary", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
+                }
+                Text("›", color = palette.muted, fontSize = 22.sp)
+            }
+
+            com.threadprotection.app.ui.components.SectionHeading("Security tools")
+            ClickableCard(onClick = onGoOtpSecurity) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.warnTint12)
+                        .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✉", color = palette.warn, fontSize = 20.sp)
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("OTP security", style = TpType.cardTitle, color = palette.fg)
+                    Text("See which apps can read your text messages", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
+                }
+                Text("›", color = palette.muted, fontSize = 22.sp)
+            }
+            ClickableCard(onClick = onGoDataBreach) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.dangerTint12)
+                        .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("!", color = palette.danger, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Data breach security", style = TpType.cardTitle, color = palette.fg)
+                    Text("Check your email against live breach records", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
+                }
+                Text("›", color = palette.muted, fontSize = 22.sp)
+            }
+            ClickableCard(onClick = onGoScanWebsite) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.accentTint12)
+                        .border(BorderStroke(1.dp, palette.accentBorder30), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("🔗", fontSize = 18.sp)
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Scan a website", style = TpType.cardTitle, color = palette.fg)
+                    Text("Paste any link to check it before you open it", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
                 }
                 Text("›", color = palette.muted, fontSize = 22.sp)
             }

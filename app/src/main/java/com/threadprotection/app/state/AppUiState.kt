@@ -6,10 +6,14 @@ import com.threadprotection.app.data.Finding
 import com.threadprotection.app.data.HwDevice
 import com.threadprotection.app.data.HwSim
 import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.network.BreachCheckResult
 import com.threadprotection.app.network.UrlVerdict
 import com.threadprotection.app.ui.theme.TpThemeMode
 
-enum class Screen { SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS }
+enum class Screen {
+    SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
+    OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE,
+}
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
 
@@ -72,4 +76,9 @@ data class AppUiState(
     val scanPhase: ScanPhaseState = ScanPhaseState(),
     val liveHwDevices: List<HwDevice> = emptyList(),
     val createAccountError: String? = null,
+    val breachResult: BreachCheckResult? = null,
+    val breachChecking: Boolean = false,
+    val websiteUrl: String = "",
+    val websiteVerdict: UrlVerdict? = null,
+    val websiteChecking: Boolean = false,
 )

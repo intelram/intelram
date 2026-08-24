@@ -3,6 +3,7 @@ package com.threadprotection.app.data
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -48,7 +49,15 @@ class SettingsRepository(private val context: Context) {
         val THEME = stringPreferencesKey("tp_theme")
         val ACCOUNT = stringPreferencesKey("tp_google_account")
         val CREDENTIAL = stringPreferencesKey("tp_local_credential")
+        val REALTIME = booleanPreferencesKey("tp_realtime")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
+    }
+
+    /** Whether real-time (background) protection is on — also read by `BootReceiver`. */
+    val realtimeFlow: Flow<Boolean> = context.dataStore.data.map { it[Keys.REALTIME] ?: true }
+
+    suspend fun setRealtime(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.REALTIME] = enabled }
     }
 
     val themeFlow: Flow<TpThemeMode> = context.dataStore.data.map { prefs ->

@@ -1,20 +1,29 @@
 package com.threadprotection.app
 
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
@@ -22,10 +31,13 @@ import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
+import com.threadprotection.app.ui.screens.DataBreachScreen
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
 import com.threadprotection.app.ui.screens.OnboardingScreen
+import com.threadprotection.app.ui.screens.OtpSecurityScreen
 import com.threadprotection.app.ui.screens.QrScannerScreen
 import com.threadprotection.app.ui.screens.ResultsScreen
+import com.threadprotection.app.ui.screens.ScanWebsiteScreen
 import com.threadprotection.app.ui.screens.ScanningScreen
 import com.threadprotection.app.ui.screens.SettingsScreen
 import com.threadprotection.app.ui.screens.SignInScreen
@@ -34,22 +46,41 @@ import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.ThreadProtectionTheme
 
 class MainActivity : ComponentActivity() {
+
+    private val viewModel: AppViewModel by viewModels {
+        object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                AppViewModel((application as ThreadProtectionApp).applicationContext, (application as ThreadProtectionApp).settingsRepository) as T
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleTargetScreenIntent(intent)
         setContent {
-            val app = application as ThreadProtectionApp
-            val viewModel: AppViewModel = viewModel(
-                factory = object : ViewModelProvider.Factory {
-                    @Suppress("UNCHECKED_CAST")
-                    override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        AppViewModel(app.applicationContext, app.settingsRepository) as T
-                },
-            )
             val state by viewModel.state.collectAsStateWithLifecycle()
 
             ThreadProtectionTheme(mode = state.theme) {
                 val palette = LocalTpPalette.current
+                val context = LocalContext.current
+                val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                LaunchedEffect(Unit) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+
+                val openAppSettings: (String) -> Unit = { packageName ->
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
+
                 Box(modifier = Modifier.fillMaxSize().background(palette.bg)) {
                     when (state.screen) {
                         Screen.SIGNIN -> SignInScreen(
@@ -84,6 +115,9 @@ class MainActivity : ComponentActivity() {
                             onGoPerms = viewModel::goPerms,
                             onGoBrain = viewModel::goBrain,
                             onGoSettings = viewModel::goSettings,
+                            onGoOtpSecurity = viewModel::goOtpSecurity,
+                            onGoDataBreach = viewModel::goDataBreach,
+                            onGoScanWebsite = viewModel::goScanWebsite,
                             onToggleHwOpen = viewModel::toggleHwOpen,
                             onSimulateHw = viewModel::simulateHw,
                         )
@@ -152,6 +186,44 @@ class MainActivity : ComponentActivity() {
                                 onGoSettings = viewModel::goSettings,
                                 onTogglePermission = viewModel::togglePermission,
                                 onTurnOffAllRisky = viewModel::turnOffAllRiskyPermissions,
+                                onOpenAppSettings = openAppSettings,
+                            )
+                        }
+
+                        Screen.OTP_SECURITY -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            OtpSecurityScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onOpenAppSettings = openAppSettings,
+                            )
+                        }
+
+                        Screen.DATA_BREACH -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            DataBreachScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onCheck = viewModel::checkMyBreaches,
+                            )
+                        }
+
+                        Screen.SCAN_WEBSITE -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            ScanWebsiteScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onUrlChange = viewModel::setWebsiteUrl,
+                                onCheck = viewModel::checkWebsite,
                             )
                         }
 
@@ -167,6 +239,7 @@ class MainActivity : ComponentActivity() {
                                 onPickTheme = viewModel::applyTheme,
                                 onToggleSetting = viewModel::toggleProtectionSetting,
                                 onSetApiKey = viewModel::setApiKey,
+                                onAddQuickSettingsTile = { requestAddQuickSettingsTile(context) },
                             )
                         }
                     }
@@ -183,5 +256,42 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleTargetScreenIntent(intent)
+    }
+
+    private fun requestAddQuickSettingsTile(context: android.content.Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val statusBarManager = context.getSystemService(android.app.StatusBarManager::class.java) ?: return
+        runCatching {
+            statusBarManager.requestAddTileService(
+                android.content.ComponentName(context, com.threadprotection.app.tile.AppPermissionsTileService::class.java),
+                "App Permissions",
+                android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_tile_permissions),
+                java.util.concurrent.Executor { runnable -> runnable.run() },
+                java.util.function.Consumer<Int> { }, // user accepted/denied — nothing to react to here
+            )
+        }
+    }
+
+    private fun handleTargetScreenIntent(intent: Intent?) {
+        if (intent?.action != ACTION_OPEN_SCREEN) return
+        when (intent.getStringExtra(EXTRA_TARGET_SCREEN)) {
+            TARGET_PERMS -> viewModel.goPerms()
+            TARGET_DASHBOARD -> viewModel.goDashboard()
+            TARGET_SETTINGS -> viewModel.goSettings()
+        }
+    }
+
+    companion object {
+        const val ACTION_OPEN_SCREEN = "com.threadprotection.app.action.OPEN_SCREEN"
+        const val EXTRA_TARGET_SCREEN = "target_screen"
+        const val TARGET_PERMS = "perms"
+        const val TARGET_DASHBOARD = "dashboard"
+        const val TARGET_SETTINGS = "settings"
     }
 }

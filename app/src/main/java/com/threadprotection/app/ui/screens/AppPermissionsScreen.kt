@@ -3,6 +3,7 @@ package com.threadprotection.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,11 +35,14 @@ import com.threadprotection.app.ui.theme.TpType
 
 /**
  * Real, on-device audit from `PermissionAudit` — every app, permission and "why" line here comes
- * from `PackageManager` on this phone, not demo data. README: "On Android, revoking another
- * app's permission is not possible programmatically — the switch must deep-link to that app's
- * system permission page." Toggling here flips the local "turned off by you" state shown in the
- * UI; a full production build would additionally resolve the real package name per app and
- * launch `ACTION_APPLICATION_DETAILS_SETTINGS` for it, then read the grant back on resume.
+ * from `PackageManager` on this phone, not demo data.
+ *
+ * On Android, no third-party app — including this one — can revoke another app's permission
+ * directly; that capability is reserved for the device owner (MDM) or the OS itself. The closest
+ * real "take over and change it" action is a one-tap deep-link straight into *that exact app's*
+ * system permission screen (`ACTION_APPLICATION_DETAILS_SETTINGS`), skipping the hunt through
+ * Settings → Apps. The switch below still flips a local "turned off by you" flag for the
+ * at-a-glance summary, but `onOpenAppSettings` is what actually changes anything.
  */
 @Composable
 fun AppPermissionsScreen(
@@ -49,6 +53,7 @@ fun AppPermissionsScreen(
     onGoSettings: () -> Unit,
     onTogglePermission: (app: String, permId: String) -> Unit,
     onTurnOffAllRisky: () -> Unit,
+    onOpenAppSettings: (packageName: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -122,6 +127,22 @@ fun AppPermissionsScreen(
                                 lineHeight = 15.6.sp,
                             )
                         }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenAppSettings(app.packageName) }
+                            .padding(horizontal = 18.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "Change in system settings",
+                            style = TpType.caption.copy(fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                            color = palette.accent,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("›", color = palette.accent, fontSize = 16.sp)
                     }
                     Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(palette.line))
                     app.perms.forEachIndexed { i, perm ->

@@ -56,8 +56,26 @@ class AppViewModel(
             viewModelScope.launch {
                 repo.apiKeysFlow.collect { keys -> _state.update { it.copy(apiKeys = keys) } }
             }
+            viewModelScope.launch {
+                repo.realtimeFlow.collect { enabled ->
+                    _state.update { it.copy(realtime = enabled) }
+                    syncProtectionService(enabled)
+                }
+            }
         }
         refreshHardwareStatus()
+    }
+
+    /** Starts/stops the background hardware-watch service (README: "work in the background… even if closed"). */
+    private fun syncProtectionService(enabled: Boolean) {
+        val ctx = appContext ?: return
+        if (enabled) {
+            com.threadprotection.app.service.ProtectionForegroundService.start(ctx)
+            com.threadprotection.app.service.TwoFactorReminderWorker.schedule(ctx)
+        } else {
+            com.threadprotection.app.service.ProtectionForegroundService.stop(ctx)
+            com.threadprotection.app.service.TwoFactorReminderWorker.cancel(ctx)
+        }
     }
 
     private inline fun MutableStateFlow<AppUiState>.update(block: (AppUiState) -> AppUiState) {
@@ -99,6 +117,19 @@ class AppViewModel(
         setScreen(Screen.PERMS)
         ensurePermissionsLoaded()
     }
+
+    fun goOtpSecurity() {
+        setScreen(Screen.OTP_SECURITY)
+        ensurePermissionsLoaded()
+    }
+
+    fun goDataBreach() {
+        setScreen(Screen.DATA_BREACH)
+        val email = _state.value.account?.email
+        if (email != null && _state.value.breachResult?.email != email) checkMyBreaches()
+    }
+
+    fun goScanWebsite() = setScreen(Screen.SCAN_WEBSITE)
 
     fun goQr() {
         qrJob?.cancel()
@@ -179,7 +210,10 @@ class AppViewModel(
     // ───────────────────────── realtime + settings toggles ─────────────────────────
 
     fun toggleRealtime() {
-        _state.update { it.copy(realtime = !it.realtime) }
+        val next = !_state.value.realtime
+        _state.update { it.copy(realtime = next) }
+        syncProtectionService(next)
+        settingsRepository?.let { repo -> viewModelScope.launch { repo.setRealtime(next) } }
     }
 
     /** Toggles one of the Settings screen's 6 protection rows by key (README §Settings §Protection). */
@@ -343,6 +377,34 @@ class AppViewModel(
     fun rescanQr() {
         qrJob?.cancel()
         _state.update { it.copy(qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
+    }
+
+    // ───────────────────────── data breach security (free, keyless, live) ─────────────────────────
+
+    fun checkMyBreaches() {
+        val email = _state.value.account?.email ?: return
+        if (_state.value.breachChecking) return
+        _state.update { it.copy(breachChecking = true) }
+        viewModelScope.launch {
+            val result = threatIntel.checkEmailBreaches(email)
+            _state.update { it.copy(breachResult = result, breachChecking = false) }
+        }
+    }
+
+    // ───────────────────────── scan website (manual URL check) ─────────────────────────
+
+    fun setWebsiteUrl(url: String) {
+        _state.update { it.copy(websiteUrl = url) }
+    }
+
+    fun checkWebsite() {
+        val url = _state.value.websiteUrl.trim()
+        if (url.isEmpty() || _state.value.websiteChecking) return
+        _state.update { it.copy(websiteChecking = true, websiteVerdict = null) }
+        viewModelScope.launch {
+            val verdict = threatIntel.checkUrl(url, _state.value.apiKeys)
+            _state.update { it.copy(websiteVerdict = verdict, websiteChecking = false) }
+        }
     }
 
     // ───────────────────────── hardware watch ─────────────────────────

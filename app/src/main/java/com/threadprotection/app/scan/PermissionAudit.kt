@@ -87,7 +87,7 @@ class PermissionAudit(private val context: Context) {
                 sideload -> "Sideloaded · unverified source"
                 else -> "Installed app"
             }
-            permApps += PermApp(app = label, kind = kind, perms = rows.sortedByDescending { it.risk })
+            permApps += PermApp(app = label, packageName = appInfo.packageName, kind = kind, perms = rows.sortedByDescending { it.risk })
 
             val riskyCount = rows.count { it.risk }
             if (sideload) {
