@@ -290,11 +290,6 @@ class AppViewModel(
         setScreen(Screen.DASHBOARD)
     }
 
-    fun fixAll() {
-        val ids = Derived.threats(_state.value).map { it.id }.toSet()
-        _state.update { it.copy(fixed = ids) }
-    }
-
     fun fixSelected() {
         val sel = Derived.selectedFinding(_state.value) ?: return
         _state.update { it.copy(fixed = it.fixed + sel.id) }

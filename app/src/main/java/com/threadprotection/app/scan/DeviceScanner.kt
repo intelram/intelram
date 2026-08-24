@@ -7,6 +7,7 @@ import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.Finding
 import com.threadprotection.app.data.HwDevice
 import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.data.Remedy
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.ui.theme.Severity
 import kotlinx.coroutines.Dispatchers
@@ -96,6 +97,7 @@ class DeviceScanner(
                 pros = listOf("Removes remote shell access to this device", "No functional loss for everyday use"),
                 cons = listOf("Wireless ADB debugging stops working until re-enabled"),
                 source = "/proc/net/tcp (on-device)",
+                remedy = Remedy.DeveloperOptions,
             )
         }
         onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", if (PortScanner.readable()) "${ports.size} listening sockets found" else "Restricted on this Android version"))
@@ -151,6 +153,7 @@ class DeviceScanner(
             pros = listOf("Closes publicly documented WebView flaws", "No manual configuration needed — just keep auto-update on"),
             cons = listOf("Requires a normal app update, a few seconds on Wi‑Fi"),
             source = "NVD CVE database (live)",
+            remedy = Remedy.PlayStore(webView.packageName),
         )
     }
 }

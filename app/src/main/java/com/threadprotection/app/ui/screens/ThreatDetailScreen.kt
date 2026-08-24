@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.threadprotection.app.data.Remedy
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.Derived
 import com.threadprotection.app.state.Vote
@@ -46,6 +47,7 @@ fun ThreatDetailScreen(
     onVoteUp: () -> Unit,
     onVoteDown: () -> Unit,
     onFix: () -> Unit,
+    onOpenRemedy: (Remedy) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -261,7 +263,21 @@ fun ThreatDetailScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (!fixed) {
-                PrimaryPillButton(text = sel.fix, onClick = onFix)
+                val hasRemedy = sel.remedy != Remedy.None
+                PrimaryPillButton(
+                    text = if (hasRemedy) sel.fix else "Got it",
+                    onClick = {
+                        onOpenRemedy(sel.remedy)
+                        onFix()
+                    },
+                )
+                if (hasRemedy) {
+                    Text(
+                        "Opens Android Settings — this app can't change it for you, only you can.",
+                        style = TpType.caption.copy(fontSize = 12.5.sp),
+                        color = palette.muted,
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier
@@ -271,7 +287,7 @@ fun ThreatDetailScreen(
                         .border(BorderStroke(1.dp, palette.accentBorder40), RoundedCornerShape(999.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("✓ Resolved", style = TpType.primaryButtonLg, color = palette.accent)
+                    Text("✓ Reviewed — rescan to confirm", style = TpType.primaryButtonLg.copy(fontSize = 15.sp), color = palette.accent)
                 }
             }
             SubtlePillButton(text = "Ignore for now", onClick = onBack)

@@ -85,6 +85,37 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // "Fix" on a real scan finding can't change anything itself — Android gives 3rd-party
+                // apps no API to revoke another app's permission, close a listening port or patch the
+                // OS — so it opens the exact system screen where the user can do it themselves.
+                val openRemedy: (com.threadprotection.app.data.Remedy) -> Unit = { remedy ->
+                    when (remedy) {
+                        is com.threadprotection.app.data.Remedy.AppSettings -> openAppSettings(remedy.packageName)
+                        com.threadprotection.app.data.Remedy.DeveloperOptions -> runCatching {
+                            context.startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.recoverCatching {
+                            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                        com.threadprotection.app.data.Remedy.SystemUpdate -> runCatching {
+                            context.startActivity(Intent("android.settings.SYSTEM_UPDATE_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }.recoverCatching {
+                            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                        is com.threadprotection.app.data.Remedy.PlayStore -> runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=${remedy.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }.recoverCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=${remedy.packageName}"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                        com.threadprotection.app.data.Remedy.None -> Unit
+                    }
+                }
+
                 Box(modifier = Modifier.fillMaxSize().background(palette.bg)) {
                     when (state.screen) {
                         Screen.SIGNIN -> SignInScreen(
@@ -142,7 +173,6 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onOpen = viewModel::openFinding,
-                                onFixAll = viewModel::fixAll,
                             )
                         }
 
@@ -154,6 +184,7 @@ class MainActivity : ComponentActivity() {
                                 onVoteUp = viewModel::voteUp,
                                 onVoteDown = viewModel::voteDown,
                                 onFix = viewModel::fixSelected,
+                                onOpenRemedy = openRemedy,
                             )
                         }
 

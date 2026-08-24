@@ -44,7 +44,6 @@ fun ResultsScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
-    onFixAll: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -53,7 +52,7 @@ fun ResultsScreen(
     val hasThreats = threats.isNotEmpty()
 
     val headline = if (active.isEmpty()) {
-        if (hasThreats) "All threats resolved" else "No threats found"
+        if (hasThreats) "All reviewed — rescan to confirm" else "No threats found"
     } else if (active.size > 1) {
         "threats need your attention"
     } else {
@@ -136,8 +135,8 @@ fun ResultsScreen(
                 .fillMaxWidth()
                 .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
         ) {
-            if (hasThreats) {
-                PrimaryPillButton(text = "Fix all threats", onClick = onFixAll)
+            if (active.isNotEmpty()) {
+                PrimaryPillButton(text = "Start fixing", onClick = { onOpen(active.first().id) })
             } else {
                 OutlinedPillButton(text = "Back to dashboard", onClick = onBack, borderColor = palette.line3)
             }

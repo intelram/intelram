@@ -6,6 +6,21 @@ enum class Category { SOFTWARE, PORTS, SERVICES, LICENSING, ACTIVITY, HARDWARE, 
 
 data class Breach(val site: String, val date: String, val data: String)
 
+/**
+ * What tapping "Fix" actually does. A 3rd-party app cannot revoke another app's permission,
+ * close a listening port, or patch the OS itself — Android has no API for any of that — so the
+ * only honest "fix" is opening the exact system screen where the user can do it themselves.
+ * [None] means there's genuinely no settings screen for it (e.g. unplugging a USB device);
+ * the finding's `advice` text is the whole remedy in that case.
+ */
+sealed interface Remedy {
+    data class AppSettings(val packageName: String) : Remedy
+    data object DeveloperOptions : Remedy
+    data object SystemUpdate : Remedy
+    data class PlayStore(val packageName: String) : Remedy
+    data object None : Remedy
+}
+
 data class Finding(
     val id: String,
     val name: String,
@@ -20,6 +35,7 @@ data class Finding(
     val cons: List<String>,
     val source: String,
     val breaches: List<Breach>? = null,
+    val remedy: Remedy = Remedy.None,
 )
 
 data class HwDevice(val name: String, val detail: String, val ok: Boolean)

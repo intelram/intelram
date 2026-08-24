@@ -3,6 +3,7 @@ package com.threadprotection.app.scan
 import android.os.Build
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.Finding
+import com.threadprotection.app.data.Remedy
 import com.threadprotection.app.ui.theme.Severity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -41,6 +42,7 @@ object OsPatchChecker {
             pros = listOf("Closes publicly known kernel and framework flaws", "Usually improves battery and stability too"),
             cons = listOf("Requires a restart and some time", "Very old devices may no longer receive an update at all"),
             source = "Build.VERSION.SECURITY_PATCH (on-device)",
+            remedy = Remedy.SystemUpdate,
         )
     }
 }

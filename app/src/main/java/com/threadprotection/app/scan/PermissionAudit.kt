@@ -10,6 +10,7 @@ import com.threadprotection.app.data.AppPermission
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.Finding
 import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.data.Remedy
 import com.threadprotection.app.ui.theme.Severity
 
 /**
@@ -124,6 +125,7 @@ class PermissionAudit(private val context: Context) {
             ),
             cons = listOf("The app may lose features it legitimately used those permissions for"),
             source = "On-device install-source + permission audit",
+            remedy = Remedy.AppSettings(packageName),
         )
     }
 
