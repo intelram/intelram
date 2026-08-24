@@ -66,9 +66,13 @@ class MainActivity : ComponentActivity() {
                 val palette = LocalTpPalette.current
                 val context = LocalContext.current
                 val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 LaunchedEffect(Unit) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
                     }
                 }
 
