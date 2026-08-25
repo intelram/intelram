@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,9 +16,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +52,7 @@ import com.threadprotection.app.ui.screens.SignInScreen
 import com.threadprotection.app.ui.screens.ThreatDetailScreen
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.ThreadProtectionTheme
+import com.threadprotection.app.ui.theme.TpThemeMode
 
 class MainActivity : ComponentActivity() {
 
@@ -68,6 +74,19 @@ class MainActivity : ComponentActivity() {
             ThreadProtectionTheme(mode = state.theme) {
                 val palette = LocalTpPalette.current
                 val context = LocalContext.current
+
+                // The app's own day/night toggle is independent of the system theme, so status/nav
+                // bar icon contrast has to follow it explicitly — otherwise light-on-light or
+                // dark-on-dark icons can go unreadable depending on what the system happens to be set to.
+                SideEffect {
+                    val style = if (state.theme == TpThemeMode.NIGHT) {
+                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+                    }
+                    enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                }
+
                 val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 LaunchedEffect(Unit) {
@@ -125,7 +144,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Box(modifier = Modifier.fillMaxSize().background(palette.bg)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(palette.bg)
+                        .windowInsetsPadding(WindowInsets.safeDrawing),
+                ) {
                     when (state.screen) {
                         Screen.SIGNIN -> SignInScreen(
                             blockedCount = state.blocked,

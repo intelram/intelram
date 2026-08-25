@@ -16,6 +16,29 @@ no CI-baked SDK, so `sdk.dir` in `local.properties` needs to point at your local
 
 Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
 
+## Fits every phone, doesn't overlap system UI
+
+`enableEdgeToEdge()` was already being called (so the app can paint behind the status/nav bars
+for a modern look), but nothing was actually padding content to account for that — every screen
+was drawing straight under the status bar, the notch/cutout, and the navigation bar. Fixed:
+
+- The root content `Box` in `MainActivity` now applies `WindowInsets.safeDrawing` (status bar +
+  navigation bar + display cutout + IME) as padding, so no screen's content, back button, or
+  bottom nav bar can ever sit underneath system UI — on any device, any cutout shape, any
+  gesture-vs-3-button nav mode. The app's background colour still paints edge-to-edge behind
+  those bars; only the actual content is inset.
+- Status/navigation bar icon contrast now reactively follows the app's own day/night toggle
+  (`SystemBarStyle.dark`/`.light`, updated via a `SideEffect` on theme change) instead of the
+  phone's system theme — previously a user on "Night" mode with a light system theme would get
+  dark-on-dark status bar icons.
+- Locked to portrait (`android:screenOrientation="portrait"`): every screen here is a
+  single-column phone layout ported from the design spec, and it fits correctly (no squish, no
+  overlap) at every portrait resolution/density this way, rather than stretching a
+  portrait-tuned design into landscape.
+- Layout code already used `fillMaxWidth()`/`weight()`-based responsive rows throughout, with
+  only a handful of `widthIn(max = ...)` caps (never fixed absolute widths) — so this is a
+  correctness fix for system-bar overlap, not a rewrite of the layout system.
+
 ## What's real
 
 - **Sign-in**: "Create an account" is a real, fully working local account (PBKDF2-SHA256
