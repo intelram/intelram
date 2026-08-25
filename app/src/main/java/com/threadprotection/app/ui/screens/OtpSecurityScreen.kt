@@ -44,6 +44,7 @@ fun OtpSecurityScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onOpenAppSettings: (String) -> Unit,
@@ -131,6 +132,6 @@ fun OtpSecurityScreen(
                 color = palette.muted2,
             )
         }
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }

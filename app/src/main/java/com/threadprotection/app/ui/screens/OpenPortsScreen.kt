@@ -38,6 +38,7 @@ fun OpenPortsScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onOpenDeveloperOptions: () -> Unit,
@@ -114,6 +115,6 @@ fun OpenPortsScreen(
 
             OutlinedPillButton(text = "Open Developer options", onClick = onOpenDeveloperOptions, borderColor = palette.line3)
         }
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }

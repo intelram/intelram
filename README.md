@@ -16,6 +16,44 @@ no CI-baked SDK, so `sdk.dir` in `local.properties` needs to point at your local
 
 Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
 
+## Chat — offline, device-to-device, post-quantum encrypted
+
+A **Chat** tab on the bottom nav, per the brief: works over Bluetooth with no internet, only
+between phones that also have Thread Protection installed, encrypted to resist quantum attacks.
+
+- **Bluetooth mode (real, working today)** — `BluetoothChatManager` uses classic Bluetooth RFCOMM:
+  real device discovery (`BluetoothAdapter.startDiscovery()`), a real socket connection on an
+  app-specific service UUID, and a handshake that only another instance of this app can complete
+  (matching magic bytes, then a real key exchange) — a stray Bluetooth headset or someone else's
+  phone without the app never gets past that handshake into a usable connection.
+- **The encryption is real, not a label**: every session does a fresh **ML-KEM-768** key exchange
+  (FIPS 203, the actual NIST-standardized post-quantum algorithm, via Bouncy Castle's
+  implementation — not hand-rolled), derives a session key with HKDF-SHA256, and encrypts every
+  message with **AES-256-GCM** (authenticated, so tampering is detected). A new key pair every
+  connection means forward secrecy — no stored long-term key to ever leak.
+  See `crypto/PqcChatCrypto.kt`.
+- **WhatsApp-style thread**: message bubbles, timestamps, single/double delivery ticks (a real
+  ACK sent back over the encrypted channel on receipt, not simulated), and a typing indicator.
+- **Internet mode is honestly not available.** The toggle is there, but reaching an arbitrary
+  other installed device via a random ID over the internet needs a server: something to register
+  IDs against devices, resolve which one is currently reachable (phones move between networks and
+  sit behind NAT — there's no way to open a direct connection with just a number), and store
+  messages for offline recipients. That's a real backend that doesn't exist for this app. Rather
+  than fake it, the screen says so plainly and points back to Bluetooth mode.
+- **v1 scope, stated plainly**: one active conversation at a time; chat history lives in memory
+  for the current connection only (nothing is written to disk); the listening socket runs only
+  while the Chat screen is open, not as a background service.
+
+## Scheduled scan — actually customizable
+
+"Scheduled scans" in Settings used to be a toggle with a hardcoded, non-functional caption
+("every day at 3:00 AM"). It's now real: tap "Change time" for a Material3 time picker plus
+Daily/Weekly frequency (with a day-of-week picker for Weekly). `ScheduledScanWorker` runs the
+real `DeviceScanner` pipeline in the background at that time and posts a notification only if it
+finds something, then reschedules its own next run (WorkManager has no built-in "run at this
+exact clock time" primitive). All Protection toggles plus the schedule now persist across
+restarts via DataStore — previously none of them did.
+
 ## Fits every phone, doesn't overlap system UI
 
 `enableEdgeToEdge()` was already being called (so the app can paint behind the status/nav bars

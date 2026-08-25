@@ -62,6 +62,7 @@ fun QrScannerScreen(
     onPick: (Int) -> Unit,
     onDecoded: (String) -> Unit,
     onRescan: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -243,7 +244,7 @@ fun QrScannerScreen(
             }
         }
 
-        BottomNavBar(active = NavTab.QR, onHome = onBack, onQr = {}, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.QR, onHome = onBack, onQr = {}, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }
 

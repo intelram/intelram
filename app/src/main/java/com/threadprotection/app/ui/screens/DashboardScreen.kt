@@ -48,6 +48,7 @@ fun DashboardScreen(
     onToggleRealtime: () -> Unit,
     onGoQr: () -> Unit,
     onGoPerms: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onGoOtpSecurity: () -> Unit,
@@ -320,6 +321,7 @@ fun DashboardScreen(
             active = NavTab.HOME,
             onHome = {},
             onQr = onGoQr,
+            onChat = onGoChat,
             onBrain = onGoBrain,
             onSettings = onGoSettings,
         )

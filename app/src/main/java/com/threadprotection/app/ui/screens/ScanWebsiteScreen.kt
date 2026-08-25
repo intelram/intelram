@@ -46,6 +46,7 @@ fun ScanWebsiteScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onUrlChange: (String) -> Unit,
@@ -99,7 +100,7 @@ fun ScanWebsiteScreen(
 
             state.websiteVerdict?.let { verdict -> WebsiteVerdictCard(verdict) }
         }
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }
 

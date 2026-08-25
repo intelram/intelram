@@ -103,6 +103,7 @@ fun SettingsScreen(
     state: AppUiState,
     onGoHome: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onSignOut: () -> Unit,
     onSignInGoogle: () -> Unit,
@@ -291,7 +292,7 @@ fun SettingsScreen(
             }
         }
 
-        BottomNavBar(active = NavTab.SETTINGS, onHome = onGoHome, onQr = onGoQr, onBrain = onGoBrain, onSettings = {})
+        BottomNavBar(active = NavTab.SETTINGS, onHome = onGoHome, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = {})
     }
 }
 

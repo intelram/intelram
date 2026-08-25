@@ -36,6 +36,7 @@ fun AiBrainScreen(
     learned: Long,
     onGoHome: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -151,6 +152,6 @@ fun AiBrainScreen(
             }
         }
 
-        BottomNavBar(active = NavTab.BRAIN, onHome = onGoHome, onQr = onGoQr, onBrain = {}, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.BRAIN, onHome = onGoHome, onQr = onGoQr, onChat = onGoChat, onBrain = {}, onSettings = onGoSettings)
     }
 }

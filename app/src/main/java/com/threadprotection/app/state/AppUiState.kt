@@ -1,5 +1,9 @@
 package com.threadprotection.app.state
 
+import com.threadprotection.app.chat.BtChatConnState
+import com.threadprotection.app.chat.BtDeviceInfo
+import com.threadprotection.app.chat.ChatMode
+import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.Finding
@@ -13,7 +17,7 @@ import com.threadprotection.app.ui.theme.TpThemeMode
 
 enum class Screen {
     SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
-    OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL,
+    OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION,
 }
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
@@ -90,4 +94,12 @@ data class AppUiState(
     val websiteUrl: String = "",
     val websiteVerdict: UrlVerdict? = null,
     val websiteChecking: Boolean = false,
+    val chatMode: ChatMode = ChatMode.BLUETOOTH,
+    val btConnState: BtChatConnState = BtChatConnState.IDLE,
+    val btDiscoveredDevices: List<BtDeviceInfo> = emptyList(),
+    val btBondedDevices: List<BtDeviceInfo> = emptyList(),
+    val chatPeerName: String? = null,
+    val chatMessages: List<ChatUiMessage> = emptyList(),
+    val chatPeerTyping: Boolean = false,
+    val chatDraft: String = "",
 )

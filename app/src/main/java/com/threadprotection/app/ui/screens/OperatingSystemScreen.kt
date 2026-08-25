@@ -37,6 +37,7 @@ fun OperatingSystemScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onCheckForUpdates: () -> Unit,
@@ -107,6 +108,6 @@ fun OperatingSystemScreen(
 
             OutlinedPillButton(text = "Check for system updates", onClick = onCheckForUpdates, borderColor = palette.line3)
         }
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }

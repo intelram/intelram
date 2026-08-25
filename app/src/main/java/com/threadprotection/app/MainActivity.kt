@@ -34,6 +34,8 @@ import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
 import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
+import com.threadprotection.app.ui.screens.ChatConversationScreen
+import com.threadprotection.app.ui.screens.ChatScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
 import com.threadprotection.app.ui.screens.DataBreachScreen
@@ -181,6 +183,7 @@ class MainActivity : ComponentActivity() {
                             onToggleRealtime = viewModel::toggleRealtime,
                             onGoQr = viewModel::goQr,
                             onGoPerms = viewModel::goPerms,
+                            onGoChat = viewModel::goChat,
                             onGoBrain = viewModel::goBrain,
                             onGoSettings = viewModel::goSettings,
                             onGoOtpSecurity = viewModel::goOtpSecurity,
@@ -232,6 +235,7 @@ class MainActivity : ComponentActivity() {
                                 onPick = viewModel::startQr,
                                 onDecoded = viewModel::analyzeScannedPayload,
                                 onRescan = viewModel::rescanQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                             )
@@ -243,6 +247,7 @@ class MainActivity : ComponentActivity() {
                                 learned = state.learned.toLong(),
                                 onGoHome = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoSettings = viewModel::goSettings,
                             )
                         }
@@ -253,6 +258,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onTogglePermission = viewModel::togglePermission,
@@ -267,6 +273,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onOpenAppSettings = openAppSettings,
@@ -279,6 +286,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onCheck = viewModel::checkMyBreaches,
@@ -291,6 +299,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onUrlChange = viewModel::setWebsiteUrl,
@@ -304,6 +313,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onOpenBluetoothSettings = openBluetoothSettings,
@@ -316,6 +326,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onOpenDeveloperOptions = { openRemedy(com.threadprotection.app.data.Remedy.DeveloperOptions) },
@@ -328,9 +339,34 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onCheckForUpdates = { openRemedy(com.threadprotection.app.data.Remedy.SystemUpdate) },
+                            )
+                        }
+
+                        Screen.CHAT -> {
+                            BackHandler(enabled = true) { viewModel.leaveChat() }
+                            ChatScreen(
+                                state = state,
+                                onBack = viewModel::leaveChat,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onSetChatMode = viewModel::setChatMode,
+                                onStartDiscovery = viewModel::startBtDiscovery,
+                                onConnect = viewModel::connectToBtDevice,
+                            )
+                        }
+
+                        Screen.CHAT_CONVERSATION -> {
+                            BackHandler(enabled = true) { viewModel.disconnectChatPeer() }
+                            ChatConversationScreen(
+                                state = state,
+                                onBack = viewModel::disconnectChatPeer,
+                                onDraftChange = viewModel::setChatDraft,
+                                onSend = viewModel::sendChatMessage,
                             )
                         }
 
@@ -340,6 +376,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onGoHome = viewModel::goDashboard,
                                 onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onSignOut = viewModel::signOut,
                                 onSignInGoogle = { viewModel.signInWithGoogle() },

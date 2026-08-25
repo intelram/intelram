@@ -3,6 +3,10 @@ package com.threadprotection.app.state
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.threadprotection.app.chat.BluetoothChatManager
+import com.threadprotection.app.chat.ChatEvent
+import com.threadprotection.app.chat.ChatMode
+import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
@@ -35,6 +39,8 @@ class AppViewModel(
     private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
     private val permissionAudit by lazy { appContext?.let { PermissionAudit(it) } }
     private val hardwareWatcher by lazy { appContext?.let { HardwareWatcher(it) } }
+    private val bluetoothChatManager by lazy { appContext?.let { BluetoothChatManager(it) } }
+    private var lastTypingSentAt = 0L
 
     private var scanJob: Job? = null
     private var qrJob: Job? = null
@@ -67,6 +73,43 @@ class AppViewModel(
                     val settings = stored.toState()
                     _state.update { it.copy(settings = settings) }
                     syncScheduledScan(settings)
+                }
+            }
+        }
+        bluetoothChatManager?.let { chat ->
+            viewModelScope.launch {
+                chat.connState.collect { st -> _state.update { it.copy(btConnState = st) } }
+            }
+            viewModelScope.launch {
+                chat.discoveredDevices.collect { list -> _state.update { it.copy(btDiscoveredDevices = list) } }
+            }
+            viewModelScope.launch {
+                chat.connectedDeviceName.collect { name ->
+                    _state.update { it.copy(chatPeerName = name) }
+                    if (name != null) setScreen(Screen.CHAT_CONVERSATION)
+                }
+            }
+            viewModelScope.launch {
+                chat.events.collect { event ->
+                    when (event) {
+                        is ChatEvent.MessageReceived -> _state.update {
+                            it.copy(
+                                chatMessages = it.chatMessages + ChatUiMessage(event.id, event.text, fromMe = false, timestampMs = event.atMs, delivered = true),
+                                chatPeerTyping = false,
+                            )
+                        }
+                        is ChatEvent.MessageDelivered -> _state.update {
+                            it.copy(chatMessages = it.chatMessages.map { m -> if (m.id == event.id) m.copy(delivered = true) else m })
+                        }
+                        ChatEvent.PeerTyping -> {
+                            _state.update { it.copy(chatPeerTyping = true) }
+                            viewModelScope.launch {
+                                delay(3000)
+                                _state.update { s -> if (s.chatPeerTyping) s.copy(chatPeerTyping = false) else s }
+                            }
+                        }
+                        ChatEvent.PeerDisconnected -> _state.update { it.copy(chatPeerName = null, chatPeerTyping = false) }
+                    }
                 }
             }
         }
@@ -505,6 +548,65 @@ class AppViewModel(
     fun hwBlock() = _state.update { it.copy(hwHandled = HwHandled.BLOCK) }
     fun hwAllow() = _state.update { it.copy(hwHandled = HwHandled.ALLOW) }
     fun hwDismiss() = _state.update { it.copy(hwAlert = null, hwHandled = null) }
+
+    // ───────────────────────── chat (Bluetooth, post-quantum encrypted — README §Chat) ─────────────────────────
+
+    fun goChat() {
+        setScreen(Screen.CHAT)
+        val chat = bluetoothChatManager ?: return
+        chat.startListening()
+        _state.update { it.copy(btBondedDevices = chat.bondedDevices) }
+    }
+
+    /** Leaves the Chat feature entirely — stops the listening server socket and discovery, clears the session. */
+    fun leaveChat() {
+        bluetoothChatManager?.shutdown()
+        _state.update {
+            it.copy(chatMessages = emptyList(), chatPeerName = null, btDiscoveredDevices = emptyList(), btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE)
+        }
+        setScreen(Screen.DASHBOARD)
+    }
+
+    fun setChatMode(mode: ChatMode) {
+        _state.update { it.copy(chatMode = mode) }
+    }
+
+    fun startBtDiscovery() {
+        val chat = bluetoothChatManager ?: return
+        chat.startDiscovery()
+        _state.update { it.copy(btBondedDevices = chat.bondedDevices) }
+    }
+
+    fun connectToBtDevice(address: String) {
+        _state.update { it.copy(chatMessages = emptyList()) }
+        bluetoothChatManager?.connectTo(address)
+    }
+
+    fun setChatDraft(text: String) {
+        _state.update { it.copy(chatDraft = text) }
+        val now = System.currentTimeMillis()
+        if (text.isNotBlank() && now - lastTypingSentAt > 2000) {
+            lastTypingSentAt = now
+            bluetoothChatManager?.sendTyping()
+        }
+    }
+
+    fun sendChatMessage() {
+        val text = _state.value.chatDraft.trim()
+        if (text.isEmpty()) return
+        val id = bluetoothChatManager?.sendText(text) ?: return
+        _state.update {
+            it.copy(
+                chatMessages = it.chatMessages + ChatUiMessage(id, text, fromMe = true, timestampMs = System.currentTimeMillis(), delivered = false),
+                chatDraft = "",
+            )
+        }
+    }
+
+    fun disconnectChatPeer() {
+        bluetoothChatManager?.disconnect()
+        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, screen = Screen.CHAT) }
+    }
 
     companion object {
         private const val ESTIMATED_ITEMS = 300

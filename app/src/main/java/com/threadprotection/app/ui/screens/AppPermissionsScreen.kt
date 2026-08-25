@@ -49,6 +49,7 @@ fun AppPermissionsScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onTogglePermission: (app: String, permId: String) -> Unit,
@@ -171,6 +172,6 @@ fun AppPermissionsScreen(
             }
         }
 
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }

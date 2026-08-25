@@ -98,13 +98,14 @@ fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
     }
 }
 
-enum class NavTab { HOME, QR, BRAIN, SETTINGS }
+enum class NavTab { HOME, QR, CHAT, BRAIN, SETTINGS }
 
 @Composable
 fun BottomNavBar(
     active: NavTab,
     onHome: () -> Unit,
     onQr: () -> Unit,
+    onChat: () -> Unit,
     onBrain: () -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -115,6 +116,7 @@ fun BottomNavBar(
         Row(modifier = Modifier.fillMaxWidth().background(palette.bg2)) {
             NavTabItem("Home", active == NavTab.HOME, onHome, Modifier.weight(1f))
             NavTabItem("QR", active == NavTab.QR, onQr, Modifier.weight(1f))
+            NavTabItem("Chat", active == NavTab.CHAT, onChat, Modifier.weight(1f))
             NavTabItem("AI brain", active == NavTab.BRAIN, onBrain, Modifier.weight(1f))
             NavTabItem("Settings", active == NavTab.SETTINGS, onSettings, Modifier.weight(1f))
         }

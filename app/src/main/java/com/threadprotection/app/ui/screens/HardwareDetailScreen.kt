@@ -36,6 +36,7 @@ fun HardwareDetailScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onGoQr: () -> Unit,
+    onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
     onOpenBluetoothSettings: () -> Unit,
@@ -101,6 +102,6 @@ fun HardwareDetailScreen(
 
             OutlinedPillButton(text = "Open Bluetooth settings", onClick = onOpenBluetoothSettings, borderColor = palette.line3)
         }
-        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onBrain = onGoBrain, onSettings = onGoSettings)
+        BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
     }
 }
