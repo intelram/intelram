@@ -205,7 +205,7 @@ fun TechnicalDetailsCard(tech: TechnicalDetails, modifier: Modifier = Modifier) 
 }
 
 @Composable
-private fun DetailRow(label: String, value: String) {
+fun DetailRow(label: String, value: String) {
     val palette = LocalTpPalette.current
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         Text(

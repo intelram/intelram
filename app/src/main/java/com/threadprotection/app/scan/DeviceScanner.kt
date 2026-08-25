@@ -82,7 +82,7 @@ class DeviceScanner(
 
         onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", "Checking local socket table"))
         val rawPorts = PortScanner.listeningPorts()
-        val ports = rawPorts.map { PortFinding(it.port, "uid ${it.uid}") }
+        val ports = rawPorts.map { PortFinding(it.port, ownerLabelForUid(it.uid)) }
         if (rawPorts.any { it.port == 5555 }) {
             findings += Finding(
                 id = "port-5555",
@@ -127,6 +127,17 @@ class DeviceScanner(
         )
     }
 
+    /** Resolves a listening socket's Linux UID to the real app that owns it, not just a bare number. */
+    private fun ownerLabelForUid(uid: Int): String {
+        WELL_KNOWN_UIDS[uid]?.let { return it }
+        val pm = context.packageManager
+        val packages = runCatching { pm.getPackagesForUid(uid) }.getOrNull()
+        val label = packages?.firstNotNullOfOrNull { pkg ->
+            runCatching { pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString() }.getOrNull()
+        }
+        return label ?: "uid $uid"
+    }
+
     /**
      * The one CVE cross-reference precise enough to state honestly without a device: every
      * Android phone runs a real, named, versioned WebView provider, and NVD has real CVE
@@ -154,6 +165,20 @@ class DeviceScanner(
             cons = listOf("Requires a normal app update, a few seconds on Wi‑Fi"),
             source = "NVD CVE database (live)",
             remedy = Remedy.PlayStore(webView.packageName),
+        )
+    }
+
+    companion object {
+        /** Low system UIDs are shared kernel/framework identities, not tied to any installed package. */
+        private val WELL_KNOWN_UIDS = mapOf(
+            0 to "root (kernel)",
+            1000 to "Android system",
+            1001 to "Radio / telephony",
+            1002 to "Bluetooth stack",
+            1013 to "Media server",
+            1021 to "GPS / location",
+            1051 to "Network stack",
+            9999 to "Sandboxed app (nobody)",
         )
     }
 }

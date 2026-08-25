@@ -73,6 +73,15 @@ Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
 
   All of this is real-time and connection-based — nothing here is a database lookup pretending
   to be a live check.
+- **System audit tiles are drill-downs, not just status dots**: tap *Installed software*
+  (→ App Permissions), *Connected hardware*, *Open ports*, or *Operating system* on the
+  dashboard and it opens a real detail screen for that category instead of doing nothing:
+  - **Connected hardware** — every device `HardwareWatcher` found this scan, with status.
+  - **Open ports** — every listening TCP socket from `/proc/net/tcp[6]`, now resolved to the
+    real app that owns it via `PackageManager.getPackagesForUid()` (previously shown as a bare
+    "uid 1000" — genuinely more useful now, not just wired up).
+  - **Operating system** — real `Build.*` fields (manufacturer, model, Android version, security
+    patch, kernel version, build fingerprint) plus a "Check for system updates" shortcut.
 - **App Permissions**: (renamed from "What apps are allowed to do"). Every app's granted
   dangerous permissions, real reasoning, and — since Android does not let one app revoke
   another app's permissions (there's no such API, by design) — a "Change in system settings ›"

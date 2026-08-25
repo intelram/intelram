@@ -33,7 +33,10 @@ import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
 import com.threadprotection.app.ui.screens.DataBreachScreen
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
+import com.threadprotection.app.ui.screens.HardwareDetailScreen
 import com.threadprotection.app.ui.screens.OnboardingScreen
+import com.threadprotection.app.ui.screens.OpenPortsScreen
+import com.threadprotection.app.ui.screens.OperatingSystemScreen
 import com.threadprotection.app.ui.screens.OtpSecurityScreen
 import com.threadprotection.app.ui.screens.QrScannerScreen
 import com.threadprotection.app.ui.screens.ResultsScreen
@@ -116,6 +119,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val openBluetoothSettings: () -> Unit = {
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
+
                 Box(modifier = Modifier.fillMaxSize().background(palette.bg)) {
                     when (state.screen) {
                         Screen.SIGNIN -> SignInScreen(
@@ -153,6 +162,9 @@ class MainActivity : ComponentActivity() {
                             onGoOtpSecurity = viewModel::goOtpSecurity,
                             onGoDataBreach = viewModel::goDataBreach,
                             onGoScanWebsite = viewModel::goScanWebsite,
+                            onGoHardwareDetail = viewModel::goHardwareDetail,
+                            onGoPortsDetail = viewModel::goPortsDetail,
+                            onGoOsDetail = viewModel::goOsDetail,
                             onToggleHwOpen = viewModel::toggleHwOpen,
                             onSimulateHw = viewModel::simulateHw,
                         )
@@ -259,6 +271,42 @@ class MainActivity : ComponentActivity() {
                                 onGoSettings = viewModel::goSettings,
                                 onUrlChange = viewModel::setWebsiteUrl,
                                 onCheck = viewModel::checkWebsite,
+                            )
+                        }
+
+                        Screen.HARDWARE_DETAIL -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            HardwareDetailScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onOpenBluetoothSettings = openBluetoothSettings,
+                            )
+                        }
+
+                        Screen.PORTS_DETAIL -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            OpenPortsScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onOpenDeveloperOptions = { openRemedy(com.threadprotection.app.data.Remedy.DeveloperOptions) },
+                            )
+                        }
+
+                        Screen.OS_DETAIL -> {
+                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            OperatingSystemScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onCheckForUpdates = { openRemedy(com.threadprotection.app.data.Remedy.SystemUpdate) },
                             )
                         }
 

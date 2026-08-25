@@ -8,11 +8,12 @@ import com.threadprotection.app.data.HwSim
 import com.threadprotection.app.data.PermApp
 import com.threadprotection.app.network.BreachCheckResult
 import com.threadprotection.app.network.UrlVerdict
+import com.threadprotection.app.scan.PortFinding
 import com.threadprotection.app.ui.theme.TpThemeMode
 
 enum class Screen {
     SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
-    OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE,
+    OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL,
 }
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
@@ -35,6 +36,7 @@ data class ScanData(
     val permApps: List<PermApp> = emptyList(),
     val hwDevices: List<HwDevice> = emptyList(),
     val appsScanned: Int = 0,
+    val ports: List<PortFinding> = emptyList(),
     val portsFound: Int = 0,
     val portsProbed: Boolean = false,
     val osPatchLabel: String = "",

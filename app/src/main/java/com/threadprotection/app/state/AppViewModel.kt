@@ -131,6 +131,12 @@ class AppViewModel(
 
     fun goScanWebsite() = setScreen(Screen.SCAN_WEBSITE)
 
+    fun goHardwareDetail() = setScreen(Screen.HARDWARE_DETAIL)
+
+    fun goPortsDetail() = setScreen(Screen.PORTS_DETAIL)
+
+    fun goOsDetail() = setScreen(Screen.OS_DETAIL)
+
     fun goQr() {
         qrJob?.cancel()
         _state.update { it.copy(screen = Screen.QR, qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
@@ -270,6 +276,7 @@ class AppViewModel(
                         permApps = result.permApps,
                         hwDevices = result.hwDevices,
                         appsScanned = result.appsScanned,
+                        ports = result.ports,
                         portsFound = result.ports.size,
                         portsProbed = result.portsProbed,
                         osPatchLabel = result.osPatchLabel,

@@ -53,6 +53,9 @@ fun DashboardScreen(
     onGoOtpSecurity: () -> Unit,
     onGoDataBreach: () -> Unit,
     onGoScanWebsite: () -> Unit,
+    onGoHardwareDetail: () -> Unit,
+    onGoPortsDetail: () -> Unit,
+    onGoOsDetail: () -> Unit,
     onToggleHwOpen: () -> Unit,
     onSimulateHw: () -> Unit,
     modifier: Modifier = Modifier,
@@ -297,7 +300,16 @@ fun DashboardScreen(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 areas.chunked(2).forEach { pair ->
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        pair.forEach { area -> AuditAreaTile(area, Modifier.weight(1f)) }
+                        pair.forEach { area ->
+                            val onClick = when (area.cat) {
+                                com.threadprotection.app.data.Category.SOFTWARE -> onGoPerms
+                                com.threadprotection.app.data.Category.HARDWARE -> onGoHardwareDetail
+                                com.threadprotection.app.data.Category.PORTS -> onGoPortsDetail
+                                com.threadprotection.app.data.Category.OS -> onGoOsDetail
+                                else -> null
+                            }
+                            AuditAreaTile(area, onClick, Modifier.weight(1f))
+                        }
                         if (pair.size == 1) Box(modifier = Modifier.weight(1f))
                     }
                 }
@@ -315,13 +327,14 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun AuditAreaTile(area: com.threadprotection.app.state.AuditArea, modifier: Modifier = Modifier) {
+private fun AuditAreaTile(area: com.threadprotection.app.state.AuditArea, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
     val palette = LocalTpPalette.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
             .background(palette.card)
             .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -335,11 +348,17 @@ private fun AuditAreaTile(area: com.threadprotection.app.state.AuditArea, modifi
                     .background(if (area.hasIssue) palette.danger else if (area.scanned) palette.accent else palette.muted3),
             )
         }
-        Text(
-            area.caption,
-            style = TpType.caption.copy(fontSize = 14.sp),
-            color = if (area.hasIssue) palette.danger2 else palette.muted,
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                area.caption,
+                style = TpType.caption.copy(fontSize = 14.sp),
+                color = if (area.hasIssue) palette.danger2 else palette.muted,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (onClick != null) {
+                Text("›", style = TpType.caption.copy(fontSize = 14.sp), color = palette.muted3)
+            }
+        }
     }
 }
 

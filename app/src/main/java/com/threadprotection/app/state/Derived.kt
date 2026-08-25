@@ -9,7 +9,7 @@ import kotlin.math.roundToInt
 
 enum class ScanStatus { NEEDED, AT_RISK, PROTECTED }
 
-data class AuditArea(val name: String, val hasIssue: Boolean, val scanned: Boolean, val caption: String)
+data class AuditArea(val name: String, val cat: Category, val hasIssue: Boolean, val scanned: Boolean, val caption: String)
 
 /**
  * Pure functions ported from the prototype's `renderVals()` — computed fresh from state each
@@ -78,7 +78,7 @@ object Derived {
                 scanned -> "Clean · ${d.total}"
                 else -> d.total
             }
-            AuditArea(d.name, hasIssue, scanned, caption)
+            AuditArea(d.name, d.cat, hasIssue, scanned, caption)
         }
     }
 
