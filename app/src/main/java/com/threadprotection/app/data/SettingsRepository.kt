@@ -20,6 +20,20 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "th
 @Serializable
 data class StoredAccount(val name: String, val email: String, val initial: String, val picture: String? = null)
 
+/** Plain-data mirror of `state.ProtectionSettings` — frequency stored as a string so this layer doesn't depend on the state package's enum. */
+@Serializable
+data class StoredProtectionSettings(
+    val autoScan: Boolean = true,
+    val breach: Boolean = true,
+    val downloads: Boolean = true,
+    val phishing: Boolean = true,
+    val hardware: Boolean = true,
+    val scanHour: Int = 3,
+    val scanMinute: Int = 0,
+    val scanFrequency: String = "DAILY",
+    val scanDayOfWeek: Int = 2,
+)
+
 /** Which free threat-intel source a key belongs to — see README §Threat intelligence. */
 enum class ApiKeyId(val prefKey: String, val label: String, val signupUrl: String) {
     SAFE_BROWSING("key_safe_browsing", "Google Safe Browsing", "https://console.cloud.google.com/"),
@@ -50,7 +64,19 @@ class SettingsRepository(private val context: Context) {
         val ACCOUNT = stringPreferencesKey("tp_google_account")
         val CREDENTIAL = stringPreferencesKey("tp_local_credential")
         val REALTIME = booleanPreferencesKey("tp_realtime")
+        val PROTECTION_SETTINGS = stringPreferencesKey("tp_protection_settings")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
+    }
+
+    /** All 5 protection toggles plus the scheduled-scan time/frequency the user picked in Settings. */
+    val protectionSettingsFlow: Flow<StoredProtectionSettings> = context.dataStore.data.map { prefs ->
+        prefs[Keys.PROTECTION_SETTINGS]?.let { raw ->
+            runCatching { Json.decodeFromString<StoredProtectionSettings>(raw) }.getOrNull()
+        } ?: StoredProtectionSettings()
+    }
+
+    suspend fun setProtectionSettings(settings: StoredProtectionSettings) {
+        context.dataStore.edit { prefs -> prefs[Keys.PROTECTION_SETTINGS] = Json.encodeToString(settings) }
     }
 
     /** Whether real-time (background) protection is on — also read by `BootReceiver`. */

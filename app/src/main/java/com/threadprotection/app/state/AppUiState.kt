@@ -22,12 +22,19 @@ enum class Vote { UP, DOWN }
 
 enum class HwHandled { BLOCK, ALLOW }
 
+enum class ScanFrequency { DAILY, WEEKLY }
+
 data class ProtectionSettings(
     val autoScan: Boolean = true,
     val breach: Boolean = true,
     val downloads: Boolean = true,
     val phishing: Boolean = true,
     val hardware: Boolean = true,
+    val scanHour: Int = 3,
+    val scanMinute: Int = 0,
+    val scanFrequency: ScanFrequency = ScanFrequency.DAILY,
+    /** java.util.Calendar.SUNDAY(1)..SATURDAY(7) — only used when scanFrequency == WEEKLY. */
+    val scanDayOfWeek: Int = java.util.Calendar.MONDAY,
 )
 
 /** Real, on-device results from the last completed `DeviceScanner.scan()` — see README §Threat intelligence. */

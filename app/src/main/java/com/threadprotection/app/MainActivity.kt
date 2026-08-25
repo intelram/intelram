@@ -347,6 +347,8 @@ class MainActivity : ComponentActivity() {
                                 onToggleSetting = viewModel::toggleProtectionSetting,
                                 onSetApiKey = viewModel::setApiKey,
                                 onAddQuickSettingsTile = { requestAddQuickSettingsTile(context) },
+                                onSetScheduledScanTime = viewModel::setScheduledScanTime,
+                                onSetScheduledScanFrequency = viewModel::setScheduledScanFrequency,
                             )
                         }
                     }

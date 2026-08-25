@@ -62,8 +62,56 @@ class AppViewModel(
                     syncProtectionService(enabled)
                 }
             }
+            viewModelScope.launch {
+                repo.protectionSettingsFlow.collect { stored ->
+                    val settings = stored.toState()
+                    _state.update { it.copy(settings = settings) }
+                    syncScheduledScan(settings)
+                }
+            }
         }
         refreshHardwareStatus()
+    }
+
+    /** Starts/stops/reschedules the background scheduled-scan job to match the user's Settings choice. */
+    private fun syncScheduledScan(settings: ProtectionSettings) {
+        val ctx = appContext ?: return
+        if (settings.autoScan) {
+            com.threadprotection.app.service.ScheduledScanWorker.scheduleNext(
+                ctx, settings.scanHour, settings.scanMinute, settings.scanFrequency.name, settings.scanDayOfWeek,
+            )
+        } else {
+            com.threadprotection.app.service.ScheduledScanWorker.cancel(ctx)
+        }
+    }
+
+    private fun com.threadprotection.app.data.StoredProtectionSettings.toState() = ProtectionSettings(
+        autoScan = autoScan,
+        breach = breach,
+        downloads = downloads,
+        phishing = phishing,
+        hardware = hardware,
+        scanHour = scanHour,
+        scanMinute = scanMinute,
+        scanFrequency = if (scanFrequency == "WEEKLY") ScanFrequency.WEEKLY else ScanFrequency.DAILY,
+        scanDayOfWeek = scanDayOfWeek,
+    )
+
+    private fun ProtectionSettings.toStored() = com.threadprotection.app.data.StoredProtectionSettings(
+        autoScan = autoScan,
+        breach = breach,
+        downloads = downloads,
+        phishing = phishing,
+        hardware = hardware,
+        scanHour = scanHour,
+        scanMinute = scanMinute,
+        scanFrequency = scanFrequency.name,
+        scanDayOfWeek = scanDayOfWeek,
+    )
+
+    private fun persistProtectionSettings(next: ProtectionSettings) {
+        syncScheduledScan(next)
+        settingsRepository?.let { repo -> viewModelScope.launch { repo.setProtectionSettings(next.toStored()) } }
     }
 
     /** Starts/stops the background hardware-watch service (README: "work in the background… even if closed"). */
@@ -228,6 +276,7 @@ class AppViewModel(
             toggleRealtime()
             return
         }
+        var updated: ProtectionSettings? = null
         _state.update { s ->
             val settings = s.settings
             val next = when (key) {
@@ -238,8 +287,31 @@ class AppViewModel(
                 "hardware" -> settings.copy(hardware = !settings.hardware)
                 else -> settings
             }
+            updated = next
             s.copy(settings = next)
         }
+        updated?.let(::persistProtectionSettings)
+    }
+
+    /** Customizes when the scheduled scan runs (README §Settings §Scheduled scan) — a specific time of day, daily or on one weekday. */
+    fun setScheduledScanTime(hour: Int, minute: Int) {
+        var updated: ProtectionSettings? = null
+        _state.update { s ->
+            val next = s.settings.copy(scanHour = hour, scanMinute = minute)
+            updated = next
+            s.copy(settings = next)
+        }
+        updated?.let(::persistProtectionSettings)
+    }
+
+    fun setScheduledScanFrequency(frequency: ScanFrequency, dayOfWeek: Int) {
+        var updated: ProtectionSettings? = null
+        _state.update { s ->
+            val next = s.settings.copy(scanFrequency = frequency, scanDayOfWeek = dayOfWeek)
+            updated = next
+            s.copy(settings = next)
+        }
+        updated?.let(::persistProtectionSettings)
     }
 
     // ───────────────────────── threat-intel API keys ─────────────────────────

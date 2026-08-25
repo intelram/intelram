@@ -19,9 +19,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
+import androidx.compose.material3.TimeInput
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,25 +40,29 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.threadprotection.app.R
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.ProtectionSettings
+import com.threadprotection.app.state.ScanFrequency
 import com.threadprotection.app.ui.components.BottomNavBar
 import com.threadprotection.app.ui.components.NavTab
 import com.threadprotection.app.ui.components.OutlinedPillButton
+import com.threadprotection.app.ui.components.PrimaryPillButton
 import com.threadprotection.app.ui.components.SectionHeading
 import com.threadprotection.app.ui.components.ToggleSwitch
 import com.threadprotection.app.ui.components.WhiteGoogleButton
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpThemeMode
 import com.threadprotection.app.ui.theme.TpType
+import java.util.Calendar
 
 private data class SettingRow(val key: String, val name: String, val caption: String)
 
 private val settingDefs = listOf(
     SettingRow("realtime", "Real-time protection", "Behavior-based monitoring of apps and network"),
-    SettingRow("autoScan", "Scheduled scans", "Full scan every day at 3:00 AM"),
+    SettingRow("autoScan", "Scheduled scans", ""),
     SettingRow("breach", "Data breach alerts", "Notify when your accounts appear in breaches"),
     SettingRow("phishing", "AI scam & link protection", "Detect AI-crafted phishing in SMS, chat and browsers"),
     SettingRow("downloads", "Sideload & download guard", "Check every APK and file before it runs"),
@@ -72,6 +79,25 @@ private fun ProtectionSettings.isOn(key: String, realtime: Boolean): Boolean = w
     else -> false
 }
 
+private fun ProtectionSettings.scheduleCaption(): String {
+    val time = "%02d:%02d".format(scanHour, scanMinute)
+    return when (scanFrequency) {
+        ScanFrequency.DAILY -> "Full scan every day at $time"
+        ScanFrequency.WEEKLY -> "Full scan every ${dayOfWeekName(scanDayOfWeek)} at $time"
+    }
+}
+
+private fun dayOfWeekName(day: Int): String = when (day) {
+    Calendar.SUNDAY -> "Sunday"
+    Calendar.MONDAY -> "Monday"
+    Calendar.TUESDAY -> "Tuesday"
+    Calendar.WEDNESDAY -> "Wednesday"
+    Calendar.THURSDAY -> "Thursday"
+    Calendar.FRIDAY -> "Friday"
+    Calendar.SATURDAY -> "Saturday"
+    else -> "Monday"
+}
+
 @Composable
 fun SettingsScreen(
     state: AppUiState,
@@ -84,10 +110,13 @@ fun SettingsScreen(
     onToggleSetting: (String) -> Unit,
     onSetApiKey: (ApiKeyId, String) -> Unit,
     onAddQuickSettingsTile: () -> Unit,
+    onSetScheduledScanTime: (hour: Int, minute: Int) -> Unit,
+    onSetScheduledScanFrequency: (frequency: ScanFrequency, dayOfWeek: Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
     val account = state.account
+    var showScanDialog by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -178,7 +207,19 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(def.name, style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg)
-                                Text(def.caption, style = TpType.caption, color = palette.muted)
+                                Text(
+                                    if (def.key == "autoScan") state.settings.scheduleCaption() else def.caption,
+                                    style = TpType.caption,
+                                    color = palette.muted,
+                                )
+                                if (def.key == "autoScan" && state.settings.autoScan) {
+                                    Text(
+                                        "Change time ›",
+                                        style = TpType.caption.copy(fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                                        color = palette.accent,
+                                        modifier = Modifier.clickable { showScanDialog = true },
+                                    )
+                                }
                             }
                             ToggleSwitch(
                                 checked = state.settings.isOn(def.key, state.realtime),
@@ -187,6 +228,21 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+
+            if (showScanDialog) {
+                ScheduledScanDialog(
+                    initialHour = state.settings.scanHour,
+                    initialMinute = state.settings.scanMinute,
+                    initialFrequency = state.settings.scanFrequency,
+                    initialDayOfWeek = state.settings.scanDayOfWeek,
+                    onDismiss = { showScanDialog = false },
+                    onSave = { hour, minute, frequency, dayOfWeek ->
+                        onSetScheduledScanTime(hour, minute)
+                        onSetScheduledScanFrequency(frequency, dayOfWeek)
+                        showScanDialog = false
+                    },
+                )
             }
 
             SectionHeading("Threat intelligence sources")
@@ -294,6 +350,83 @@ private fun ApiKeyRow(id: ApiKeyId, value: String, onValueChange: (String) -> Un
             style = TpType.caption.copy(fontSize = 13.sp),
             color = palette.accent,
             modifier = Modifier.clickable { runCatching { uriHandler.openUri(id.signupUrl) } },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ScheduledScanDialog(
+    initialHour: Int,
+    initialMinute: Int,
+    initialFrequency: ScanFrequency,
+    initialDayOfWeek: Int,
+    onDismiss: () -> Unit,
+    onSave: (hour: Int, minute: Int, frequency: ScanFrequency, dayOfWeek: Int) -> Unit,
+) {
+    val palette = LocalTpPalette.current
+    val timeState = rememberTimePickerState(initialHour = initialHour, initialMinute = initialMinute, is24Hour = true)
+    var frequency by remember { mutableStateOf(initialFrequency) }
+    var dayOfWeek by remember { mutableStateOf(initialDayOfWeek) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(palette.card)
+                .border(BorderStroke(1.dp, palette.line2), RoundedCornerShape(20.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("Scheduled scan", style = TpType.cardTitle.copy(fontSize = 18.sp), color = palette.fg)
+            Text(
+                "Pick whatever time works for you — the scan runs quietly in the background and only notifies you if it finds something.",
+                style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp),
+                color = palette.muted,
+            )
+            TimeInput(state = timeState)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ThemeOption("", "Daily", frequency == ScanFrequency.DAILY, Modifier.weight(1f)) { frequency = ScanFrequency.DAILY }
+                ThemeOption("", "Weekly", frequency == ScanFrequency.WEEKLY, Modifier.weight(1f)) { frequency = ScanFrequency.WEEKLY }
+            }
+            if (frequency == ScanFrequency.WEEKLY) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    listOf(
+                        Calendar.MONDAY to "M", Calendar.TUESDAY to "T", Calendar.WEDNESDAY to "W",
+                        Calendar.THURSDAY to "T", Calendar.FRIDAY to "F", Calendar.SATURDAY to "S", Calendar.SUNDAY to "S",
+                    ).forEach { (day, label) ->
+                        DayChip(label, dayOfWeek == day, Modifier.weight(1f)) { dayOfWeek = day }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedPillButton(text = "Cancel", onClick = onDismiss, borderColor = palette.line3, modifier = Modifier.weight(1f))
+                PrimaryPillButton(
+                    text = "Save",
+                    onClick = { onSave(timeState.hour, timeState.minute, frequency, dayOfWeek) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayChip(label: String, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val palette = LocalTpPalette.current
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (active) palette.accent else androidx.compose.ui.graphics.Color.Transparent)
+            .border(BorderStroke(1.dp, if (active) palette.accent else palette.line3), RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = TpType.caption.copy(fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+            color = if (active) palette.onAccent else palette.fg2,
         )
     }
 }
