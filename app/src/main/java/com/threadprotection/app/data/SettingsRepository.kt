@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.threadprotection.app.ui.theme.TpThemeMode
+import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
@@ -86,8 +87,14 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.REALTIME] = enabled }
     }
 
+    /** Falls back to the device's own dark/light setting until the user picks a theme in
+     *  Settings — a fresh install should match the phone, not always open in Night mode. */
     val themeFlow: Flow<TpThemeMode> = context.dataStore.data.map { prefs ->
-        if (prefs[Keys.THEME] == "day") TpThemeMode.DAY else TpThemeMode.NIGHT
+        when (prefs[Keys.THEME]) {
+            "day" -> TpThemeMode.DAY
+            "night" -> TpThemeMode.NIGHT
+            else -> systemThemeMode(context)
+        }
     }
 
     val accountFlow: Flow<Account?> = context.dataStore.data.map { prefs ->

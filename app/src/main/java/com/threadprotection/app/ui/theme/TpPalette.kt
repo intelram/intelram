@@ -1,10 +1,20 @@
 package com.threadprotection.app.ui.theme
 
+import android.content.Context
+import android.content.res.Configuration
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 enum class TpThemeMode { NIGHT, DAY }
+
+/** The device's current system dark/light setting — used as the default before the user has
+ *  ever chosen a theme in Settings, so a fresh install matches the phone instead of always
+ *  opening in Night mode. */
+fun systemThemeMode(context: Context): TpThemeMode {
+    val nightFlags = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+    return if (nightFlags == Configuration.UI_MODE_NIGHT_YES) TpThemeMode.NIGHT else TpThemeMode.DAY
+}
 
 /**
  * Full design-token palette from the Thread Protection prototype (README §Design Tokens).

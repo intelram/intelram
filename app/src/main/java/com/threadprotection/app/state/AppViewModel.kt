@@ -17,6 +17,7 @@ import com.threadprotection.app.scan.DeviceScanner
 import com.threadprotection.app.scan.HardwareWatcher
 import com.threadprotection.app.scan.PermissionAudit
 import com.threadprotection.app.ui.theme.TpThemeMode
+import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,7 +33,10 @@ class AppViewModel(
     private val settingsRepository: SettingsRepository? = null,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(AppUiState())
+    // Seed with the device's own dark/light setting so the very first frame (splash included)
+    // already matches the phone, instead of flashing Night until the settings DataStore flow
+    // below resolves and overwrites it.
+    private val _state = MutableStateFlow(AppUiState(theme = appContext?.let { systemThemeMode(it) } ?: TpThemeMode.NIGHT))
     val state: StateFlow<AppUiState> = _state.asStateFlow()
 
     private val threatIntel = ThreatIntelRepository()

@@ -55,12 +55,12 @@ fun SplashScreen(onFinished: () -> Unit) {
     )
 
     LaunchedEffect(Unit) {
-        val stepDelayMs = 14L
+        val stepDelayMs = 18L
         while (checks < targetChecks) {
             delay(stepDelayMs)
-            checks = (checks + (14..38).random()).coerceAtMost(targetChecks)
+            checks = (checks + (8..20).random()).coerceAtMost(targetChecks)
         }
-        delay(220)
+        delay(350)
         onFinished()
     }
 
