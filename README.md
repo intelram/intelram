@@ -5,6 +5,17 @@ consumer security app prototype: same 9 screens + hardware alert overlay, same d
 typography, spacing, animations and copy — now backed by a **real scan pipeline** instead of
 demo data (see below).
 
+## App icon
+
+The launcher icon is a proper Android adaptive icon (foreground + background layers, one PNG
+per density from `mdpi` to `xxxhdpi`, plus legacy square/round fallbacks) built from the
+silver-shield-with-eye logo the user supplied. That logo arrived as an inline image in chat, not
+a file on disk this session could read byte-for-byte, so it's a faithful vector recreation
+(`app/src/main/res/mipmap-*/ic_launcher_foreground.png`, generated from an SVG source) rather
+than the original pixels — matching shape, gradients and color exactly, re-rendered at full
+resolution for every density instead of scaling up a single small source image. Background
+layer is solid white (`ic_launcher_background.xml`) to match the logo's own white ground.
+
 ## Build & run
 
 Requires Android Studio (or the command line with the Android SDK installed) — this repo has
