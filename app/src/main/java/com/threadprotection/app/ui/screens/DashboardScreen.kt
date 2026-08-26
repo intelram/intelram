@@ -1,9 +1,12 @@
 package com.threadprotection.app.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,11 +22,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Password
+import androidx.compose.material.icons.filled.PrivacyTip
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -151,13 +164,7 @@ fun DashboardScreen(
 
             // QR entry
             ClickableCard(onClick = onGoQr) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(palette.accentTint12)
-                        .border(BorderStroke(1.dp, palette.accentBorder30), RoundedCornerShape(11.dp)),
-                )
+                DashboardIconBadge(Icons.Filled.QrCodeScanner, palette.accent, palette.accentTint12, palette.accentBorder30)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Scan a QR code", style = TpType.cardTitle, color = palette.fg)
                     Text("Check a code against live feeds before you open it", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
@@ -167,16 +174,7 @@ fun DashboardScreen(
 
             // Permissions entry
             ClickableCard(onClick = onGoPerms) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(palette.warnTint12)
-                        .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("⚿", color = palette.warn, fontSize = 22.sp)
-                }
+                DashboardIconBadge(Icons.Filled.AdminPanelSettings, palette.warn, palette.warnTint12, palette.line3)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("App Permissions", style = TpType.cardTitle, color = palette.fg)
                     Text("${Derived.riskyPermTotal(state)} permissions look unnecessary", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
@@ -186,16 +184,7 @@ fun DashboardScreen(
 
             com.threadprotection.app.ui.components.SectionHeading("Security tools")
             ClickableCard(onClick = onGoOtpSecurity) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(palette.warnTint12)
-                        .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("✉", color = palette.warn, fontSize = 20.sp)
-                }
+                DashboardIconBadge(Icons.Filled.Password, palette.warn, palette.warnTint12, palette.line3)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("OTP security", style = TpType.cardTitle, color = palette.fg)
                     Text("See which apps can read your text messages", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
@@ -203,16 +192,7 @@ fun DashboardScreen(
                 Text("›", color = palette.muted, fontSize = 22.sp)
             }
             ClickableCard(onClick = onGoDataBreach) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(palette.dangerTint12)
-                        .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("!", color = palette.danger, fontSize = 20.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                }
+                DashboardIconBadge(Icons.Filled.PrivacyTip, palette.danger, palette.dangerTint12, palette.line3)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Data breach security", style = TpType.cardTitle, color = palette.fg)
                     Text("Check your email against live breach records", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
@@ -220,16 +200,7 @@ fun DashboardScreen(
                 Text("›", color = palette.muted, fontSize = 22.sp)
             }
             ClickableCard(onClick = onGoScanWebsite) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(palette.accentTint12)
-                        .border(BorderStroke(1.dp, palette.accentBorder30), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("🔗", fontSize = 18.sp)
-                }
+                DashboardIconBadge(Icons.Filled.Link, palette.accent, palette.accentTint12, palette.accentBorder30)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Scan a website", style = TpType.cardTitle, color = palette.fg)
                     Text("Paste any link to check it before you open it", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
@@ -369,18 +340,41 @@ private fun DashboardRow(title: String, caption: String, trailing: @Composable (
 @Composable
 private fun ClickableCard(onClick: () -> Unit, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     val palette = LocalTpPalette.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, label = "cardPressScale")
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .scale(scale)
             .clip(RoundedCornerShape(16.dp))
             .background(palette.card)
-            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .border(BorderStroke(1.dp, if (pressed) palette.lineHover else palette.line), RoundedCornerShape(16.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(13.dp),
         content = content,
     )
+}
+
+@Composable
+private fun DashboardIconBadge(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: androidx.compose.ui.graphics.Color,
+    background: androidx.compose.ui.graphics.Color,
+    border: androidx.compose.ui.graphics.Color,
+) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(background)
+            .border(BorderStroke(1.dp, border), RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+    }
 }
 
 @Composable
