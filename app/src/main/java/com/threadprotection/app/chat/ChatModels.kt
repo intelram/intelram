@@ -6,7 +6,16 @@ enum class ChatMode { BLUETOOTH, INTERNET }
 
 enum class BtChatConnState { IDLE, BT_UNAVAILABLE, NO_PERMISSION, DISCOVERING, CONNECTING, HANDSHAKING, CONNECTED, FAILED }
 
-data class BtDeviceInfo(val address: String, val name: String, val bonded: Boolean)
+/** rssi is the real signal strength Android reported for this device (`EXTRA_RSSI` on
+ *  `ACTION_FOUND`), null if the OS didn't include one. kind comes from the peer's real Bluetooth
+ *  Class of Device — see SignalEstimate.kt for both. */
+data class BtDeviceInfo(
+    val address: String,
+    val name: String,
+    val bonded: Boolean,
+    val rssi: Int? = null,
+    val kind: BtDeviceKind = BtDeviceKind.GENERIC,
+)
 
 data class ChatUiMessage(val id: String, val text: String, val fromMe: Boolean, val timestampMs: Long, val delivered: Boolean)
 

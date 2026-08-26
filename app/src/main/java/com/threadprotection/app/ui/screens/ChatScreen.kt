@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -23,10 +24,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.Laptop
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,19 +46,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.threadprotection.app.chat.BtChatConnState
 import com.threadprotection.app.chat.BtDeviceInfo
+import com.threadprotection.app.chat.BtDeviceKind
 import com.threadprotection.app.chat.ChatMode
+import com.threadprotection.app.chat.SignalEstimate
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
 import com.threadprotection.app.ui.components.NavTab
-import com.threadprotection.app.ui.components.PrimaryPillButton
 import com.threadprotection.app.ui.components.SectionHeading
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
@@ -141,15 +157,11 @@ fun ChatScreen(
                 }
 
                 val busy = state.btConnState == BtChatConnState.DISCOVERING || state.btConnState == BtChatConnState.CONNECTING || state.btConnState == BtChatConnState.HANDSHAKING
-                PrimaryPillButton(
-                    text = when (state.btConnState) {
-                        BtChatConnState.DISCOVERING -> "Scanning…"
-                        BtChatConnState.CONNECTING -> "Connecting…"
-                        BtChatConnState.HANDSHAKING -> "Securing connection…"
-                        else -> "Scan for nearby devices"
-                    },
-                    onClick = requestScan,
+                RadarScanner(
+                    connState = state.btConnState,
+                    devicesFound = state.btDiscoveredDevices.size,
                     enabled = !busy,
+                    onClick = requestScan,
                 )
 
                 HistoryEntryRow(count = state.chatHistory.size, onClick = onGoHistory)
@@ -163,13 +175,15 @@ fun ChatScreen(
                 }
                 if (state.btDiscoveredDevices.isEmpty()) {
                     Text(
-                        if (state.btConnState == BtChatConnState.DISCOVERING) "Looking for nearby devices…" else "No nearby devices found yet. Make sure the other phone has Bluetooth on and Thread Protection open.",
+                        if (state.btConnState == BtChatConnState.DISCOVERING) "Looking for nearby devices…" else "No nearby devices found yet. Tap the scanner above — make sure the other phone has Bluetooth on and Thread Protection open.",
                         style = TpType.caption.copy(fontSize = 14.sp, lineHeight = 20.sp),
                         color = palette.muted,
                     )
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        state.btDiscoveredDevices.forEach { device -> DeviceRow(device, onClick = { onConnect(device.address) }) }
+                        state.btDiscoveredDevices
+                            .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
+                            .forEach { device -> DeviceRow(device, onClick = { onConnect(device.address) }) }
                     }
                 }
             }
@@ -193,6 +207,69 @@ private fun ModeOption(label: String, active: Boolean, modifier: Modifier = Modi
     ) {
         Text(label, style = TpType.cardTitle.copy(fontSize = 16.sp), color = if (active) palette.onAccent else palette.fg2)
     }
+}
+
+/**
+ * The scan trigger, redesigned as a radar: expanding pulse rings while discovering (driven by the
+ * *real* `BtChatConnState.DISCOVERING` state, not a decorative loop that runs regardless), a
+ * Bluetooth glyph at the center, and a live "N devices found" readout tied to the actual size of
+ * `btDiscoveredDevices` as it grows in real time.
+ */
+@Composable
+private fun RadarScanner(connState: BtChatConnState, devicesFound: Int, enabled: Boolean, onClick: () -> Unit) {
+    val palette = LocalTpPalette.current
+    val scanning = connState == BtChatConnState.DISCOVERING
+    val busyLabel = when (connState) {
+        BtChatConnState.DISCOVERING -> "SCANNING…"
+        BtChatConnState.CONNECTING -> "CONNECTING…"
+        BtChatConnState.HANDSHAKING -> "SECURING CONNECTION…"
+        else -> "TAP TO SCAN"
+    }
+    val transition = rememberInfiniteTransition(label = "radar")
+    val ring1 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "ring1")
+    val ring2 by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, delayMillis = 900, easing = LinearEasing)), label = "ring2")
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier.size(168.dp).clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (scanning) {
+                RadarRing(progress = ring1, color = palette.accent)
+                RadarRing(progress = ring2, color = palette.accent)
+            }
+            Box(modifier = Modifier.size(104.dp).border(BorderStroke(1.5.dp, palette.accentBorder35), CircleShape))
+            Box(
+                modifier = Modifier
+                    .size(78.dp)
+                    .clip(CircleShape)
+                    .background(Brush.radialGradient(listOf(palette.accentHover, palette.accent))),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Bluetooth, contentDescription = null, tint = palette.onAccent, modifier = Modifier.size(34.dp))
+            }
+        }
+        Text(busyLabel, style = TpType.badge.copy(fontSize = 13.sp), color = palette.accent, textAlign = TextAlign.Center)
+        Text(
+            "$devicesFound device${if (devicesFound == 1) "" else "s"} found",
+            style = TpType.caption.copy(fontSize = 12.5.sp),
+            color = palette.muted,
+        )
+    }
+}
+
+@Composable
+private fun RadarRing(progress: Float, color: Color) {
+    Box(
+        modifier = Modifier
+            .size(78.dp + (90.dp * progress))
+            .alpha((1f - progress) * 0.55f)
+            .border(BorderStroke(1.5.dp, color), CircleShape),
+    )
 }
 
 @Composable
@@ -277,12 +354,41 @@ private fun DeviceRow(device: BtDeviceInfo, onClick: () -> Unit) {
             modifier = Modifier.size(40.dp).clip(CircleShape).background(palette.accentTint16),
             contentAlignment = Alignment.Center,
         ) {
-            Text("💬", fontSize = 18.sp)
+            Icon(device.kind.icon(), contentDescription = null, tint = palette.accent, modifier = Modifier.size(20.dp))
         }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(device.name, style = TpType.cardTitleBold.copy(fontSize = 16.sp), color = palette.fg)
-            Text(if (device.bonded) "Paired" else "Nearby", style = TpType.caption.copy(fontSize = 12.5.sp), color = palette.muted)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Icon(Icons.Filled.LocationOn, contentDescription = null, tint = palette.muted, modifier = Modifier.size(12.dp))
+                Text(SignalEstimate.distanceLabel(device.rssi), style = TpType.caption.copy(fontSize = 12.sp), color = palette.muted)
+                SignalBars(bars = SignalEstimate.bars(device.rssi))
+            }
         }
         Text("Connect", style = TpType.caption.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold), color = palette.accent)
+    }
+}
+
+private fun BtDeviceKind.icon(): ImageVector = when (this) {
+    BtDeviceKind.PHONE -> Icons.Filled.PhoneAndroid
+    BtDeviceKind.COMPUTER -> Icons.Filled.Laptop
+    BtDeviceKind.AUDIO -> Icons.Filled.Headset
+    BtDeviceKind.WEARABLE -> Icons.Filled.Watch
+    BtDeviceKind.GENERIC -> Icons.Filled.Devices
+}
+
+/** Real signal-strength bars — filled count comes from the device's actual RSSI reading via
+ *  SignalEstimate.bars(), same bucketing phones use for their own Wi-Fi/cellular icons. */
+@Composable
+private fun SignalBars(bars: Int) {
+    val palette = LocalTpPalette.current
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
+        for (i in 1..4) {
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height((6 + i * 3).dp)
+                    .background(if (i <= bars) palette.accent else palette.line3, RoundedCornerShape(1.dp)),
+            )
+        }
     }
 }

@@ -52,9 +52,14 @@ between phones that also have Thread Protection installed, encrypted to resist q
   sit behind NAT — there's no way to open a direct connection with just a number), and store
   messages for offline recipients. That's a real backend that doesn't exist for this app. Rather
   than fake it, the screen says so plainly and points back to Bluetooth mode.
-- **Live nearby scan, with real-time GUI feedback**: tapping "Scan for nearby devices" shows every
-  device as Android's own `ACTION_FOUND` broadcast reports it — the list grows in real time while
-  scanning, with a pulsing "live" indicator next to the section heading.
+- **Live nearby scan, radar UI, real signal data** — tapping the radar (pulsing rings, Bluetooth
+  glyph, "N devices found" counter) shows every device as Android's own `ACTION_FOUND` broadcast
+  reports it, growing the list in real time. Each row shows a device-type icon from the peer's
+  actual Bluetooth Class of Device (phone/computer/audio/wearable — read off the OS, not guessed
+  from the name), plus a distance estimate and signal bars computed from its real RSSI reading via
+  the standard log-distance path-loss model (`chat/SignalEstimate.kt`) — an industry-standard
+  technique, honestly still an *estimate* (walls and orientation shift the reading), same caveat
+  every commercial Bluetooth-finder app carries.
 - **Chat History**: every device you've successfully connected to is remembered — address, name,
   last-chatted time — in `SettingsRepository.chatHistoryFlow` (persisted, newest first, capped at
   30). The Chat screen shows it compressed behind one "History" row; opening it lists every past

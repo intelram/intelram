@@ -1,6 +1,7 @@
 package com.threadprotection.app.chat
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
@@ -132,9 +133,20 @@ class BluetoothChatManager(private val context: Context) {
                             @Suppress("DEPRECATION")
                             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                         } ?: return
-                        val info = BtDeviceInfo(device.address, device.deviceName(), bonded = false)
-                        if (_discovered.value.none { it.address == info.address }) {
-                            _discovered.value = _discovered.value + info
+                        val rssiRaw = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE)
+                        val info = BtDeviceInfo(
+                            address = device.address,
+                            name = device.deviceName(),
+                            bonded = false,
+                            rssi = if (rssiRaw == Short.MIN_VALUE) null else rssiRaw.toInt(),
+                            kind = device.classify(),
+                        )
+                        // Update in place (not just append-if-new) so signal strength keeps refreshing
+                        // live as the same device is re-reported during a scan.
+                        _discovered.value = if (_discovered.value.any { it.address == info.address }) {
+                            _discovered.value.map { if (it.address == info.address) info else it }
+                        } else {
+                            _discovered.value + info
                         }
                     }
                     BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
@@ -279,6 +291,17 @@ class BluetoothChatManager(private val context: Context) {
 
     private fun BluetoothDevice.deviceName(): String =
         runCatching { name }.getOrNull()?.takeIf { it.isNotBlank() } ?: address
+
+    /** Real Bluetooth Class of Device, broadcast by the peer itself as part of standard discovery
+     *  — not inferred from its name. */
+    private fun BluetoothDevice.classify(): BtDeviceKind =
+        when (runCatching { bluetoothClass?.majorDeviceClass }.getOrNull()) {
+            BluetoothClass.Device.Major.PHONE -> BtDeviceKind.PHONE
+            BluetoothClass.Device.Major.COMPUTER -> BtDeviceKind.COMPUTER
+            BluetoothClass.Device.Major.AUDIO_VIDEO -> BtDeviceKind.AUDIO
+            BluetoothClass.Device.Major.WEARABLE -> BtDeviceKind.WEARABLE
+            else -> BtDeviceKind.GENERIC
+        }
 
     private fun writeFrame(out: DataOutputStream, data: ByteArray) {
         out.writeInt(data.size)
