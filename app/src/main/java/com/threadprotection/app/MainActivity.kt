@@ -230,6 +230,7 @@ class MainActivity : ComponentActivity() {
                                 progress = state.progress,
                                 scannedCount = state.scannedCount,
                                 phase = state.scanPhase,
+                                feed = state.scanFeed,
                                 onCancel = viewModel::cancelScan,
                             )
                         }

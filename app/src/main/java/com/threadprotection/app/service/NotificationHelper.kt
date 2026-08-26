@@ -16,6 +16,7 @@ object NotificationHelper {
     const val CHANNEL_REMINDERS = "security_reminders"
 
     const val NOTIF_ID_PERSISTENT = 1001
+    private const val NOTIF_ID_COMING_SOON = 9001
     private var nextAlertId = 2000
 
     fun ensureChannels(context: Context) {
@@ -77,6 +78,30 @@ object NotificationHelper {
             .build()
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         manager.notify(nextAlertId++, notification)
+    }
+
+    fun postComingSoon(context: Context, title: String, text: String, targetScreen: String) {
+        ensureChannels(context)
+        val openApp = PendingIntent.getActivity(
+            context, NOTIF_ID_COMING_SOON,
+            Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_SCREEN
+                putExtra(MainActivity.EXTRA_TARGET_SCREEN, targetScreen)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_REMINDERS)
+            .setSmallIcon(R.drawable.ic_tile_permissions)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(openApp)
+            .build()
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(NOTIF_ID_COMING_SOON, notification)
     }
 
     fun postReminder(context: Context, title: String, text: String) {

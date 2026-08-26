@@ -60,6 +60,9 @@ data class ScanData(
 /** Live phase text shown on the Scanning screen while `DeviceScanner.scan()` runs. */
 data class ScanPhaseState(val index: Int = 0, val total: Int = 7, val label: String = "", val meta: String = "")
 
+/** One real item as it's checked during a scan — package label + package name, a port, a hardware entry, etc. */
+data class ScanFeedEntry(val id: Long, val text: String)
+
 /** Mirrors the prototype's `state = {...}` object — see README §State — extended with real scan/auth/API-key state. */
 data class AppUiState(
     val screen: Screen = Screen.SPLASH,
@@ -91,6 +94,8 @@ data class AppUiState(
     val apiKeys: ApiKeys = ApiKeys(),
     val scanData: ScanData = ScanData(),
     val scanPhase: ScanPhaseState = ScanPhaseState(),
+    /** Rolling window of the most recent real items the live scan has actually checked, newest first. */
+    val scanFeed: List<ScanFeedEntry> = emptyList(),
     val liveHwDevices: List<HwDevice> = emptyList(),
     val createAccountError: String? = null,
     val breachResult: BreachCheckResult? = null,

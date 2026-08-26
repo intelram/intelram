@@ -31,7 +31,7 @@ class PermissionAudit(private val context: Context) {
         val findings: List<Finding>,
     )
 
-    fun audit(): Result {
+    suspend fun audit(onApp: suspend (label: String, packageName: String) -> Unit = { _, _ -> }): Result {
         val lastUsed = UsageAccess.lastUsedByPackage(context)
         val enabledAccessibility = enabledAccessibilityPackages()
         val installedApps = runCatching {
@@ -42,7 +42,14 @@ class PermissionAudit(private val context: Context) {
         val findings = mutableListOf<Finding>()
         val sideloaded = mutableListOf<AppSummary>()
 
+        // Paced so the live feed stays readable regardless of how many packages are installed —
+        // the app inventory itself (installedApps.size) is unaffected, this only spaces out how
+        // fast each real package name is reported to the UI as it's checked.
+        val perAppDelayMs = (900L / installedApps.size.coerceAtLeast(1)).coerceIn(4L, 30L)
+
         for (appInfo in installedApps) {
+            onApp(appInfo.loadLabel(pm).toString(), appInfo.packageName)
+            kotlinx.coroutines.delay(perAppDelayMs)
             val packageInfo = runCatching {
                 pm.getPackageInfo(appInfo.packageName, PackageManager.GET_PERMISSIONS)
             }.getOrNull() ?: continue

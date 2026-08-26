@@ -14,7 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
-data class ScanPhaseUpdate(val index: Int, val total: Int, val label: String, val meta: String)
+data class ScanPhaseUpdate(val index: Int, val total: Int, val label: String, val meta: String, val liveItem: String? = null)
 
 data class PortFinding(val port: Int, val ownerLabel: String)
 
@@ -48,7 +48,9 @@ class DeviceScanner(
         val findings = mutableListOf<Finding>()
 
         onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "Reading installed packages"))
-        val audit = permissionAudit.audit()
+        val audit = permissionAudit.audit { label, packageName ->
+            onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "Checking $label", liveItem = "$label  ·  $packageName"))
+        }
         onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "${audit.totalInstalledCount} apps installed"))
         delay(350)
 
@@ -62,6 +64,10 @@ class DeviceScanner(
 
         onPhase(ScanPhaseUpdate(3, total, "Checking connected hardware…", "USB, Bluetooth, SIM, power"))
         val hwDevices = hardwareWatcher.scan()
+        for (dev in hwDevices) {
+            onPhase(ScanPhaseUpdate(3, total, "Checking connected hardware…", dev.detail, liveItem = "${dev.name}  ·  ${dev.detail}"))
+            delay(90)
+        }
         hardwareWatcher.suspiciousHidAlert()?.let {
             findings += Finding(
                 id = "hw-hid",
@@ -83,6 +89,10 @@ class DeviceScanner(
         onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", "Checking local socket table"))
         val rawPorts = PortScanner.listeningPorts()
         val ports = rawPorts.map { PortFinding(it.port, ownerLabelForUid(it.uid)) }
+        for (p in ports) {
+            onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", "Port ${p.port} open", liveItem = "Port ${p.port}  ·  ${p.ownerLabel}"))
+            delay(80)
+        }
         if (rawPorts.any { it.port == 5555 }) {
             findings += Finding(
                 id = "port-5555",

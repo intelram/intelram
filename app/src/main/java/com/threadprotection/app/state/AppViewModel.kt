@@ -459,17 +459,24 @@ class AppViewModel(
     fun startScan() {
         val scanner = deviceScanner ?: return
         scanJob?.cancel()
+        var feedSeq = 0L
         _state.update {
-            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), scanPhase = ScanPhaseState())
+            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), scanPhase = ScanPhaseState(), scanFeed = emptyList())
         }
         scanJob = viewModelScope.launch {
             val result = scanner.scan(_state.value.apiKeys) { update ->
                 _state.update {
                     val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
+                    val feed = if (update.liveItem != null) {
+                        (listOf(ScanFeedEntry(feedSeq++, update.liveItem)) + it.scanFeed).take(SCAN_FEED_LIMIT)
+                    } else {
+                        it.scanFeed
+                    }
                     it.copy(
                         progress = pct,
                         scannedCount = (pct / 100f * ESTIMATED_ITEMS).toInt(),
                         scanPhase = ScanPhaseState(update.index, update.total, update.label, update.meta),
+                        scanFeed = feed,
                     )
                 }
             }
@@ -675,6 +682,16 @@ class AppViewModel(
 
     fun setChatMode(mode: ChatMode) {
         _state.update { it.copy(chatMode = mode) }
+        if (mode == ChatMode.INTERNET) {
+            appContext?.let { ctx ->
+                NotificationHelper.postComingSoon(
+                    ctx,
+                    "Internet chat — coming soon",
+                    "Chatting over the internet isn't available yet. Bluetooth chat with nearby devices works right now.",
+                    com.threadprotection.app.MainActivity.TARGET_CHAT,
+                )
+            }
+        }
     }
 
     fun startBtDiscovery() {
@@ -759,5 +776,6 @@ class AppViewModel(
 
     companion object {
         private const val ESTIMATED_ITEMS = 300
+        private const val SCAN_FEED_LIMIT = 8
     }
 }
