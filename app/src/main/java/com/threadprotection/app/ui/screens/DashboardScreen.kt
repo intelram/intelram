@@ -239,25 +239,6 @@ fun DashboardScreen(
 
             HardwareWatchCard(state, onToggleHwOpen, onSimulateHw)
 
-            // AI brain entry
-            ClickableCard(onClick = onGoBrain) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(palette.accentTint12)
-                        .border(BorderStroke(1.dp, palette.lineHover), RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    BlinkingDot(12.dp, palette.accent)
-                }
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("How it learns", style = TpType.cardTitle, color = palette.fg)
-                    Text("${String.format("%,d", state.learned)} patterns learned this month", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
-                }
-                Text("›", color = palette.muted, fontSize = 22.sp)
-            }
-
             // Threat intelligence
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 com.threadprotection.app.ui.components.SectionHeading("Threat intelligence")
