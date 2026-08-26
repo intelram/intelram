@@ -1,46 +1,66 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1024" height="1024">
   <defs>
-    <linearGradient id="rim" x1="10%" y1="0%" x2="95%" y2="100%">
-      <stop offset="0%" stop-color="#F3F6F8"/>
-      <stop offset="35%" stop-color="#C7D0D6"/>
-      <stop offset="60%" stop-color="#8C99A2"/>
-      <stop offset="100%" stop-color="#4A5560"/>
+    <linearGradient id="rimGrad" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#F2F5F6"/>
+      <stop offset="35%" stop-color="#C9D0D4"/>
+      <stop offset="65%" stop-color="#8A929A"/>
+      <stop offset="100%" stop-color="#4B535B"/>
     </linearGradient>
-    <linearGradient id="panel" x1="0%" y1="0%" x2="100%" y2="15%">
-      <stop offset="0%" stop-color="#2A333B"/>
-      <stop offset="48%" stop-color="#1D242A"/>
-      <stop offset="52%" stop-color="#161B20"/>
-      <stop offset="100%" stop-color="#0E1215"/>
-    </linearGradient>
-    <radialGradient id="iris" cx="34%" cy="30%" r="75%">
-      <stop offset="0%" stop-color="#A6F3F6"/>
-      <stop offset="45%" stop-color="#4FCBD4"/>
-      <stop offset="100%" stop-color="#0E7C89"/>
+    <radialGradient id="dotGrad" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="35%" stop-color="#BFFCE0"/>
+      <stop offset="100%" stop-color="#3DDC84"/>
     </radialGradient>
-    <clipPath id="shieldClip">
-      <path d="M256,34 C322,34 384,56 434,97 C452,112 452,138 452,172 L452,226 C452,330 398,412 256,480 C114,412 60,330 60,226 L60,172 C60,138 60,112 78,97 C128,56 190,34 256,34 Z"/>
-    </clipPath>
+    <linearGradient id="beamGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3DDC84" stop-opacity="0"/>
+      <stop offset="12%" stop-color="#3DDC84" stop-opacity="0.9"/>
+      <stop offset="50%" stop-color="#EAFFF3" stop-opacity="1"/>
+      <stop offset="88%" stop-color="#3DDC84" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#3DDC84" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="softBlur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="bigBlur" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="48"/>
+    </filter>
   </defs>
 
-  <!-- underside sliver for depth -->
-  <path d="M256,40 C322,40 384,62 434,103 C452,118 452,144 452,178 L452,232 C452,338 398,420 256,488 C114,420 60,338 60,232 L60,178 C60,144 60,118 78,103 C128,62 190,40 256,40 Z" fill="#0A1218"/>
+  <!-- ground shadow -->
+  <ellipse cx="500" cy="918" rx="270" ry="34" fill="#04140C" opacity="0.38" filter="url(#softBlur)"/>
 
-  <!-- metallic rim -->
-  <path d="M256,34 C322,34 384,56 434,97 C452,112 452,138 452,172 L452,226 C452,330 398,412 256,480 C114,412 60,330 60,226 L60,172 C60,138 60,112 78,97 C128,56 190,34 256,34 Z" fill="url(#rim)"/>
+  <!-- ambient halo behind the gem -->
+  <circle cx="500" cy="440" r="430" fill="#3DDC84" opacity="0.16" filter="url(#bigBlur)"/>
 
-  <!-- dark inner panel (inset) -->
-  <g transform="translate(256,257) scale(0.885) translate(-256,-257)">
-    <path d="M256,34 C322,34 384,56 434,97 C452,112 452,138 452,172 L452,226 C452,330 398,412 256,480 C114,412 60,330 60,226 L60,172 C60,138 60,112 78,97 C128,56 190,34 256,34 Z" fill="url(#panel)"/>
+  <!-- underside / thickness sliver (dark green-black), offset down, peeks out at the bottom edges -->
+  <polygon points="500,95 856.4,295 856.4,695 500,895 143.6,695 143.6,295" fill="#0A1F16" transform="translate(0,58)"/>
+
+  <!-- outer metallic rim (bevel) -->
+  <polygon points="500,60 866.4,265 866.4,675 500,880 133.6,675 133.6,265" fill="url(#rimGrad)" stroke="#F6F9FA" stroke-width="4"/>
+
+  <!-- inner faceted face (inset ~15% toward center 500,470) -->
+  <g>
+    <!-- facet A: top -> upper-left (lightest, lit) -->
+    <polygon points="500,470 500,116 194.7,296.5" fill="#B9C0C5"/>
+    <!-- facet B: upper-left -> lower-left -->
+    <polygon points="500,470 194.7,296.5 194.7,643.5" fill="#969DA3"/>
+    <!-- facet C: lower-left -> bottom -->
+    <polygon points="500,470 194.7,643.5 500,824" fill="#6E767D"/>
+    <!-- facet D: bottom -> lower-right (darkest, away from light) -->
+    <polygon points="500,470 500,824 805.3,643.5" fill="#454C53"/>
+    <!-- facet E: lower-right -> upper-right -->
+    <polygon points="500,470 805.3,643.5 805.3,296.5" fill="#5D656C"/>
+    <!-- facet F: upper-right -> top -->
+    <polygon points="500,470 805.3,296.5 500,116" fill="#848B92"/>
   </g>
 
-  <!-- concentric emblem, clipped to shield so nothing overflows the point -->
-  <g clip-path="url(#shieldClip)">
-    <circle cx="256" cy="250" r="112" fill="url(#rim)"/>
-    <circle cx="256" cy="250" r="94" fill="#141A1E"/>
-    <circle cx="256" cy="250" r="76" fill="url(#rim)"/>
-    <circle cx="256" cy="250" r="62" fill="#10151A"/>
-    <circle cx="256" cy="250" r="54" fill="url(#iris)"/>
-    <circle cx="270" cy="266" r="19" fill="#0A1216"/>
-    <circle cx="232" cy="221" r="12.5" fill="#EAFBFC" opacity="0.92"/>
-  </g>
+  <!-- glow behind the beam / dot -->
+  <rect x="120" y="418" width="760" height="60" fill="#3DDC84" opacity="0.55" filter="url(#softBlur)"/>
+  <circle cx="500" cy="470" r="90" fill="#3DDC84" opacity="0.55" filter="url(#softBlur)"/>
+
+  <!-- crisp horizontal scan beam -->
+  <rect x="150" y="457" width="700" height="26" rx="13" fill="url(#beamGrad)"/>
+
+  <!-- center dot -->
+  <circle cx="500" cy="470" r="46" fill="url(#dotGrad)"/>
 </svg>
