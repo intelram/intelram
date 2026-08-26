@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.threadprotection.app.chat.BluetoothChatManager
 import com.threadprotection.app.chat.ChatEvent
+import com.threadprotection.app.chat.ChatHistoryEntry
 import com.threadprotection.app.chat.ChatMode
 import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.data.Account
@@ -12,6 +13,7 @@ import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.data.SettingsRepository
+import com.threadprotection.app.data.StoredChatHistoryEntry
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.scan.DeviceScanner
 import com.threadprotection.app.scan.HardwareWatcher
@@ -79,6 +81,14 @@ class AppViewModel(
                     syncScheduledScan(settings)
                 }
             }
+            viewModelScope.launch {
+                repo.chatHistoryFlow.collect { stored ->
+                    val history = stored
+                        .map { ChatHistoryEntry(it.address, it.name, it.lastChattedAtMs) }
+                        .sortedByDescending { it.lastChattedAtMs }
+                    _state.update { it.copy(chatHistory = history) }
+                }
+            }
         }
         bluetoothChatManager?.let { chat ->
             viewModelScope.launch {
@@ -90,7 +100,13 @@ class AppViewModel(
             viewModelScope.launch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
-                    if (name != null) setScreen(Screen.CHAT_CONVERSATION)
+                    if (name != null) {
+                        setScreen(Screen.CHAT_CONVERSATION)
+                        val address = chat.connectedDeviceAddress.value
+                        if (address != null) {
+                            settingsRepository?.let { repo -> viewModelScope.launch { repo.recordChatHistory(address, name) } }
+                        }
+                    }
                 }
             }
             viewModelScope.launch {
@@ -565,10 +581,12 @@ class AppViewModel(
 
     fun goChat() {
         setScreen(Screen.CHAT)
-        val chat = bluetoothChatManager ?: return
-        chat.startListening()
-        _state.update { it.copy(btBondedDevices = chat.bondedDevices) }
+        bluetoothChatManager?.startListening()
     }
+
+    fun goChatHistory() = setScreen(Screen.CHAT_HISTORY)
+
+    fun leaveChatHistory() = setScreen(Screen.CHAT)
 
     /** Leaves the Chat feature entirely — stops the listening server socket and discovery, clears the session. */
     fun leaveChat() {
@@ -584,14 +602,20 @@ class AppViewModel(
     }
 
     fun startBtDiscovery() {
-        val chat = bluetoothChatManager ?: return
-        chat.startDiscovery()
-        _state.update { it.copy(btBondedDevices = chat.bondedDevices) }
+        bluetoothChatManager?.startDiscovery()
     }
 
     fun connectToBtDevice(address: String) {
         _state.update { it.copy(chatMessages = emptyList()) }
         bluetoothChatManager?.connectTo(address)
+    }
+
+    /** Reconnect to a device from Chat History — same as connecting fresh, just skips discovery
+     *  since the address is already known. Returns to the Chat screen first so a failure (device
+     *  out of range, Bluetooth off) shows the same status banner as a normal connect attempt. */
+    fun connectFromHistory(address: String) {
+        setScreen(Screen.CHAT)
+        connectToBtDevice(address)
     }
 
     fun setChatDraft(text: String) {

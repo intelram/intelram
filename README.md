@@ -52,9 +52,17 @@ between phones that also have Thread Protection installed, encrypted to resist q
   sit behind NAT — there's no way to open a direct connection with just a number), and store
   messages for offline recipients. That's a real backend that doesn't exist for this app. Rather
   than fake it, the screen says so plainly and points back to Bluetooth mode.
-- **v1 scope, stated plainly**: one active conversation at a time; chat history lives in memory
-  for the current connection only (nothing is written to disk); the listening socket runs only
-  while the Chat screen is open, not as a background service.
+- **Live nearby scan, with real-time GUI feedback**: tapping "Scan for nearby devices" shows every
+  device as Android's own `ACTION_FOUND` broadcast reports it — the list grows in real time while
+  scanning, with a pulsing "live" indicator next to the section heading.
+- **Chat History**: every device you've successfully connected to is remembered — address, name,
+  last-chatted time — in `SettingsRepository.chatHistoryFlow` (persisted, newest first, capped at
+  30). The Chat screen shows it compressed behind one "History" row; opening it lists every past
+  conversation, and tapping one reconnects straight to that address without rescanning.
+- **v1 scope, stated plainly**: one active conversation at a time; message text itself lives in
+  memory for the current connection only (nothing is written to disk, only the History contact
+  list is); the listening socket runs only while the Chat screen is open, not as a background
+  service.
 
 ## Scheduled scan — actually customizable
 

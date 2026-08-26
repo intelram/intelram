@@ -35,6 +35,7 @@ import com.threadprotection.app.state.Screen
 import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
 import com.threadprotection.app.ui.screens.ChatConversationScreen
+import com.threadprotection.app.ui.screens.ChatHistoryScreen
 import com.threadprotection.app.ui.screens.ChatScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
@@ -363,6 +364,16 @@ class MainActivity : ComponentActivity() {
                                 onSetChatMode = viewModel::setChatMode,
                                 onStartDiscovery = viewModel::startBtDiscovery,
                                 onConnect = viewModel::connectToBtDevice,
+                                onGoHistory = viewModel::goChatHistory,
+                            )
+                        }
+
+                        Screen.CHAT_HISTORY -> {
+                            BackHandler(enabled = true) { viewModel.leaveChatHistory() }
+                            ChatHistoryScreen(
+                                state = state,
+                                onBack = viewModel::leaveChatHistory,
+                                onSelect = viewModel::connectFromHistory,
                             )
                         }
 

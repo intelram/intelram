@@ -43,9 +43,12 @@ sealed interface ChatEvent {
  * Bluetooth headset, someone else's phone without Thread Protection — never gets past that
  * handshake, so it never becomes a usable connection.
  *
- * v1 scope, stated plainly: one active conversation at a time, and chat history lives only in
- * memory for the current connection (nothing is written to disk). The listening server socket
- * only runs while the Chat screen is open, not as a background service.
+ * v1 scope, stated plainly: one active conversation at a time, and message text lives only in
+ * memory for the current connection (nothing is written to disk). What *is* persisted, in
+ * SettingsRepository.chatHistoryFlow, is just the lightweight contact list — address, name, last
+ * chatted time — so a device you've talked to before shows up under "History" without needing to
+ * be rediscovered. The listening server socket only runs while the Chat screen is open, not as a
+ * background service.
  */
 class BluetoothChatManager(private val context: Context) {
 
@@ -64,6 +67,9 @@ class BluetoothChatManager(private val context: Context) {
     private val _connectedDeviceName = MutableStateFlow<String?>(null)
     val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
 
+    private val _connectedDeviceAddress = MutableStateFlow<String?>(null)
+    val connectedDeviceAddress: StateFlow<String?> = _connectedDeviceAddress.asStateFlow()
+
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
     val events = _events.asSharedFlow()
 
@@ -72,12 +78,6 @@ class BluetoothChatManager(private val context: Context) {
     }
 
     private var discoveryReceiver: BroadcastReceiver? = null
-
-    val bondedDevices: List<BtDeviceInfo>
-        get() = runCatching { adapter?.bondedDevices }.getOrNull()
-            ?.map { BtDeviceInfo(it.address, it.deviceName(), bonded = true) }
-            ?.sortedBy { it.name }
-            ?: emptyList()
 
     /** Starts the listening server socket (accepts inbound connections) — call once when entering Chat. */
     fun startListening() {
@@ -199,6 +199,7 @@ class BluetoothChatManager(private val context: Context) {
 
         activeSocket = socket
         sessionKey = ok
+        _connectedDeviceAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
         _connectedDeviceName.value = runCatching { socket.remoteDevice.deviceName() }.getOrNull()
         _connState.value = BtChatConnState.CONNECTED
         readLoop(socket)
@@ -229,6 +230,7 @@ class BluetoothChatManager(private val context: Context) {
         activeSocket = null
         sessionKey = null
         _connectedDeviceName.value = null
+        _connectedDeviceAddress.value = null
         _connState.value = BtChatConnState.IDLE
     }
 
@@ -261,6 +263,7 @@ class BluetoothChatManager(private val context: Context) {
         activeSocket = null
         sessionKey = null
         _connectedDeviceName.value = null
+        _connectedDeviceAddress.value = null
         _connState.value = BtChatConnState.IDLE
     }
 

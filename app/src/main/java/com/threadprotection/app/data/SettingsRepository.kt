@@ -35,6 +35,10 @@ data class StoredProtectionSettings(
     val scanDayOfWeek: Int = 2,
 )
 
+/** Plain-data mirror of `chat.ChatHistoryEntry` — this layer doesn't depend on the chat package. */
+@Serializable
+data class StoredChatHistoryEntry(val address: String, val name: String, val lastChattedAtMs: Long)
+
 /** Which free threat-intel source a key belongs to — see README §Threat intelligence. */
 enum class ApiKeyId(val prefKey: String, val label: String, val signupUrl: String) {
     SAFE_BROWSING("key_safe_browsing", "Google Safe Browsing", "https://console.cloud.google.com/"),
@@ -66,6 +70,7 @@ class SettingsRepository(private val context: Context) {
         val CREDENTIAL = stringPreferencesKey("tp_local_credential")
         val REALTIME = booleanPreferencesKey("tp_realtime")
         val PROTECTION_SETTINGS = stringPreferencesKey("tp_protection_settings")
+        val CHAT_HISTORY = stringPreferencesKey("tp_chat_history")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -78,6 +83,26 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setProtectionSettings(settings: StoredProtectionSettings) {
         context.dataStore.edit { prefs -> prefs[Keys.PROTECTION_SETTINGS] = Json.encodeToString(settings) }
+    }
+
+    /** Chat "History" — devices you've successfully connected to before, newest first, capped at
+     *  30 so it can't grow unbounded. Address is the dedupe key (a re-chat just moves it to the top
+     *  and refreshes the name, in case the peer's Bluetooth name changed). */
+    val chatHistoryFlow: Flow<List<StoredChatHistoryEntry>> = context.dataStore.data.map { prefs ->
+        prefs[Keys.CHAT_HISTORY]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredChatHistoryEntry>>(raw) }.getOrNull()
+        } ?: emptyList()
+    }
+
+    suspend fun recordChatHistory(address: String, name: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.CHAT_HISTORY]?.let { raw ->
+                runCatching { Json.decodeFromString<List<StoredChatHistoryEntry>>(raw) }.getOrNull()
+            } ?: emptyList()
+            val updated = (listOf(StoredChatHistoryEntry(address, name, System.currentTimeMillis())) +
+                current.filter { it.address != address }).take(30)
+            prefs[Keys.CHAT_HISTORY] = Json.encodeToString(updated)
+        }
     }
 
     /** Whether real-time (background) protection is on — also read by `BootReceiver`. */

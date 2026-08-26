@@ -10,6 +10,11 @@ data class BtDeviceInfo(val address: String, val name: String, val bonded: Boole
 
 data class ChatUiMessage(val id: String, val text: String, val fromMe: Boolean, val timestampMs: Long, val delivered: Boolean)
 
+/** A device you've successfully chatted with before — README §Chat "History". Persisted (see
+ *  SettingsRepository.chatHistoryFlow) so it survives leaving the Chat screen or restarting the
+ *  app, letting you reconnect by address without rediscovering the device first. */
+data class ChatHistoryEntry(val address: String, val name: String, val lastChattedAtMs: Long)
+
 /**
  * Plaintext framing used *inside* the AES-GCM payload (after decryption) — README's "give all
  * the options the way we have in WhatsApp" needs more than raw text on the wire: a delivered

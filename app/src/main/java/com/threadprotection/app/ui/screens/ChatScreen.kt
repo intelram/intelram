@@ -5,6 +5,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -24,9 +29,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +70,7 @@ fun ChatScreen(
     onSetChatMode: (ChatMode) -> Unit,
     onStartDiscovery: () -> Unit,
     onConnect: (String) -> Unit,
+    onGoHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -144,14 +152,15 @@ fun ChatScreen(
                     enabled = !busy,
                 )
 
-                if (state.btBondedDevices.isNotEmpty()) {
-                    SectionHeading("Paired devices")
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        state.btBondedDevices.forEach { device -> DeviceRow(device, onClick = { onConnect(device.address) }) }
+                HistoryEntryRow(count = state.chatHistory.size, onClick = onGoHistory)
+
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionHeading("Nearby devices")
+                    if (state.btConnState == BtChatConnState.DISCOVERING) {
+                        PulsingDot()
+                        Text("live", style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold), color = palette.accent)
                     }
                 }
-
-                SectionHeading("Nearby devices")
                 if (state.btDiscoveredDevices.isEmpty()) {
                     Text(
                         if (state.btConnState == BtChatConnState.DISCOVERING) "Looking for nearby devices…" else "No nearby devices found yet. Make sure the other phone has Bluetooth on and Thread Protection open.",
@@ -201,6 +210,53 @@ private fun InfoBanner(title: String, body: String, tint: androidx.compose.ui.gr
         Text(title, style = TpType.cardTitle.copy(fontSize = 16.sp), color = palette.fg)
         Text(body, style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.5.sp), color = palette.muted)
     }
+}
+
+/** Compact "History" entry point — README: paired/previously-chatted devices are compressed
+ *  behind one row here, opening the full list (ChatHistoryScreen) to pick someone and reconnect. */
+@Composable
+private fun HistoryEntryRow(count: Int, onClick: () -> Unit) {
+    val palette = LocalTpPalette.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(palette.card2)
+            .border(BorderStroke(1.dp, palette.line2), RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            modifier = Modifier.size(40.dp).clip(CircleShape).background(palette.accentTint16),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("🕘", fontSize = 18.sp)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("History", style = TpType.cardTitleBold.copy(fontSize = 16.sp), color = palette.fg)
+            Text(
+                if (count == 0) "No conversations yet" else "$count device${if (count == 1) "" else "s"} you've chatted with",
+                style = TpType.caption.copy(fontSize = 12.5.sp),
+                color = palette.muted,
+            )
+        }
+        Text("›", style = TpType.cardTitleBold.copy(fontSize = 20.sp), color = palette.muted)
+    }
+}
+
+@Composable
+private fun PulsingDot() {
+    val palette = LocalTpPalette.current
+    val transition = rememberInfiniteTransition(label = "pulse")
+    val alpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), repeatMode = RepeatMode.Reverse),
+        label = "pulseAlpha",
+    )
+    Box(modifier = Modifier.size(6.dp).alpha(alpha).clip(CircleShape).background(palette.accent))
 }
 
 @Composable
