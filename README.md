@@ -15,7 +15,7 @@ byte-for-byte, so it's a faithful vector recreation (`design/app-icon.svg`, rast
 `app/src/main/res/mipmap-*/ic_launcher_foreground.png`) rather than the original pixels —
 matching shape, facet shading and the green scan-line/dot glow, re-rendered at full resolution
 for every density instead of scaling up a single small source image. Background layer is solid
-white (`ic_launcher_background.xml`) to match the logo's own white ground.
+black (`ic_launcher_background.xml`), per the user's request.
 
 ## Build & run
 
