@@ -130,7 +130,9 @@ private fun connectionStatusLine(state: AppUiState): String = when {
     state.chatPeerTyping -> "typing…"
     state.btConnState == BtChatConnState.CONNECTED -> "🔒 End-to-end encrypted · post-quantum (ML-KEM-768)"
     state.btConnState == BtChatConnState.HANDSHAKING -> "Securing connection…"
-    else -> "Disconnected"
+    state.btConnState == BtChatConnState.CONNECTING -> "Connecting…"
+    state.chatMeshPeer?.meshReachable == true -> "Not in range — messages relay via nearby phones"
+    else -> "Not in range — open Chat History to try again"
 }
 
 private val TIME_FORMAT = SimpleDateFormat("h:mm a", Locale.US)
@@ -149,18 +151,27 @@ private fun MessageBubble(msg: ChatUiMessage) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(msg.text, style = TpType.body.copy(fontSize = 15.5.sp, lineHeight = 21.sp), color = if (msg.fromMe) palette.onAccent else palette.fg)
+            if (msg.relayed) {
+                Text(
+                    if (msg.fromMe) "via nearby relay — no delivery confirmation" else "arrived via nearby relay",
+                    style = TpType.caption.copy(fontSize = 10.sp),
+                    color = if (msg.fromMe) palette.onAccent.copy(alpha = 0.7f) else palette.muted,
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     TIME_FORMAT.format(Date(msg.timestampMs)),
                     style = TpType.caption.copy(fontSize = 10.5.sp),
                     color = if (msg.fromMe) palette.onAccent.copy(alpha = 0.75f) else palette.muted,
                 )
-                if (msg.fromMe) {
+                if (msg.fromMe && !msg.relayed) {
                     Text(
                         if (msg.delivered) "✓✓" else "✓",
                         style = TpType.caption.copy(fontSize = 10.5.sp),
                         color = if (msg.delivered) androidx.compose.ui.graphics.Color(0xFF7FD8FF) else palette.onAccent.copy(alpha = 0.75f),
                     )
+                } else if (msg.fromMe) {
+                    Text("↝", style = TpType.caption.copy(fontSize = 12.sp), color = palette.onAccent.copy(alpha = 0.75f))
                 }
             }
         }

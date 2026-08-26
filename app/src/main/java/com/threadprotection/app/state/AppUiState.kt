@@ -102,6 +102,10 @@ data class AppUiState(
     val btConnState: BtChatConnState = BtChatConnState.IDLE,
     val btDiscoveredDevices: List<BtDeviceInfo> = emptyList(),
     val chatHistory: List<ChatHistoryEntry> = emptyList(),
+    /** Set when a conversation was opened from History for messaging (not necessarily a live
+     *  connection) — this is who sendChatMessage() addresses a mesh-relayed message to when
+     *  there's no live socket. Cleared on disconnect/leave. */
+    val chatMeshPeer: ChatHistoryEntry? = null,
     val chatPeerName: String? = null,
     val chatMessages: List<ChatUiMessage> = emptyList(),
     val chatPeerTyping: Boolean = false,

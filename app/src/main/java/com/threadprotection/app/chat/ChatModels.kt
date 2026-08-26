@@ -17,12 +17,34 @@ data class BtDeviceInfo(
     val kind: BtDeviceKind = BtDeviceKind.GENERIC,
 )
 
-data class ChatUiMessage(val id: String, val text: String, val fromMe: Boolean, val timestampMs: Long, val delivered: Boolean)
+/** relayed marks a message sent/received via the store-and-forward mesh (MeshRelayManager)
+ *  instead of a live direct socket — shown with different tick styling in the UI since there's no
+ *  synchronous delivery confirmation for a relayed message, only "queued" or "arrived". */
+data class ChatUiMessage(
+    val id: String,
+    val text: String,
+    val fromMe: Boolean,
+    val timestampMs: Long,
+    val delivered: Boolean,
+    val relayed: Boolean = false,
+)
 
 /** A device you've successfully chatted with before — README §Chat "History". Persisted (see
  *  SettingsRepository.chatHistoryFlow) so it survives leaving the Chat screen or restarting the
- *  app, letting you reconnect by address without rediscovering the device first. */
-data class ChatHistoryEntry(val address: String, val name: String, val lastChattedAtMs: Long)
+ *  app, letting you reconnect by address without rediscovering the device first. nodeId/
+ *  publicKeyB64 are the contact's long-term mesh identity, learned during that handshake — with
+ *  both present, you can message this contact via MeshRelayManager even when they're out of
+ *  direct range (see AppViewModel.messageFromHistory). Empty strings mean this entry predates the
+ *  mesh feature or the identity exchange failed; reconnecting directly refreshes it. */
+data class ChatHistoryEntry(
+    val address: String,
+    val name: String,
+    val lastChattedAtMs: Long,
+    val nodeId: String = "",
+    val publicKeyB64: String = "",
+) {
+    val meshReachable: Boolean get() = nodeId.isNotBlank() && publicKeyB64.isNotBlank()
+}
 
 /**
  * Plaintext framing used *inside* the AES-GCM payload (after decryption) — README's "give all

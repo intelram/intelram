@@ -396,7 +396,7 @@ class MainActivity : ComponentActivity() {
                             ChatHistoryScreen(
                                 state = state,
                                 onBack = viewModel::leaveChatHistory,
-                                onSelect = viewModel::connectFromHistory,
+                                onSelect = viewModel::messageFromHistory,
                             )
                         }
 
@@ -470,6 +470,7 @@ class MainActivity : ComponentActivity() {
             TARGET_PERMS -> viewModel.goPerms()
             TARGET_DASHBOARD -> viewModel.goDashboard()
             TARGET_SETTINGS -> viewModel.goSettings()
+            TARGET_CHAT -> viewModel.goChat()
         }
     }
 
@@ -479,5 +480,6 @@ class MainActivity : ComponentActivity() {
         const val TARGET_PERMS = "perms"
         const val TARGET_DASHBOARD = "dashboard"
         const val TARGET_SETTINGS = "settings"
+        const val TARGET_CHAT = "chat"
     }
 }

@@ -11,7 +11,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.util.Base64
 import com.threadprotection.app.crypto.PqcChatCrypto
+import com.threadprotection.app.data.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +53,7 @@ sealed interface ChatEvent {
  * be rediscovered. The listening server socket only runs while the Chat screen is open, not as a
  * background service.
  */
-class BluetoothChatManager(private val context: Context) {
+class BluetoothChatManager(private val context: Context, private val settingsRepository: SettingsRepository) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverJob: Job? = null
@@ -70,6 +72,16 @@ class BluetoothChatManager(private val context: Context) {
 
     private val _connectedDeviceAddress = MutableStateFlow<String?>(null)
     val connectedDeviceAddress: StateFlow<String?> = _connectedDeviceAddress.asStateFlow()
+
+    /** The peer's long-term mesh identity, learned during the handshake below — null if they're
+     *  on a version without mesh support, or the exchange simply failed (best-effort, doesn't
+     *  block the live chat session itself). Used to record them into Chat History so they're
+     *  reachable later via MeshRelayManager even without a live connection. */
+    private val _connectedPeerNodeId = MutableStateFlow<String?>(null)
+    val connectedPeerNodeId: StateFlow<String?> = _connectedPeerNodeId.asStateFlow()
+
+    private val _connectedPeerPublicKeyB64 = MutableStateFlow<String?>(null)
+    val connectedPeerPublicKeyB64: StateFlow<String?> = _connectedPeerPublicKeyB64.asStateFlow()
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
     val events = _events.asSharedFlow()
@@ -181,15 +193,15 @@ class BluetoothChatManager(private val context: Context) {
 
     private suspend fun establishSession(socket: BluetoothSocket, isInitiator: Boolean) {
         _connState.value = BtChatConnState.HANDSHAKING
-        val ok = runCatching {
-            val out = DataOutputStream(socket.outputStream)
-            val input = DataInputStream(socket.inputStream)
+        val out = DataOutputStream(socket.outputStream)
+        val input = DataInputStream(socket.inputStream)
 
+        val ok = runCatching {
             writeFrame(out, MAGIC)
             val peerMagic = readFrame(input) ?: error("no magic")
             if (!peerMagic.contentEquals(MAGIC)) error("peer isn't Thread Protection")
 
-            val key = if (isInitiator) {
+            if (isInitiator) {
                 val keyPair = PqcChatCrypto.generateKeyPair()
                 writeFrame(out, keyPair.publicKeyBytes)
                 val ciphertext = readFrame(input) ?: error("no ciphertext")
@@ -200,7 +212,6 @@ class BluetoothChatManager(private val context: Context) {
                 writeFrame(out, ciphertext)
                 sessionKey
             }
-            key
         }.getOrNull()
 
         if (ok == null) {
@@ -209,12 +220,37 @@ class BluetoothChatManager(private val context: Context) {
             return
         }
 
+        // Best-effort: also swap long-term mesh identities over the channel this session key just
+        // secured, so this contact becomes reachable later via MeshRelayManager even without a
+        // live connection. Purely additive — if it fails, the live chat session still works fine.
+        val peerIdentity = runCatching { exchangeMeshIdentity(out, input, ok, isInitiator) }.getOrNull()
+
         activeSocket = socket
         sessionKey = ok
         _connectedDeviceAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
         _connectedDeviceName.value = runCatching { socket.remoteDevice.deviceName() }.getOrNull()
+        _connectedPeerNodeId.value = peerIdentity?.nodeId
+        _connectedPeerPublicKeyB64.value = peerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
         _connState.value = BtChatConnState.CONNECTED
         readLoop(socket)
+    }
+
+    private suspend fun exchangeMeshIdentity(
+        out: DataOutputStream,
+        input: DataInputStream,
+        key: PqcChatCrypto.SessionKey,
+        isInitiator: Boolean,
+    ): MeshIdentityInfo? {
+        val myIdentity = MeshIdentityStore.ensure(settingsRepository)
+        val myFrame = PqcChatCrypto.encrypt(key, MeshIdentityInfo(myIdentity.nodeId, myIdentity.publicKeyBytes).encode())
+        return if (isInitiator) {
+            writeFrame(out, myFrame)
+            readFrame(input)?.let { PqcChatCrypto.decrypt(key, it) }?.let { MeshIdentityInfo.decode(it) }
+        } else {
+            val peerFrame = readFrame(input)
+            writeFrame(out, myFrame)
+            peerFrame?.let { PqcChatCrypto.decrypt(key, it) }?.let { MeshIdentityInfo.decode(it) }
+        }
     }
 
     private suspend fun readLoop(socket: BluetoothSocket) {
@@ -243,6 +279,8 @@ class BluetoothChatManager(private val context: Context) {
         sessionKey = null
         _connectedDeviceName.value = null
         _connectedDeviceAddress.value = null
+        _connectedPeerNodeId.value = null
+        _connectedPeerPublicKeyB64.value = null
         _connState.value = BtChatConnState.IDLE
     }
 
@@ -276,6 +314,8 @@ class BluetoothChatManager(private val context: Context) {
         sessionKey = null
         _connectedDeviceName.value = null
         _connectedDeviceAddress.value = null
+        _connectedPeerNodeId.value = null
+        _connectedPeerPublicKeyB64.value = null
         _connState.value = BtChatConnState.IDLE
     }
 

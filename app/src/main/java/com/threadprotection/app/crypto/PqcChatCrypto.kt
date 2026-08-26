@@ -24,6 +24,10 @@ import javax.crypto.spec.SecretKeySpec
  * shared secret is run through HKDF-SHA256 to derive a 256-bit key, and every message is
  * encrypted with AES-256-GCM (authenticated — tampering is detected, not just hidden).
  *
+ * Also used for the long-term "mesh identity" keypair (MeshIdentity.kt) — the same KEM primitive,
+ * just generated once and persisted rather than per-session, so a message can be sealed for a
+ * contact you've met before without a live connection to them (see MeshRelayManager.kt).
+ *
  * Bouncy Castle's `org.bouncycastle.pqc.crypto.mlkem` package is marked deprecated in favour of
  * `org.bouncycastle.crypto.kems.MLKEMGenerator` in the newest releases (ML-KEM graduating from
  * "PQC" to "standard"), but the deprecated path is still the fully-functional, documented
@@ -45,6 +49,11 @@ object PqcChatCrypto {
         val privateKey = keyPair.private as MLKEMPrivateKeyParameters
         return KemKeyPair(publicKey.encoded, privateKey)
     }
+
+    /** Reconstructs a private key from its raw encoded bytes — used for the long-term mesh
+     *  identity key (MeshIdentity.kt), which has to survive app restarts, unlike the ephemeral
+     *  per-session keys `generateKeyPair()` normally produces. */
+    fun loadPrivateKey(encoded: ByteArray): MLKEMPrivateKeyParameters = MLKEMPrivateKeyParameters(KEM_PARAMS, encoded)
 
     /** Responder side: encapsulates a fresh shared secret against the initiator's public key. Returns (ciphertext to send back, session key). */
     fun encapsulate(peerPublicKeyBytes: ByteArray): Pair<ByteArray, SessionKey> {

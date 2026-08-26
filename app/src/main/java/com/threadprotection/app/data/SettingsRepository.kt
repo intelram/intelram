@@ -35,9 +35,38 @@ data class StoredProtectionSettings(
     val scanDayOfWeek: Int = 2,
 )
 
-/** Plain-data mirror of `chat.ChatHistoryEntry` — this layer doesn't depend on the chat package. */
+/** Plain-data mirror of `chat.ChatHistoryEntry` — this layer doesn't depend on the chat package.
+ *  nodeId/publicKeyB64 default to "" for entries recorded before the mesh-relay feature existed;
+ *  such an entry just can't be reached via relay (no long-term key on file for it) until you
+ *  connect to it directly once more, which re-records it with both fields filled in. */
 @Serializable
-data class StoredChatHistoryEntry(val address: String, val name: String, val lastChattedAtMs: Long)
+data class StoredChatHistoryEntry(
+    val address: String,
+    val name: String,
+    val lastChattedAtMs: Long,
+    val nodeId: String = "",
+    val publicKeyB64: String = "",
+)
+
+/** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
+ *  independent of the Bluetooth MAC (used for mesh routing); the keypair is ML-KEM-768, generated
+ *  once and kept for the life of the install so contacts can address a message to this device
+ *  without a live connection. */
+@Serializable
+data class StoredIdentity(val nodeId: String, val publicKeyB64: String, val privateKeyB64: String)
+
+/** One message this device is carrying for the store-and-forward mesh relay — see
+ *  `chat/MeshRelayManager.kt`. envelopeB64 is the complete encrypted wire envelope; msgId/
+ *  destNodeId/ttl are pulled out alongside it purely so gossip and expiry don't need to re-parse
+ *  it on every tick. */
+@Serializable
+data class StoredMeshEnvelope(
+    val msgId: String,
+    val destNodeId: String,
+    val ttl: Int,
+    val envelopeB64: String,
+    val receivedAtMs: Long,
+)
 
 /** Which free threat-intel source a key belongs to — see README §Threat intelligence. */
 enum class ApiKeyId(val prefKey: String, val label: String, val signupUrl: String) {
@@ -71,6 +100,8 @@ class SettingsRepository(private val context: Context) {
         val REALTIME = booleanPreferencesKey("tp_realtime")
         val PROTECTION_SETTINGS = stringPreferencesKey("tp_protection_settings")
         val CHAT_HISTORY = stringPreferencesKey("tp_chat_history")
+        val IDENTITY = stringPreferencesKey("tp_mesh_identity")
+        val MESH_OUTBOX = stringPreferencesKey("tp_mesh_outbox")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -94,14 +125,72 @@ class SettingsRepository(private val context: Context) {
         } ?: emptyList()
     }
 
-    suspend fun recordChatHistory(address: String, name: String) {
+    suspend fun recordChatHistory(address: String, name: String, nodeId: String = "", publicKeyB64: String = "") {
         context.dataStore.edit { prefs ->
             val current = prefs[Keys.CHAT_HISTORY]?.let { raw ->
                 runCatching { Json.decodeFromString<List<StoredChatHistoryEntry>>(raw) }.getOrNull()
             } ?: emptyList()
-            val updated = (listOf(StoredChatHistoryEntry(address, name, System.currentTimeMillis())) +
+            val updated = (listOf(StoredChatHistoryEntry(address, name, System.currentTimeMillis(), nodeId, publicKeyB64)) +
                 current.filter { it.address != address }).take(30)
             prefs[Keys.CHAT_HISTORY] = Json.encodeToString(updated)
+        }
+    }
+
+    // ── Mesh relay: long-term identity + store-and-forward outbox (chat/MeshRelayManager.kt) ──
+
+    /** Returns the existing identity if one's already stored, otherwise generates one with
+     *  [generate] and persists it — the whole read-generate-write happens inside DataStore's own
+     *  transactional `edit`, so two callers racing on first launch can't create two identities. */
+    suspend fun ensureIdentity(generate: () -> StoredIdentity): StoredIdentity {
+        var result: StoredIdentity? = null
+        context.dataStore.edit { prefs ->
+            val existing = prefs[Keys.IDENTITY]?.let { raw -> runCatching { Json.decodeFromString<StoredIdentity>(raw) }.getOrNull() }
+            result = if (existing != null) {
+                existing
+            } else {
+                val fresh = generate()
+                prefs[Keys.IDENTITY] = Json.encodeToString(fresh)
+                fresh
+            }
+        }
+        return result!!
+    }
+
+    /** Everything this device is currently carrying to relay onward or deliver locally, oldest
+     *  first. Not exposed as a live Flow — MeshRelayManager only needs a snapshot per gossip tick. */
+    suspend fun meshOutboxOnce(): List<StoredMeshEnvelope> =
+        context.dataStore.data.map { prefs ->
+            prefs[Keys.MESH_OUTBOX]?.let { raw -> runCatching { Json.decodeFromString<List<StoredMeshEnvelope>>(raw) }.getOrNull() } ?: emptyList()
+        }.firstOrNull() ?: emptyList()
+
+    /** Merges newly-seen envelopes into the outbox (deduped by msgId), drops anything past
+     *  [maxAgeMs], and caps the total at [cap] — oldest evicted first — so the store can't grow
+     *  unbounded while messages wait for a carrier. */
+    suspend fun mergeMeshEnvelopes(newEntries: List<StoredMeshEnvelope>, maxAgeMs: Long = 24 * 60 * 60 * 1000L, cap: Int = 60) {
+        if (newEntries.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.MESH_OUTBOX]?.let { raw ->
+                runCatching { Json.decodeFromString<List<StoredMeshEnvelope>>(raw) }.getOrNull()
+            } ?: emptyList()
+            val now = System.currentTimeMillis()
+            val byId = LinkedHashMap<String, StoredMeshEnvelope>()
+            (current + newEntries).forEach { byId[it.msgId] = it }
+            val fresh = byId.values
+                .filter { now - it.receivedAtMs <= maxAgeMs }
+                .sortedByDescending { it.receivedAtMs }
+                .take(cap)
+            prefs[Keys.MESH_OUTBOX] = Json.encodeToString(fresh)
+        }
+    }
+
+    /** Evicts one envelope — call once it's been decrypted and delivered locally, or the caller
+     *  has otherwise fully handled it. */
+    suspend fun removeMeshEnvelope(msgId: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.MESH_OUTBOX]?.let { raw ->
+                runCatching { Json.decodeFromString<List<StoredMeshEnvelope>>(raw) }.getOrNull()
+            } ?: return@edit
+            prefs[Keys.MESH_OUTBOX] = Json.encodeToString(current.filter { it.msgId != msgId })
         }
     }
 

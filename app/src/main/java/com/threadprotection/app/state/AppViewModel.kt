@@ -3,17 +3,20 @@ package com.threadprotection.app.state
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.util.Base64
 import com.threadprotection.app.chat.BluetoothChatManager
 import com.threadprotection.app.chat.ChatEvent
 import com.threadprotection.app.chat.ChatHistoryEntry
 import com.threadprotection.app.chat.ChatMode
 import com.threadprotection.app.chat.ChatUiMessage
+import com.threadprotection.app.chat.MeshRelayManager
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.data.SettingsRepository
 import com.threadprotection.app.data.StoredChatHistoryEntry
+import com.threadprotection.app.service.NotificationHelper
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.scan.DeviceScanner
 import com.threadprotection.app.scan.HardwareWatcher
@@ -45,7 +48,18 @@ class AppViewModel(
     private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
     private val permissionAudit by lazy { appContext?.let { PermissionAudit(it) } }
     private val hardwareWatcher by lazy { appContext?.let { HardwareWatcher(it) } }
-    private val bluetoothChatManager by lazy { appContext?.let { BluetoothChatManager(it) } }
+    private val bluetoothChatManager by lazy {
+        val ctx = appContext; val repo = settingsRepository
+        if (ctx != null && repo != null) BluetoothChatManager(ctx, repo) else null
+    }
+
+    /** Shared with ProtectionForegroundService (same process-wide instance via getInstance) —
+     *  the service actually drives listening/gossiping in the background; this ViewModel just
+     *  sends outbound messages and observes deliveries. See MeshRelayManager's own doc comment. */
+    private val meshRelayManager by lazy {
+        val ctx = appContext; val repo = settingsRepository
+        if (ctx != null && repo != null) MeshRelayManager.getInstance(ctx, repo) else null
+    }
     private var lastTypingSentAt = 0L
 
     private var scanJob: Job? = null
@@ -84,7 +98,7 @@ class AppViewModel(
             viewModelScope.launch {
                 repo.chatHistoryFlow.collect { stored ->
                     val history = stored
-                        .map { ChatHistoryEntry(it.address, it.name, it.lastChattedAtMs) }
+                        .map { ChatHistoryEntry(it.address, it.name, it.lastChattedAtMs, it.nodeId, it.publicKeyB64) }
                         .sortedByDescending { it.lastChattedAtMs }
                     _state.update { it.copy(chatHistory = history) }
                 }
@@ -103,8 +117,16 @@ class AppViewModel(
                     if (name != null) {
                         setScreen(Screen.CHAT_CONVERSATION)
                         val address = chat.connectedDeviceAddress.value
+                        val nodeId = chat.connectedPeerNodeId.value.orEmpty()
+                        val publicKeyB64 = chat.connectedPeerPublicKeyB64.value.orEmpty()
                         if (address != null) {
-                            settingsRepository?.let { repo -> viewModelScope.launch { repo.recordChatHistory(address, name) } }
+                            // Also remember this contact as mesh-reachable (if the identity
+                            // exchange succeeded) so the conversation can keep going via relay if
+                            // the live connection later drops.
+                            _state.update { it.copy(chatMeshPeer = ChatHistoryEntry(address, name, System.currentTimeMillis(), nodeId, publicKeyB64)) }
+                            settingsRepository?.let { repo ->
+                                viewModelScope.launch { repo.recordChatHistory(address, name, nodeId, publicKeyB64) }
+                            }
                         }
                     }
                 }
@@ -129,6 +151,46 @@ class AppViewModel(
                             }
                         }
                         ChatEvent.PeerDisconnected -> _state.update { it.copy(chatPeerName = null, chatPeerTyping = false) }
+                    }
+                }
+            }
+        }
+        meshRelayManager?.let { mesh ->
+            viewModelScope.launch {
+                mesh.delivered.collect { msg ->
+                    val contact = _state.value.chatHistory.firstOrNull { it.nodeId == msg.senderNodeId }
+                    val displayName = contact?.name?.takeIf { it.isNotBlank() } ?: msg.senderName
+                    val openForThisPeer = _state.value.screen == Screen.CHAT_CONVERSATION &&
+                        _state.value.chatMeshPeer?.nodeId == msg.senderNodeId
+                    if (openForThisPeer) {
+                        _state.update {
+                            it.copy(
+                                chatMessages = it.chatMessages + ChatUiMessage(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    text = msg.body,
+                                    fromMe = false,
+                                    timestampMs = msg.sentAtMs,
+                                    delivered = true,
+                                    relayed = true,
+                                ),
+                            )
+                        }
+                    } else {
+                        appContext?.let { ctx ->
+                            NotificationHelper.postAlert(
+                                ctx,
+                                "New message from $displayName",
+                                msg.body.take(140),
+                                com.threadprotection.app.MainActivity.TARGET_CHAT,
+                            )
+                        }
+                    }
+                    // Bump this contact to the top of History and refresh their identity in case
+                    // it's the first time we've heard from them via relay rather than directly.
+                    if (contact != null) {
+                        settingsRepository?.let { repo ->
+                            viewModelScope.launch { repo.recordChatHistory(contact.address, contact.name, contact.nodeId, contact.publicKeyB64) }
+                        }
                     }
                 }
             }
@@ -600,7 +662,13 @@ class AppViewModel(
     fun leaveChat() {
         bluetoothChatManager?.shutdown()
         _state.update {
-            it.copy(chatMessages = emptyList(), chatPeerName = null, btDiscoveredDevices = emptyList(), btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE)
+            it.copy(
+                chatMessages = emptyList(),
+                chatPeerName = null,
+                chatMeshPeer = null,
+                btDiscoveredDevices = emptyList(),
+                btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE,
+            )
         }
         setScreen(Screen.DASHBOARD)
     }
@@ -618,12 +686,22 @@ class AppViewModel(
         bluetoothChatManager?.connectTo(address)
     }
 
-    /** Reconnect to a device from Chat History — same as connecting fresh, just skips discovery
-     *  since the address is already known. Returns to the Chat screen first so a failure (device
-     *  out of range, Bluetooth off) shows the same status banner as a normal connect attempt. */
-    fun connectFromHistory(address: String) {
-        setScreen(Screen.CHAT)
-        connectToBtDevice(address)
+    /** Opens a conversation with a History contact for messaging — works whether or not they're
+     *  currently in range. A real direct connect is also attempted in the background so the
+     *  conversation upgrades to live 2-way chat automatically if they happen to be nearby right
+     *  now; if not, sendChatMessage() falls back to queuing via the mesh relay (see
+     *  MeshRelayManager), which only works if this contact's long-term key was captured during a
+     *  past direct handshake (entry.meshReachable). */
+    fun messageFromHistory(entry: ChatHistoryEntry) {
+        _state.update {
+            it.copy(
+                chatMeshPeer = entry,
+                chatPeerName = entry.name,
+                chatMessages = emptyList(),
+                screen = Screen.CHAT_CONVERSATION,
+            )
+        }
+        bluetoothChatManager?.connectTo(entry.address)
     }
 
     fun setChatDraft(text: String) {
@@ -638,10 +716,37 @@ class AppViewModel(
     fun sendChatMessage() {
         val text = _state.value.chatDraft.trim()
         if (text.isEmpty()) return
-        val id = bluetoothChatManager?.sendText(text) ?: return
+
+        if (_state.value.btConnState == com.threadprotection.app.chat.BtChatConnState.CONNECTED) {
+            val id = bluetoothChatManager?.sendText(text) ?: return
+            _state.update {
+                it.copy(
+                    chatMessages = it.chatMessages + ChatUiMessage(id, text, fromMe = true, timestampMs = System.currentTimeMillis(), delivered = false),
+                    chatDraft = "",
+                )
+            }
+            return
+        }
+
+        // No live connection — fall back to the store-and-forward mesh relay if this contact's
+        // long-term key is on file (only true once you've connected to them directly at least
+        // once; see BluetoothChatManager's identity exchange).
+        val peer = _state.value.chatMeshPeer
+        val mesh = meshRelayManager
+        if (peer == null || mesh == null || !peer.meshReachable) return
+        val publicKeyBytes = runCatching { Base64.decode(peer.publicKeyB64, Base64.NO_WRAP) }.getOrNull() ?: return
+        val senderName = _state.value.account?.name?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
+        viewModelScope.launch { mesh.queueOutbound(peer.nodeId, publicKeyBytes, senderName, text) }
         _state.update {
             it.copy(
-                chatMessages = it.chatMessages + ChatUiMessage(id, text, fromMe = true, timestampMs = System.currentTimeMillis(), delivered = false),
+                chatMessages = it.chatMessages + ChatUiMessage(
+                    id = java.util.UUID.randomUUID().toString(),
+                    text = text,
+                    fromMe = true,
+                    timestampMs = System.currentTimeMillis(),
+                    delivered = false,
+                    relayed = true,
+                ),
                 chatDraft = "",
             )
         }
@@ -649,7 +754,7 @@ class AppViewModel(
 
     fun disconnectChatPeer() {
         bluetoothChatManager?.disconnect()
-        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, screen = Screen.CHAT) }
+        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, chatMeshPeer = null, screen = Screen.CHAT) }
     }
 
     companion object {

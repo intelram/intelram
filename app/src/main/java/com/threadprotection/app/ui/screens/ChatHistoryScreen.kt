@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit
 fun ChatHistoryScreen(
     state: AppUiState,
     onBack: () -> Unit,
-    onSelect: (String) -> Unit,
+    onSelect: (ChatHistoryEntry) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -57,7 +57,7 @@ fun ChatHistoryScreen(
                 modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                state.chatHistory.forEach { entry -> HistoryRow(entry, onClick = { onSelect(entry.address) }) }
+                state.chatHistory.forEach { entry -> HistoryRow(entry, onClick = { onSelect(entry) }) }
             }
         }
     }
@@ -85,9 +85,13 @@ private fun HistoryRow(entry: ChatHistoryEntry, onClick: () -> Unit) {
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(entry.name, style = TpType.cardTitleBold.copy(fontSize = 16.sp), color = palette.fg)
-            Text(relativeTime(entry.lastChattedAtMs), style = TpType.caption.copy(fontSize = 12.5.sp), color = palette.muted)
+            Text(
+                relativeTime(entry.lastChattedAtMs) + if (entry.meshReachable) " · reachable via relay" else " · direct range only",
+                style = TpType.caption.copy(fontSize = 12.5.sp),
+                color = palette.muted,
+            )
         }
-        Text("Chat", style = TpType.caption.copy(fontSize = 13.sp), color = palette.accent)
+        Text("Message", style = TpType.caption.copy(fontSize = 13.sp), color = palette.accent)
     }
 }
 

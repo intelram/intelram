@@ -64,10 +64,39 @@ between phones that also have Thread Protection installed, encrypted to resist q
   last-chatted time — in `SettingsRepository.chatHistoryFlow` (persisted, newest first, capped at
   30). The Chat screen shows it compressed behind one "History" row; opening it lists every past
   conversation, and tapping one reconnects straight to that address without rescanning.
-- **v1 scope, stated plainly**: one active conversation at a time; message text itself lives in
-  memory for the current connection only (nothing is written to disk, only the History contact
-  list is); the listening socket runs only while the Chat screen is open, not as a background
-  service.
+- **v1 scope, stated plainly**: one active *live* conversation at a time; live message text lives
+  in memory only for that connection (nothing is written to disk beyond the History contact list
+  and, for the mesh relay below, the encrypted envelopes still waiting for a carrier). The live
+  chat socket itself still only runs while the Chat screen is open — but see below, since the mesh
+  relay's own listener runs continuously.
+
+### Out-of-range delivery: store-and-forward mesh relay
+
+If you and the person you're messaging aren't in range of each other, but you're each in range of
+*some* phone running Thread Protection — even a stranger's, even several hops apart — the message
+now hops phone to phone until it reaches them. This is a real delay-tolerant-networking relay
+(`chat/MeshRelayManager.kt`), the same technique real offline mesh-chat apps use, not a simulated
+"queued" state:
+
+- **Always-on, per your choice of how this should work**: `ProtectionForegroundService` — already
+  alive continuously whenever real-time protection is on — starts the relay's accept loop and
+  ticks it (brief Bluetooth discovery + a gossip exchange with anything nearby) every 90 seconds,
+  independent of whether the Chat screen is even open. This is what actually lets a message hop
+  through a phone whose owner isn't using the app at that moment.
+- **Real end-to-end encryption, private from every relay**: each device generates a persistent
+  ML-KEM-768 identity keypair on first use (`chat/MeshIdentity.kt`), exchanged automatically (over
+  the already-encrypted channel) the first time you connect to someone directly. A message to that
+  contact is sealed with a *fresh* KEM encapsulation against their long-term public key, then
+  AES-256-GCM — so a relay carrying it can decrypt neither the content nor learn who sent it; only
+  the addressed device can open it. Stated precisely rather than oversold: a relay *can* see which
+  device a message is addressed to (unavoidable for routing without a full onion-routing layer,
+  which is out of scope), and there's no delivery receipt across relay hops — only a live direct
+  connection gets those. Envelopes expire after 24h if no carrier reaches the recipient.
+- **From Chat History**: tapping a contact now opens the conversation immediately whether or not
+  they're currently in range — a live connection is still attempted in the background (upgrading
+  to instant 2-way chat if they happen to be nearby), and if that doesn't succeed, sending falls
+  back to queuing via the mesh, shown honestly in the thread as "via nearby relay — no delivery
+  confirmation" rather than a fake delivered tick.
 
 ## Scheduled scan — actually customizable
 
