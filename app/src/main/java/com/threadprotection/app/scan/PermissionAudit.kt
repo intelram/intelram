@@ -65,6 +65,7 @@ class PermissionAudit(private val context: Context) {
                 rows += AppPermission(
                     id = permName.substringAfterLast('.'),
                     name = entry.plainName,
+                    description = entry.description,
                     why = why,
                     risk = entry.baselineRisky || stale,
                 )
@@ -73,6 +74,7 @@ class PermissionAudit(private val context: Context) {
                 rows += AppPermission(
                     id = "accessibility",
                     name = PermissionCatalog.accessibilityEntry.plainName,
+                    description = PermissionCatalog.accessibilityEntry.description,
                     why = "Can read everything on screen and act on your behalf",
                     risk = true,
                 )
@@ -88,9 +90,16 @@ class PermissionAudit(private val context: Context) {
                 sideload -> "Sideloaded · unverified source"
                 else -> "Installed app"
             }
-            permApps += PermApp(app = label, packageName = appInfo.packageName, kind = kind, perms = rows.sortedByDescending { it.risk })
-
             val riskyCount = rows.count { it.risk }
+            val safetyScore = safetyScoreFor(riskyCount = riskyCount, totalPerms = rows.size, sideloaded = sideload, isSystemApp = isSystemApp)
+            permApps += PermApp(
+                app = label,
+                packageName = appInfo.packageName,
+                kind = kind,
+                installerLabel = installerLabelOf(installer, isSystemApp),
+                safetyScore = safetyScore,
+                perms = rows.sortedByDescending { it.risk },
+            )
             if (sideload) {
                 sideloaded += AppSummary(label, appInfo.packageName, true, riskyCount)
                 if (riskyCount > 0) {
@@ -138,6 +147,25 @@ class PermissionAudit(private val context: Context) {
         }.getOrDefault(emptySet())
     }
 
+    /** Real 0-100 heuristic from this one app's own signals — same style of scoring the dashboard's
+     *  overall security score already uses, just scoped to a single app. Not a lookup against any
+     *  external reputation service. */
+    private fun safetyScoreFor(riskyCount: Int, totalPerms: Int, sideloaded: Boolean, isSystemApp: Boolean): Int {
+        if (isSystemApp) return 100
+        var score = 100 - riskyCount * 12 - (totalPerms - riskyCount).coerceAtMost(6) * 2
+        if (sideloaded) score -= 20
+        return score.coerceIn(0, 100)
+    }
+
+    private fun installerLabelOf(installerPackage: String?, isSystemApp: Boolean): String = when {
+        isSystemApp -> "Preinstalled (system)"
+        installerPackage == null -> "Unknown source (sideloaded)"
+        installerPackage in TRUSTED_INSTALLERS -> KNOWN_STORE_LABELS[installerPackage] ?: installerPackage
+        installerPackage == "com.google.android.packageinstaller" || installerPackage == "com.android.packageinstaller" ->
+            "Installed manually (package installer)"
+        else -> installerPackage
+    }
+
     private fun installerOf(packageName: String): String? = runCatching {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             pm.getInstallSourceInfo(packageName).installingPackageName
@@ -153,6 +181,12 @@ class PermissionAudit(private val context: Context) {
             "com.amazon.venezia",
             "com.sec.android.app.samsungapps",
             "com.huawei.appmarket",
+        )
+        private val KNOWN_STORE_LABELS = mapOf(
+            "com.android.vending" to "Google Play Store",
+            "com.amazon.venezia" to "Amazon Appstore",
+            "com.sec.android.app.samsungapps" to "Samsung Galaxy Store",
+            "com.huawei.appmarket" to "Huawei AppGallery",
         )
     }
 }

@@ -53,9 +53,22 @@ data class HwSim(
 
 data class Feed(val name: String, val kind: String, val items: String)
 
-data class AppPermission(val id: String, val name: String, val why: String, val risk: Boolean)
+data class AppPermission(val id: String, val name: String, val description: String, val why: String, val risk: Boolean)
 
-data class PermApp(val app: String, val packageName: String, val kind: String, val perms: List<AppPermission>)
+/** installerLabel is a human-readable source ("Google Play Store", "Sideloaded / unknown source",
+ *  "Preinstalled (system)") derived from the real installer package PackageManager reports — see
+ *  PermissionAudit.installerLabelOf. safetyScore is a real 0-100 heuristic computed from the
+ *  actual permission/install-source signals for this one app (README's "safety rating"), the same
+ *  kind of on-device scoring the dashboard's overall security score already uses — not a lookup
+ *  against any external reputation database. */
+data class PermApp(
+    val app: String,
+    val packageName: String,
+    val kind: String,
+    val installerLabel: String,
+    val safetyScore: Int,
+    val perms: List<AppPermission>,
+)
 
 data class BrainSource(val name: String, val detail: String, val metric: String)
 

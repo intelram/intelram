@@ -491,6 +491,14 @@ class AppViewModel(
         }
     }
 
+    fun openAppPermissionDetail(packageName: String) {
+        _state.update { it.copy(selectedPermApp = packageName, screen = Screen.APP_PERMISSION_DETAIL) }
+    }
+
+    fun closeAppPermissionDetail() {
+        _state.update { it.copy(selectedPermApp = null, screen = Screen.PERMS) }
+    }
+
     // ───────────────────────── QR scanner (real reputation checks) ─────────────────────────
 
     fun startQr(index: Int) {

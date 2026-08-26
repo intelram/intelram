@@ -1,5 +1,6 @@
 package com.threadprotection.app.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -18,23 +19,54 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import com.threadprotection.app.network.TechnicalDetails
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.Severity
 import com.threadprotection.app.ui.theme.TpType
 import com.threadprotection.app.ui.theme.severityColor
 import com.threadprotection.app.ui.theme.severityTint
+
+/** The app's real launcher icon, read straight from PackageManager — not a placeholder glyph.
+ *  Falls back to a generic icon if the app was uninstalled between the scan and this render. */
+@Composable
+fun AppIcon(packageName: String, size: Dp, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val palette = LocalTpPalette.current
+    val bitmap = remember(packageName) {
+        runCatching { context.packageManager.getApplicationIcon(packageName) }
+            .getOrNull()
+            ?.toBitmap(width = 128, height = 128)
+            ?.asImageBitmap()
+    }
+    val shape = RoundedCornerShape(size / 4)
+    if (bitmap != null) {
+        Image(bitmap = bitmap, contentDescription = null, modifier = modifier.size(size).clip(shape))
+    } else {
+        Box(
+            modifier = modifier.size(size).clip(shape).background(palette.card2),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Apps, contentDescription = null, tint = palette.muted, modifier = Modifier.size(size / 2))
+        }
+    }
+}
 
 @Composable
 fun SectionHeading(text: String, modifier: Modifier = Modifier) {

@@ -118,7 +118,17 @@ was drawing straight under the status bar, the notch/cutout, and the navigation 
   age, real USB/Bluetooth/charging state, and a live NVD CVE lookup for Android's WebView
   component. Nothing here is canned — on a clean phone it can legitimately report zero findings.
 - **App permissions screen**: pulls the same real per-app audit independently (no full scan
-  needed) — every app, every granted dangerous permission, real reasoning.
+  needed) — every app, every granted dangerous permission, real reasoning. Tapping an app opens a
+  full detail screen: its real launcher icon, package name, and install source
+  (`PackageManager.getInstallSourceInfo` mapped to a friendly label — Google Play Store, Amazon
+  Appstore, "Unknown source (sideloaded)", etc.), a 0-100 safety rating computed from that app's
+  own risky-permission count and install source (the same style of on-device score the dashboard
+  already uses), a description for every single permission (not just a short label), and two
+  action buttons. Both buttons are honest about the platform: "Manage access" and "Uninstall" both
+  launch the real system confirmation screen (`ACTION_APPLICATION_DETAILS_SETTINGS` /
+  `ACTION_DELETE`, the latter needing `REQUEST_DELETE_PACKAGES`) because no third-party app —
+  this one included — can silently revoke another app's permission or delete it; that's reserved
+  for the OS itself.
 - **QR scanner**: real camera preview (CameraX) with on-device ML Kit barcode decoding — point
   it at a code and it decodes automatically, no fake staging. Every decoded (or sample) URL runs
   through a live reputation pipeline: on-device heuristics (punycode/homograph, IP-literal

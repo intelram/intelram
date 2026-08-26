@@ -19,7 +19,7 @@ import com.threadprotection.app.ui.theme.TpThemeMode
 enum class Screen {
     SPLASH, SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
     OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION,
-    CHAT_HISTORY,
+    CHAT_HISTORY, APP_PERMISSION_DETAIL,
 }
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
@@ -70,6 +70,8 @@ data class AppUiState(
     val realtime: Boolean = true,
     val settings: ProtectionSettings = ProtectionSettings(),
     val selectedId: String? = null,
+    /** Package name of the app currently shown on AppPermissionDetailScreen. */
+    val selectedPermApp: String? = null,
     val hasScanned: Boolean = false,
     val qrPhase: QrPhase = QrPhase.IDLE,
     val qrIndex: Int = 0,

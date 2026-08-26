@@ -33,6 +33,7 @@ import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
 import com.threadprotection.app.ui.screens.AiBrainScreen
+import com.threadprotection.app.ui.screens.AppPermissionDetailScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
 import com.threadprotection.app.ui.screens.ChatConversationScreen
 import com.threadprotection.app.ui.screens.ChatHistoryScreen
@@ -106,6 +107,18 @@ class MainActivity : ComponentActivity() {
                     runCatching {
                         context.startActivity(
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                }
+
+                // Real uninstall request: Android reserves the actual removal (and its confirmation
+                // dialog) for the system itself — ACTION_DELETE is the standard way a third-party
+                // app asks for that, same as openAppSettings above asks for the permission screen.
+                val uninstallApp: (String) -> Unit = { packageName ->
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_DELETE, Uri.fromParts("package", packageName, null))
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
                     }
@@ -268,9 +281,19 @@ class MainActivity : ComponentActivity() {
                                 onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
-                                onTogglePermission = viewModel::togglePermission,
                                 onTurnOffAllRisky = viewModel::turnOffAllRiskyPermissions,
+                                onOpenDetail = viewModel::openAppPermissionDetail,
+                            )
+                        }
+
+                        Screen.APP_PERMISSION_DETAIL -> {
+                            BackHandler(enabled = true) { viewModel.closeAppPermissionDetail() }
+                            AppPermissionDetailScreen(
+                                state = state,
+                                onBack = viewModel::closeAppPermissionDetail,
                                 onOpenAppSettings = openAppSettings,
+                                onUninstall = uninstallApp,
+                                onTogglePermission = viewModel::togglePermission,
                             )
                         }
 
