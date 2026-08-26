@@ -237,6 +237,14 @@ class AppViewModel(
         _state.update { it.copy(screen = screen) }
     }
 
+    // ───────────────────────── splash ─────────────────────────
+
+    /** Called once the branded splash animation has played out. Leaves DASHBOARD alone if an
+     *  account was already restored from disk while the splash was showing. */
+    fun finishSplash() {
+        _state.update { if (it.screen == Screen.SPLASH) it.copy(screen = Screen.SIGNIN) else it }
+    }
+
     // ───────────────────────── sign-in ─────────────────────────
 
     fun signInWithGoogle(account: Account = DemoData.demoAccount) {

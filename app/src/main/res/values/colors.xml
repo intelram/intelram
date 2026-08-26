@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Day background — TpPalette.Day.bg, so the window's pre-Compose background matches
+         the splash/app exactly and there's no color flash on cold start. -->
+    <color name="splash_bg">#F6FAF7</color>
+</resources>

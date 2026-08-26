@@ -51,6 +51,7 @@ import com.threadprotection.app.ui.screens.ScanWebsiteScreen
 import com.threadprotection.app.ui.screens.ScanningScreen
 import com.threadprotection.app.ui.screens.SettingsScreen
 import com.threadprotection.app.ui.screens.SignInScreen
+import com.threadprotection.app.ui.screens.SplashScreen
 import com.threadprotection.app.ui.screens.ThreatDetailScreen
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.ThreadProtectionTheme
@@ -153,6 +154,11 @@ class MainActivity : ComponentActivity() {
                         .windowInsetsPadding(WindowInsets.safeDrawing),
                 ) {
                     when (state.screen) {
+                        Screen.SPLASH -> {
+                            BackHandler(enabled = true) { /* no-op: can't back out of the splash */ }
+                            SplashScreen(onFinished = viewModel::finishSplash)
+                        }
+
                         Screen.SIGNIN -> SignInScreen(
                             blockedCount = state.blocked,
                             tickerText = DemoData.ticker[state.tickIdx],

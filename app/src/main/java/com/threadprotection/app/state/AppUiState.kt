@@ -16,7 +16,7 @@ import com.threadprotection.app.scan.PortFinding
 import com.threadprotection.app.ui.theme.TpThemeMode
 
 enum class Screen {
-    SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
+    SPLASH, SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
     OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION,
 }
 
@@ -60,7 +60,7 @@ data class ScanPhaseState(val index: Int = 0, val total: Int = 7, val label: Str
 
 /** Mirrors the prototype's `state = {...}` object — see README §State — extended with real scan/auth/API-key state. */
 data class AppUiState(
-    val screen: Screen = Screen.SIGNIN,
+    val screen: Screen = Screen.SPLASH,
     val account: Account? = null,
     val progress: Float = 0f,
     val scannedCount: Int = 0,
