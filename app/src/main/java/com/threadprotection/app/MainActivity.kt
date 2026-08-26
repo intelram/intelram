@@ -94,6 +94,13 @@ class MainActivity : ComponentActivity() {
 
                 val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                // Real use, not a blanket ask: the "Connected hardware"/"Operating system" audit
+                // reads the current Wi-Fi network name (WifiInfo.currentSsid) so you can see which
+                // network you're on — Android ties that specific reading to location permission,
+                // regardless of Android version. Requesting it here (not buried in a sub-screen)
+                // is what actually surfaces the OS's own three-way "While using the app / Only
+                // this time / Don't allow" choice on Android 11+ right away.
+                val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 LaunchedEffect(Unit) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -101,6 +108,7 @@ class MainActivity : ComponentActivity() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
                     }
+                    locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
 
                 val openAppSettings: (String) -> Unit = { packageName ->

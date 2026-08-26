@@ -5,6 +5,22 @@ consumer security app prototype: same 9 screens + hardware alert overlay, same d
 typography, spacing, animations and copy — now backed by a **real scan pipeline** instead of
 demo data (see below).
 
+## Location permission — asked on launch, for a real reason
+
+The app now asks for `ACCESS_FINE_LOCATION` right at startup, alongside the existing notification
+and Bluetooth prompts (`MainActivity`'s launch `LaunchedEffect`) — this is what actually surfaces
+Android's own three-way choice ("While using the app" / "Only this time" / "Don't allow") rather
+than a two-option dialog, since the app only ever requests foreground location (never
+`ACCESS_BACKGROUND_LOCATION`, which would change that flow and needs a much higher bar of
+justification).
+
+It's tied to something real, not asked blind: the Operating System detail screen's new "Network"
+card reads the currently-connected Wi-Fi network's name (`scan/WifiInfo.kt`, via
+`WifiManager.connectionInfo`) so you can see which network you're on — and Android ties that
+specific reading to location permission on every version it supports, a platform rule this app
+didn't choose. Deny it (or pick "Only this time" and let it lapse) and that card just says so
+honestly instead of showing a fake network name.
+
 ## App icon
 
 The launcher icon is a proper Android adaptive icon (foreground + background layers, one PNG

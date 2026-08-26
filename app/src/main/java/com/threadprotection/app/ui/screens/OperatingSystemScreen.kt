@@ -18,10 +18,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.scan.DeviceInfo
+import com.threadprotection.app.scan.WifiInfo
+import com.threadprotection.app.scan.WifiStatus
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
@@ -44,7 +47,9 @@ fun OperatingSystemScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
+    val context = LocalContext.current
     val info = remember { DeviceInfo.current() }
+    val wifi = remember { WifiInfo.current(context) }
     val osFinding = state.scanData.findings.firstOrNull { it.cat == Category.OS }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -104,6 +109,29 @@ fun OperatingSystemScreen(
                 DetailRow("Security patch", info.securityPatch)
                 DetailRow("Kernel", info.kernelVersion)
                 DetailRow("Build ID", info.buildFingerprint)
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.card2)
+                    .border(BorderStroke(1.dp, palette.line2), RoundedCornerShape(18.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Network", style = TpType.cardTitle.copy(fontSize = 15.sp), color = palette.fg)
+                when (wifi) {
+                    is WifiStatus.Connected -> DetailRow("Wi-Fi network", wifi.ssid)
+                    WifiStatus.NotConnected -> DetailRow("Wi-Fi network", "Not connected")
+                    WifiStatus.LocationServicesOff -> DetailRow("Wi-Fi network", "Turn on device location to see this")
+                    WifiStatus.PermissionNeeded -> DetailRow("Wi-Fi network", "Location permission needed to see this")
+                }
+                Text(
+                    "Android ties reading the Wi-Fi network name to location permission on every version — that's the platform's own rule, not an extra ask from this app.",
+                    style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                    color = palette.muted,
+                )
             }
 
             OutlinedPillButton(text = "Check for system updates", onClick = onCheckForUpdates, borderColor = palette.line3)
