@@ -96,6 +96,10 @@ fun ChatScreen(
 ) {
     val palette = LocalTpPalette.current
     val context = LocalContext.current
+    // BLUETOOTH_ADVERTISE is requested here too, not just at app launch: without it this phone
+    // never broadcasts its presence, so the *other* device's scan finds nothing — the failure
+    // shows up on the peer, which made it easy to miss. Scanning still proceeds if only the
+    // advertise grant is refused, hence the granted-check below only gates on the scan permissions.
     val scanPermissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
@@ -103,12 +107,23 @@ fun ChatScreen(
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
-        if (results.values.all { it }) onStartDiscovery()
+    val requestedPermissions = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            scanPermissions + Manifest.permission.BLUETOOTH_ADVERTISE
+        } else {
+            scanPermissions
+        }
+    }
+    // Always call through, granted or not: startDiscovery() re-checks the permission itself and
+    // surfaces NO_PERMISSION when it's missing. Previously a denial (especially a permanent one,
+    // where the OS returns "denied" instantly without showing a dialog) did nothing at all — the
+    // user tapped Scan and got silence with no explanation.
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        onStartDiscovery()
     }
     val requestScan: () -> Unit = {
-        val granted = scanPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-        if (granted) onStartDiscovery() else permissionLauncher.launch(scanPermissions)
+        val granted = requestedPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+        if (granted) onStartDiscovery() else permissionLauncher.launch(requestedPermissions)
     }
     var showMaintenancePopup by remember { mutableStateOf(false) }
 
@@ -170,8 +185,8 @@ fun ChatScreen(
                         border = palette.dangerBorder30,
                     )
                     BtChatConnState.NO_PERMISSION -> InfoBanner(
-                        title = "Bluetooth permission needed",
-                        body = "Tap \"Scan for nearby devices\" again and allow the permission this app just asked for.",
+                        title = "Nearby devices permission needed",
+                        body = "Tap the scanner again and allow the permission. If no dialog appears, Android has remembered an earlier \"Don't allow\" — grant it in Settings → Apps → Thread Protection → Permissions → Nearby devices.",
                         tint = palette.warnTint06,
                         border = palette.warnBorder20,
                     )
@@ -195,7 +210,14 @@ fun ChatScreen(
                     )
                     else -> Unit
                 }
-                if (state.btCanAdvertise == false) {
+                if (state.btAdvertisePermissionMissing) {
+                    InfoBanner(
+                        title = "Others can't find this phone yet",
+                        body = "Thread Protection needs the \"Nearby devices\" permission to broadcast its presence. Without it you can still find other phones, but they can't find you. Grant it in Settings → Apps → Thread Protection → Permissions.",
+                        tint = palette.warnTint06,
+                        border = palette.warnBorder20,
+                    )
+                } else if (state.btCanAdvertise == false) {
                     Text(
                         "This phone's Bluetooth hardware can't broadcast its own presence — you can still find and message other nearby devices, but they may not be able to find you.",
                         style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp),

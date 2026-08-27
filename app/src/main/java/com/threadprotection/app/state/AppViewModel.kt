@@ -115,6 +115,9 @@ class AppViewModel(
                 chat.canAdvertise.collect { v -> _state.update { it.copy(btCanAdvertise = v) } }
             }
             viewModelScope.launch {
+                chat.advertisePermissionMissing.collect { v -> _state.update { it.copy(btAdvertisePermissionMissing = v) } }
+            }
+            viewModelScope.launch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
                     if (name != null) {
@@ -315,11 +318,28 @@ class AppViewModel(
 
     fun goQr() {
         qrJob?.cancel()
+        releaseChatRadioIfLeaving(Screen.QR)
         _state.update { it.copy(screen = Screen.QR, qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
     }
 
     private fun setScreen(screen: Screen) {
+        releaseChatRadioIfLeaving(screen)
         _state.update { it.copy(screen = screen) }
+    }
+
+    /** Leaving the Chat feature by any route — bottom nav, back, sign-out — must release the radio.
+     *  Otherwise BLE advertising and the RFCOMM accept loop kept running for the rest of the
+     *  process's life, draining battery and leaving this phone discoverable long after the user
+     *  left Chat. Call this before every transition that can move off a Chat screen. */
+    private fun releaseChatRadioIfLeaving(next: Screen) {
+        if (!_state.value.screen.isChatFeature || next.isChatFeature) return
+        bluetoothChatManager?.shutdown()
+        _state.update {
+            it.copy(
+                btDiscoveredDevices = emptyList(),
+                btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE,
+            )
+        }
     }
 
     // ───────────────────────── splash ─────────────────────────
@@ -366,6 +386,7 @@ class AppViewModel(
     }
 
     fun signOut() {
+        releaseChatRadioIfLeaving(Screen.SIGNIN)
         _state.update {
             it.copy(screen = Screen.SIGNIN, account = null, hasScanned = false, fixed = emptySet(), scanData = ScanData())
         }
@@ -668,18 +689,10 @@ class AppViewModel(
 
     fun leaveChatHistory() = setScreen(Screen.CHAT)
 
-    /** Leaves the Chat feature entirely — stops the listening server socket and discovery, clears the session. */
+    /** Leaves the Chat feature entirely — clears the session; setScreen() below does the radio
+     *  teardown, since every other exit route (bottom nav, back) goes through it too. */
     fun leaveChat() {
-        bluetoothChatManager?.shutdown()
-        _state.update {
-            it.copy(
-                chatMessages = emptyList(),
-                chatPeerName = null,
-                chatMeshPeer = null,
-                btDiscoveredDevices = emptyList(),
-                btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE,
-            )
-        }
+        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, chatMeshPeer = null) }
         setScreen(Screen.DASHBOARD)
     }
 
@@ -698,6 +711,11 @@ class AppViewModel(
     }
 
     fun startBtDiscovery() {
+        // Re-run startListening() first: it's idempotent, and it's what re-attempts BLE advertising
+        // and the RFCOMM listener. Without this, a permission granted *after* goChat() already ran
+        // (or Bluetooth switched on afterwards) would never take effect — this device would scan
+        // fine but stay invisible to everyone else until Chat was closed and reopened.
+        bluetoothChatManager?.startListening()
         bluetoothChatManager?.startDiscovery()
     }
 

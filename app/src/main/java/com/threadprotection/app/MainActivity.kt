@@ -92,27 +92,33 @@ class MainActivity : ComponentActivity() {
                     enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
                 }
 
-                val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-                val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-                // Needed for BLE presence advertising in Chat (BluetoothChatManager) so other
-                // Thread Protection phones can find this one by "Tap to scan" — see its doc comment.
-                val bluetoothAdvertisePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-                // Real use, not a blanket ask: the "Connected hardware"/"Operating system" audit
-                // reads the current Wi-Fi network name (WifiInfo.currentSsid) so you can see which
-                // network you're on — Android ties that specific reading to location permission,
-                // regardless of Android version. Requesting it here (not buried in a sub-screen)
-                // is what actually surfaces the OS's own three-way "While using the app / Only
-                // this time / Don't allow" choice on Android 11+ right away.
-                val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                // One batched request, not several single-permission launchers fired back to back.
+                // Android only shows one permission dialog at a time, so launching four separate
+                // RequestPermission contracts in the same frame meant every launch after the first
+                // was silently dropped — which is exactly why BLUETOOTH_ADVERTISE was never
+                // actually granted and Chat's BLE presence advertising never started, leaving the
+                // other phone undiscoverable. RequestMultiplePermissions queues them properly.
+                //
+                // ACCESS_FINE_LOCATION is a real use, not a blanket ask: the "Connected hardware"/
+                // "Operating system" audit reads the current Wi-Fi network name
+                // (WifiInfo.currentSsid), which Android ties to location permission on every
+                // version. Requesting it here (not buried in a sub-screen) is what surfaces the
+                // OS's own three-way "While using the app / Only this time / Don't allow" choice on
+                // Android 11+ right away. It also covers BLE scanning below API 31.
+                val startupPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
                 LaunchedEffect(Unit) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    val wanted = buildList {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            add(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            add(Manifest.permission.BLUETOOTH_CONNECT)
+                            add(Manifest.permission.BLUETOOTH_SCAN)
+                            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                        }
+                        add(Manifest.permission.ACCESS_FINE_LOCATION)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                        bluetoothAdvertisePermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
-                    }
-                    locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    startupPermissions.launch(wanted.toTypedArray())
                 }
 
                 val openAppSettings: (String) -> Unit = { packageName ->

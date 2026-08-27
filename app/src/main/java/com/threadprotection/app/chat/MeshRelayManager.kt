@@ -13,6 +13,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Base64
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.threadprotection.app.crypto.PqcChatCrypto
 import com.threadprotection.app.data.SettingsRepository
@@ -158,6 +159,15 @@ class MeshRelayManager private constructor(private val context: Context, private
     suspend fun tick() {
         val a = adapter ?: return
         if (!a.isEnabled || !hasScanPermission()) return
+        // A classic Bluetooth inquiry monopolises the radio and badly degrades — often entirely
+        // blocks — concurrent BLE scanning and advertising on the same chip. Skipping this cycle
+        // while the user is actively looking for people in Chat is the difference between
+        // "Tap to scan" reliably finding a peer and it intermittently finding nothing at all,
+        // depending purely on whether a 90-second background tick happened to overlap.
+        if (foregroundBleActive) {
+            Log.d(TAG, "tick: skipping gossip — Chat is using the BLE radio right now")
+            return
+        }
         identity() // make sure an identity exists before we might need to route to it
         val peers = discoverBriefly(a)
         for (device in peers) {
@@ -339,6 +349,13 @@ class MeshRelayManager private constructor(private val context: Context, private
         private const val DISCOVERY_WINDOW_MS = 9_000L
         private const val GOSSIP_TIMEOUT_MS = 8_000L
         private const val RETRY_DELAY_MS = 30_000L
+
+        private const val TAG = "TPMesh"
+
+        /** Set by BluetoothChatManager while Chat is advertising or scanning over BLE. The mesh
+         *  relay's classic-Bluetooth inquiry and BLE share one radio and contend badly, so gossip
+         *  cycles stand down for the duration rather than sabotaging live discovery. */
+        @Volatile var foregroundBleActive: Boolean = false
 
         @Volatile private var instance: MeshRelayManager? = null
 
