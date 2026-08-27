@@ -11,15 +11,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +65,21 @@ fun AppPermissionsScreen(
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
+    var searchOpen by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    // Matches on both the display name and the package id, so "whatsapp" and "com.whatsapp" both
+    // find the same app.
+    val visibleApps = remember(state.scanData.permApps, query) {
+        val q = query.trim()
+        if (q.isBlank()) {
+            state.scanData.permApps
+        } else {
+            state.scanData.permApps.filter {
+                it.app.contains(q, ignoreCase = true) || it.packageName.contains(q, ignoreCase = true)
+            }
+        }
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -79,12 +106,64 @@ fun AppPermissionsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("$riskyTotal permissions look unnecessary", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PrimaryPillButton(
+                        text = "Turn all them off",
+                        onClick = onOpenPermissionManager,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(palette.card2)
+                            .border(BorderStroke(1.dp, palette.line3), RoundedCornerShape(14.dp))
+                            .clickable { searchOpen = !searchOpen },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                            contentDescription = if (searchOpen) "Close search" else "Search apps",
+                            tint = palette.fg2,
+                            modifier = Modifier.size(21.dp),
+                        )
+                    }
+                }
                 Text(
-                    "Android has no way for one app to switch off another app's permissions in bulk — that stays with you and the system. This opens Android's own Permission manager, where you can review every app by permission type.",
-                    style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                    "Opens Android's permission manager, where you can switch permissions off across every app. Android reserves the actual change for the system — no app can revoke another app's permissions on its own.",
+                    style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
                     color = palette.muted,
                 )
-                PrimaryPillButton(text = "Open Android's permission manager", onClick = onOpenPermissionManager)
+            }
+
+            if (searchOpen) {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text("Search apps by name or package", color = palette.muted3, fontSize = 14.sp) },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = palette.muted) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Clear",
+                                tint = palette.muted,
+                                modifier = Modifier.clickable { query = "" },
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = palette.card2,
+                        unfocusedContainerColor = palette.card2,
+                        focusedTextColor = palette.fg,
+                        unfocusedTextColor = palette.fg,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        cursorColor = palette.accent,
+                    ),
+                )
             }
 
             if (state.scanData.permApps.isEmpty()) {
@@ -94,8 +173,22 @@ fun AppPermissionsScreen(
                     color = palette.muted,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                 )
+            } else if (visibleApps.isEmpty()) {
+                Text(
+                    "No installed app matches \"${query.trim()}\".",
+                    style = TpType.body.copy(fontSize = 15.sp),
+                    color = palette.muted,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                    textAlign = TextAlign.Center,
+                )
+            } else if (query.isNotBlank()) {
+                Text(
+                    "${visibleApps.size} of ${state.scanData.permApps.size} apps match",
+                    style = TpType.caption.copy(fontSize = 12.sp),
+                    color = palette.muted2,
+                )
             }
-            state.scanData.permApps.forEach { app -> AppOverviewRow(app, onClick = { onOpenDetail(app.packageName) }) }
+            visibleApps.forEach { app -> AppOverviewRow(app, onClick = { onOpenDetail(app.packageName) }) }
         }
 
         BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)

@@ -40,6 +40,7 @@ import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.ConicProgressRing
 import com.threadprotection.app.ui.components.OutlinedPillButton
 import com.threadprotection.app.ui.components.SectionHeading
+import com.threadprotection.app.ui.components.ToggleSwitch
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpPalette
 import com.threadprotection.app.ui.theme.TpType
@@ -188,12 +189,19 @@ fun AppPermissionDetailScreen(
 }
 
 /**
- * One permission, showing the state Android itself reports right now. There is deliberately no
- * in-app switch: Android does not let one app change another app's permissions, so a switch here
- * could only ever have recorded a local preference while the real permission stayed exactly as it
- * was — which is what this screen used to do. Instead each user-changeable permission gets a
- * "Change in Settings" action that opens the real system page, and the state below is re-read from
- * the OS when the user comes back.
+ * One permission with a real toggle.
+ *
+ * The switch position is never set by tapping it — it is bound to [AppPermission.state], the value
+ * PackageManager reported on the last read. Tapping opens Android's own permission page for this
+ * app, and when the user comes back the screen re-reads the OS (see the ON_RESUME hook above) and
+ * the switch lands on whatever the permission genuinely is now. So the toggle drives a real change
+ * and always shows the real result, but it can never show "off" for a permission the app still
+ * holds.
+ *
+ * Why it can't flip the permission directly: revoking another app's runtime permission requires
+ * `android.permission.GRANT_RUNTIME_PERMISSIONS`, which is signature|privileged — granted only to
+ * apps signed with the platform key, or to a Device Owner via DevicePolicyManager. A normal
+ * installed app cannot hold it, so routing through the system page is the maximum Android permits.
  */
 @Composable
 private fun PermissionDetailRow(perm: AppPermission, onChange: () -> Unit) {
@@ -221,19 +229,24 @@ private fun PermissionDetailRow(perm: AppPermission, onChange: () -> Unit) {
                     Text("Flagged as risky", style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold), color = palette.warn)
                 }
             }
-            Text(
-                perm.state.label,
-                style = TpType.caption.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
-                color = stateColor,
-            )
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (perm.state.userChangeable) {
+                    ToggleSwitch(checked = perm.state == PermGrantState.GRANTED, onCheckedChange = onChange)
+                }
+                Text(
+                    perm.state.label,
+                    style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                    color = stateColor,
+                )
+            }
         }
         Text(perm.description, style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp), color = palette.fg2)
         Text(perm.why, style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp), color = palette.muted)
         when (perm.state) {
-            PermGrantState.GRANTED, PermGrantState.DENIED -> OutlinedPillButton(
-                text = if (perm.state == PermGrantState.GRANTED) "Turn off in Settings" else "Turn on in Settings",
-                onClick = onChange,
-                borderColor = palette.line3,
+            PermGrantState.GRANTED, PermGrantState.DENIED -> Text(
+                "Flipping this opens Android's permission page for this app — the switch updates here once the change is actually made.",
+                style = TpType.caption.copy(fontSize = 11.sp, lineHeight = 16.sp),
+                color = palette.muted2,
             )
             PermGrantState.ALWAYS_ON -> Text(
                 "Granted at install time. Android doesn't allow this one to be turned off — not by you, not by Settings, not by this app.",
