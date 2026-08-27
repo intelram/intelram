@@ -20,8 +20,13 @@ object Derived {
 
     fun threats(state: AppUiState): List<Finding> = state.scanData.findings
 
+    /** Findings still counting against the user: neither fixed nor deliberately ignored. */
     fun activeThreats(state: AppUiState): List<Finding> =
-        threats(state).filter { it.id !in state.fixed }
+        threats(state).filter { it.id !in state.fixed && it.id !in state.ignoredFindings }
+
+    /** Findings the user acknowledged and chose to leave for now — still real, just not counted. */
+    fun ignoredThreats(state: AppUiState): List<Finding> =
+        threats(state).filter { it.id in state.ignoredFindings }
 
     fun securityScore(state: AppUiState): Int {
         if (!state.hasScanned) return 72
@@ -44,8 +49,13 @@ object Derived {
     fun scoreCaption(state: AppUiState): String {
         if (!state.hasScanned) return "Tap the big green button to check your phone."
         val n = activeThreats(state).size
+        val ignored = ignoredThreats(state).size
         return if (n == 0) {
-            "Everything is safe. Nothing to worry about."
+            if (ignored > 0) {
+                "Nothing left to act on. $ignored item${if (ignored > 1) "s" else ""} you chose to ignore for now ${if (ignored > 1) "are" else "is"} still there."
+            } else {
+                "Everything is safe. Nothing to worry about."
+            }
         } else {
             "We found $n problem${if (n > 1) "s" else ""}. Tap one to see what to do."
         }

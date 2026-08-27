@@ -107,8 +107,12 @@ class PermissionAudit(private val context: Context) {
             val isSystemApp = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val installer = installerOf(appInfo.packageName)
             val sideload = !isSystemApp && (installer == null || installer !in TRUSTED_INSTALLERS)
+            val storeLabel = KNOWN_STORE_LABELS[installer]
             val kind = when {
                 isSystemApp -> "System app · built in"
+                // Name the store it actually came from, so a Play/Galaxy Store/GetApps install
+                // reads as what it is instead of a vague "Installed app".
+                storeLabel != null -> "From $storeLabel"
                 sideload -> "Sideloaded · unverified source"
                 else -> "Installed app"
             }
@@ -202,17 +206,48 @@ class PermissionAudit(private val context: Context) {
     }.getOrNull()
 
     companion object {
-        private val TRUSTED_INSTALLERS = setOf(
-            "com.android.vending",
-            "com.amazon.venezia",
-            "com.sec.android.app.samsungapps",
-            "com.huawei.appmarket",
-        )
+        /**
+         * Real installer package names for the official app stores and vendor preload channels.
+         *
+         * Previously this held only four entries, so an app installed from Samsung's own preload
+         * channel, Xiaomi's GetApps, OPPO/realme's Market, vivo's store or the legacy Play
+         * installer was reported as "Sideloaded · unverified source" and took a safety-score
+         * penalty it hadn't earned. Anything installed through one of these went through that
+         * store's own review and signing, so it is a normal store install, not a sideload.
+         *
+         * (There is no Apple store entry: iOS apps cannot be installed on Android at all, so no
+         * Android package can ever report one as its installer.)
+         */
         private val KNOWN_STORE_LABELS = mapOf(
+            // Google
             "com.android.vending" to "Google Play Store",
-            "com.amazon.venezia" to "Amazon Appstore",
+            "com.google.android.feedback" to "Google Play Store",
+            // Samsung
             "com.sec.android.app.samsungapps" to "Samsung Galaxy Store",
+            "com.samsung.android.app.omcagent" to "Samsung (preloaded by carrier/region)",
+            "com.sec.android.preloadinstaller" to "Samsung (preinstalled)",
+            "com.samsung.android.themestore" to "Samsung Themes",
+            // Amazon
+            "com.amazon.venezia" to "Amazon Appstore",
+            "com.amazon.mShop.android.shopping" to "Amazon Appstore",
+            // Huawei / Honor
             "com.huawei.appmarket" to "Huawei AppGallery",
+            "com.hihonor.appmarket" to "Honor App Market",
+            // Xiaomi
+            "com.xiaomi.market" to "Xiaomi GetApps",
+            "com.xiaomi.mipicks" to "Xiaomi GetApps",
+            // OPPO / realme / OnePlus (ColorOS share the Heytap market package)
+            "com.oppo.market" to "OPPO App Market",
+            "com.heytap.market" to "OPPO/realme App Market",
+            "com.oneplus.store" to "OnePlus Store",
+            // vivo
+            "com.vivo.appstore" to "vivo App Store",
+            "com.bbk.appstore" to "vivo App Store",
+            // F-Droid is a real, curated, reproducible-build store — not a first-party vendor
+            // store, but not an anonymous APK either, so it is named rather than called unverified.
+            "org.fdroid.fdroid" to "F-Droid",
         )
+
+        private val TRUSTED_INSTALLERS = KNOWN_STORE_LABELS.keys
     }
 }

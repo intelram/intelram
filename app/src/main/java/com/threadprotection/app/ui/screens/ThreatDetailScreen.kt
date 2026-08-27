@@ -47,6 +47,8 @@ fun ThreatDetailScreen(
     onVoteUp: () -> Unit,
     onVoteDown: () -> Unit,
     onFix: () -> Unit,
+    onIgnore: () -> Unit,
+    ignored: Boolean,
     onOpenRemedy: (Remedy) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -290,7 +292,19 @@ fun ThreatDetailScreen(
                     Text("✓ Reviewed — rescan to confirm", style = TpType.primaryButtonLg.copy(fontSize = 15.sp), color = palette.accent)
                 }
             }
-            SubtlePillButton(text = "Ignore for now", onClick = onBack)
+            // Previously this only navigated back, so nothing changed and the finding kept
+            // counting against the security score. It now really does mark the finding ignored
+            // for this session: it drops out of the active list and the score recalculates.
+            if (ignored) {
+                SubtlePillButton(text = "Ignored — count it again", onClick = { onIgnore(); onBack() })
+                Text(
+                    "Not counted in your security score for now. The next scan will raise it again — ignoring isn't fixing.",
+                    style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                    color = palette.muted2,
+                )
+            } else {
+                SubtlePillButton(text = "Ignore for now", onClick = { onIgnore(); onBack() })
+            }
         }
     }
 }

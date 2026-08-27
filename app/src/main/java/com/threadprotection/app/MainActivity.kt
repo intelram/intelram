@@ -285,6 +285,9 @@ class MainActivity : ComponentActivity() {
                                 onVoteUp = viewModel::voteUp,
                                 onVoteDown = viewModel::voteDown,
                                 onFix = viewModel::fixSelected,
+                                onIgnore = viewModel::ignoreSelectedFinding,
+                                ignored = com.threadprotection.app.state.Derived.selectedFinding(state)?.id
+                                    ?.let { it in state.ignoredFindings } == true,
                                 onOpenRemedy = openRemedy,
                             )
                         }

@@ -651,7 +651,7 @@ class AppViewModel(
         scanJob?.cancel()
         var feedSeq = 0L
         _state.update {
-            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), scanPhase = ScanPhaseState(), scanFeed = emptyList())
+            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), ignoredFindings = emptySet(), scanPhase = ScanPhaseState(), scanFeed = emptyList())
         }
         scanJob = safeLaunch {
             val result = scanner.scan(_state.value.apiKeys) { update ->
@@ -697,6 +697,21 @@ class AppViewModel(
     fun cancelScan() {
         scanJob?.cancel()
         setScreen(Screen.DASHBOARD)
+    }
+
+    /**
+     * "Ignore for now" — the user has seen this finding and decided to leave it. It stops counting
+     * against the security score for this session and disappears from the active list, but it is
+     * deliberately not marked fixed and not written to disk: the next scan surfaces it again.
+     */
+    fun ignoreSelectedFinding() {
+        val sel = Derived.selectedFinding(_state.value) ?: return
+        _state.update { it.copy(ignoredFindings = it.ignoredFindings + sel.id) }
+    }
+
+    /** Undo an "Ignore for now" — puts the finding back into the active list and the score. */
+    fun unignoreFinding(id: String) {
+        _state.update { it.copy(ignoredFindings = it.ignoredFindings - id) }
     }
 
     fun fixSelected() {

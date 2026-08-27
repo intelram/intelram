@@ -80,6 +80,11 @@ data class AppUiState(
     val progress: Float = 0f,
     val scannedCount: Int = 0,
     val fixed: Set<String> = emptySet(),
+    /** Findings the user chose to "Ignore for now". Session-scoped on purpose: it is held in
+     *  memory only and cleared by the next scan, so ignoring something quiets it for now without
+     *  ever permanently hiding a real problem. Kept separate from [fixed] because ignoring a
+     *  finding is not the same as resolving it, and the UI says so. */
+    val ignoredFindings: Set<String> = emptySet(),
     val realtime: Boolean = true,
     val settings: ProtectionSettings = ProtectionSettings(),
     val selectedId: String? = null,
