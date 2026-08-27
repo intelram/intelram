@@ -268,7 +268,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.RESULTS -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             ResultsScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -289,7 +289,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.QR -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             QrScannerScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -303,7 +303,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.BRAIN -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             AiBrainScreen(
                                 learned = state.learned.toLong(),
                                 onGoHome = viewModel::goDashboard,
@@ -314,7 +314,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.PERMS -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             AppPermissionsScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -339,7 +339,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.OTP_SECURITY -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             OtpSecurityScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -352,7 +352,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.DATA_BREACH -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             DataBreachScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -365,7 +365,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.SCAN_WEBSITE -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             ScanWebsiteScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -379,7 +379,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.HARDWARE_DETAIL -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             HardwareDetailScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -392,7 +392,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.PORTS_DETAIL -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             OpenPortsScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -405,7 +405,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.OS_DETAIL -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             OperatingSystemScreen(
                                 state = state,
                                 onBack = viewModel::goDashboard,
@@ -467,7 +467,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.SETTINGS -> {
-                            BackHandler(enabled = true) { viewModel.goDashboard() }
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
                             SettingsScreen(
                                 state = state,
                                 onGoHome = viewModel::goDashboard,

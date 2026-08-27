@@ -344,7 +344,7 @@ class MeshRelayManager private constructor(private val context: Context, private
         private val MESH_UUID: UUID = UUID.fromString("9f9f2f9f-303f-4071-beee-32741e782945")
         private const val MESH_SERVICE_NAME = "ThreadProtectionMesh"
         private val MESH_MAGIC = "TPMESH1".toByteArray()
-        private const val MAX_FRAME_BYTES = 1_048_576
+        private const val MAX_FRAME_BYTES = 262_144
         private const val MAX_HOPS = 8
         private const val DISCOVERY_WINDOW_MS = 9_000L
         private const val GOSSIP_TIMEOUT_MS = 8_000L

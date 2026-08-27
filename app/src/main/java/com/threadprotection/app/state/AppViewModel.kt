@@ -187,6 +187,9 @@ class AppViewModel(
                 chat.advertisePermissionMissing.collect { v -> _state.update { it.copy(btAdvertisePermissionMissing = v) } }
             }
             safeLaunch {
+                chat.sessionSafetyCode.collect { code -> _state.update { it.copy(chatSafetyCode = code) } }
+            }
+            safeLaunch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
                     if (name != null) {
@@ -435,9 +438,43 @@ class AppViewModel(
         _state.update { it.copy(screen = Screen.QR, qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
     }
 
+    /**
+     * Screens the back stack deliberately never returns to: transient or one-shot destinations
+     * where going "back" into them would be wrong (re-entering a finished scan, or landing back on
+     * sign-in after signing in).
+     */
+    private fun Screen.isBackStackable(): Boolean = when (this) {
+        Screen.SPLASH, Screen.SIGNIN, Screen.CREATE_ACCOUNT, Screen.ONBOARDING, Screen.SCANNING -> false
+        else -> true
+    }
+
     private fun setScreen(screen: Screen) {
         releaseChatRadioIfLeaving(screen)
-        _state.update { it.copy(screen = screen) }
+        _state.update { s ->
+            if (s.screen == screen) return@update s
+            val stack = if (s.screen.isBackStackable()) {
+                // Cap it so a long session can't grow the stack without bound, and drop any earlier
+                // visit to this same screen so back doesn't walk a loop.
+                (s.backStack.filter { it != screen } + s.screen).takeLast(MAX_BACK_STACK)
+            } else {
+                s.backStack
+            }
+            s.copy(screen = screen, backStack = stack)
+        }
+    }
+
+    /**
+     * Real back navigation: returns to whatever screen the user actually came from, instead of
+     * every screen hard-coding a jump to the Dashboard. Returns false when the stack is empty, so
+     * the caller can let the system handle it (exit the app).
+     */
+    fun navigateBack(): Boolean {
+        val previous = _state.value.backStack.lastOrNull() ?: return false
+        releaseChatRadioIfLeaving(previous)
+        _state.update { s ->
+            s.copy(screen = previous, backStack = s.backStack.dropLast(1))
+        }
+        return true
     }
 
     /** Leaving the Chat feature by any route — bottom nav, back, sign-out — must release the radio.
@@ -1022,6 +1059,9 @@ class AppViewModel(
     companion object {
         private const val TAG = "TPChat"
         private const val ESTIMATED_ITEMS = 300
-        private const val SCAN_FEED_LIMIT = 8
+        /** The live feed fills the whole card on a modern phone screen, so it holds a real
+         *  scrollback rather than 8 lines above a block of empty white. */
+        private const val SCAN_FEED_LIMIT = 60
+        private const val MAX_BACK_STACK = 24
     }
 }

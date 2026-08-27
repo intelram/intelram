@@ -39,7 +39,27 @@ object PqcChatCrypto {
     private val KEM_PARAMS = MLKEMParameters.ml_kem_768
 
     data class KemKeyPair(val publicKeyBytes: ByteArray, val privateKey: MLKEMPrivateKeyParameters)
-    data class SessionKey(val aesKey: ByteArray)
+
+    /**
+     * Direction-separated session keys plus a short verification code.
+     *
+     * Security fix: both directions previously shared one AES key. Because AES-GCM decryption only
+     * proves "someone who held this key produced this", an attacker who captured a frame A sent to
+     * B could simply replay it back *at A*, and A would decrypt it, authenticate it, and display it
+     * as a genuine message from B. Deriving one key for A->B and another for B->A from the same
+     * shared secret removes that entirely: a reflected frame is encrypted under the wrong key for
+     * the direction it arrives on and fails authentication outright.
+     *
+     * [safetyCode] is a short fingerprint of the shared secret. Both phones compute the same value
+     * only if no one is sitting in the middle, so the two users can read it to each other to detect
+     * a machine-in-the-middle — the KEM exchange itself is unauthenticated (no server, no PKI), so
+     * this out-of-band check is the honest mitigation rather than pretending it's not needed.
+     */
+    data class SessionKey(
+        val sendKey: ByteArray,
+        val receiveKey: ByteArray,
+        val safetyCode: String,
+    )
 
     fun generateKeyPair(): KemKeyPair {
         val generator = MLKEMKeyPairGenerator()
@@ -59,18 +79,39 @@ object PqcChatCrypto {
     fun encapsulate(peerPublicKeyBytes: ByteArray): Pair<ByteArray, SessionKey> {
         val peerPublicKey = MLKEMPublicKeyParameters(KEM_PARAMS, peerPublicKeyBytes)
         val secretWithEncapsulation = MLKEMGenerator(random).generateEncapsulated(peerPublicKey)
-        return secretWithEncapsulation.encapsulation to SessionKey(deriveAesKey(secretWithEncapsulation.secret))
+        // The responder sends on the responder->initiator key and receives on the other.
+        return secretWithEncapsulation.encapsulation to sessionKeys(secretWithEncapsulation.secret, isInitiator = false)
     }
 
     /** Initiator side: recovers the same shared secret the responder encapsulated, using our private key. */
     fun decapsulate(privateKey: MLKEMPrivateKeyParameters, ciphertext: ByteArray): SessionKey {
         val secret = MLKEMExtractor(privateKey).extractSecret(ciphertext)
-        return SessionKey(deriveAesKey(secret))
+        return sessionKeys(secret, isInitiator = true)
     }
 
-    private fun deriveAesKey(sharedSecret: ByteArray): ByteArray {
+    /** Splits one KEM shared secret into per-direction keys plus the shared verification code. */
+    private fun sessionKeys(sharedSecret: ByteArray, isInitiator: Boolean): SessionKey {
+        val initiatorToResponder = deriveKey(sharedSecret, "thread-protection-chat-v2-i2r")
+        val responderToInitiator = deriveKey(sharedSecret, "thread-protection-chat-v2-r2i")
+        val fingerprint = deriveKey(sharedSecret, "thread-protection-chat-v2-verify")
+        return SessionKey(
+            sendKey = if (isInitiator) initiatorToResponder else responderToInitiator,
+            receiveKey = if (isInitiator) responderToInitiator else initiatorToResponder,
+            safetyCode = safetyCodeOf(fingerprint),
+        )
+    }
+
+    /** Six digits in two groups, easy to read aloud, derived only from the shared secret. */
+    private fun safetyCodeOf(fingerprint: ByteArray): String {
+        var value = 0L
+        for (i in 0 until 6) value = (value shl 8) or (fingerprint[i].toLong() and 0xFF)
+        val digits = (value % 1_000_000L).toString().padStart(6, '0')
+        return "${digits.substring(0, 3)} ${digits.substring(3)}"
+    }
+
+    private fun deriveKey(sharedSecret: ByteArray, info: String): ByteArray {
         val hkdf = HKDFBytesGenerator(SHA256Digest())
-        hkdf.init(HKDFParameters(sharedSecret, null, "thread-protection-chat-v1".toByteArray()))
+        hkdf.init(HKDFParameters(sharedSecret, null, info.toByteArray()))
         val keyBytes = ByteArray(32)
         hkdf.generateBytes(keyBytes, 0, 32)
         return keyBytes
@@ -83,7 +124,7 @@ object PqcChatCrypto {
     fun encrypt(key: SessionKey, plaintext: ByteArray): ByteArray {
         val iv = ByteArray(GCM_IV_LEN).also { random.nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key.aesKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key.sendKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
         return iv + cipher.doFinal(plaintext)
     }
 
@@ -93,7 +134,7 @@ object PqcChatCrypto {
         val iv = payload.copyOfRange(0, GCM_IV_LEN)
         val ciphertext = payload.copyOfRange(GCM_IV_LEN, payload.size)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key.aesKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key.receiveKey, "AES"), GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher.doFinal(ciphertext)
     }
 }

@@ -73,6 +73,9 @@ data class ScanFeedEntry(val id: Long, val text: String)
 /** Mirrors the prototype's `state = {...}` object — see README §State — extended with real scan/auth/API-key state. */
 data class AppUiState(
     val screen: Screen = Screen.SPLASH,
+    /** Screens visited before this one, oldest first — drives real Back navigation so leaving a
+     *  detail screen returns where the user came from rather than always jumping to the Dashboard. */
+    val backStack: List<Screen> = emptyList(),
     val account: Account? = null,
     val progress: Float = 0f,
     val scannedCount: Int = 0,
@@ -141,6 +144,8 @@ data class AppUiState(
     val chatMeshPeer: ChatHistoryEntry? = null,
     val chatPeerName: String? = null,
     val chatMessages: List<ChatUiMessage> = emptyList(),
+    /** Session verification code shown in the conversation header — see BluetoothChatManager. */
+    val chatSafetyCode: String? = null,
     val chatPeerTyping: Boolean = false,
     val chatDraft: String = "",
 )

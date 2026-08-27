@@ -140,6 +140,18 @@ sealed interface ChatWireMessage {
     /** The recipient tapped Deny, or their request timed out on their side. */
     data class ChatDeny(val id: String) : ChatWireMessage
 
+    /** This device's long-term mesh identity, sent as an ordinary frame once the session is live.
+     *  [body] is the binary MeshIdentityInfo encoding. Purely additive: a peer that never sends one
+     *  (or whose send fails) still gets a completely normal chat — which is the whole point of it
+     *  no longer being part of the handshake. */
+    data class MeshIdentity(val body: ByteArray) : ChatWireMessage {
+        // ByteArray needs structural equals/hashCode for the data class to behave sanely.
+        override fun equals(other: Any?): Boolean =
+            this === other || (other is MeshIdentity && body.contentEquals(other.body))
+
+        override fun hashCode(): Int = body.contentHashCode()
+    }
+
     companion object {
         private const val TYPE_TEXT: Byte = 0
         private const val TYPE_ACK: Byte = 1
@@ -147,6 +159,7 @@ sealed interface ChatWireMessage {
         private const val TYPE_REQUEST: Byte = 3
         private const val TYPE_ACCEPT: Byte = 4
         private const val TYPE_DENY: Byte = 5
+        private const val TYPE_IDENTITY: Byte = 6
 
         fun encode(message: ChatWireMessage): ByteArray = when (message) {
             is Text -> frame(TYPE_TEXT, message.id, message.body.toByteArray(StandardCharsets.UTF_8))
@@ -155,6 +168,7 @@ sealed interface ChatWireMessage {
             is ChatRequest -> frame(TYPE_REQUEST, message.id, message.displayName.toByteArray(StandardCharsets.UTF_8))
             is ChatAccept -> frame(TYPE_ACCEPT, message.id, ByteArray(0))
             is ChatDeny -> frame(TYPE_DENY, message.id, ByteArray(0))
+            is MeshIdentity -> frame(TYPE_IDENTITY, "", message.body)
         }
 
         fun decode(bytes: ByteArray): ChatWireMessage? {
@@ -172,6 +186,7 @@ sealed interface ChatWireMessage {
                 TYPE_REQUEST -> ChatRequest(id, body)
                 TYPE_ACCEPT -> ChatAccept(id)
                 TYPE_DENY -> ChatDeny(id)
+                TYPE_IDENTITY -> MeshIdentity(bytes.copyOfRange(2 + idLen, bytes.size))
                 // An unrecognised type is a peer on a newer protocol version, not a fatal error —
                 // ignore that one frame and keep the session alive.
                 else -> null

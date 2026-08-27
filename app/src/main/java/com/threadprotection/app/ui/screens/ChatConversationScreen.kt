@@ -184,13 +184,32 @@ fun ChatConversationScreen(
     }
 }
 
+/**
+ * Reports the state the connection is actually in.
+ *
+ * This used to collapse every non-connected state into "Not in range", so a failed handshake, a
+ * declined request or a dropped socket all read as "the other phone is too far away" — while it sat
+ * on the same desk. Each real state now has its own line, and "not in range" is said only when the
+ * peer genuinely isn't reachable directly.
+ */
 private fun connectionStatusLine(state: AppUiState): String = when {
     state.chatPeerTyping -> "typing…"
-    state.btConnState == BtChatConnState.CONNECTED -> "🔒 End-to-end encrypted · post-quantum (ML-KEM-768)"
+    // Showing the code here makes the out-of-band check something users can actually perform:
+    // both phones display the same digits only if nobody is relaying between them.
+    state.btConnState == BtChatConnState.CONNECTED ->
+        state.chatSafetyCode?.let { "🔒 Encrypted · verify code $it matches on both phones" }
+            ?: "🔒 End-to-end encrypted · post-quantum (ML-KEM-768)"
     state.btConnState == BtChatConnState.HANDSHAKING -> "Securing connection…"
     state.btConnState == BtChatConnState.CONNECTING -> "Connecting…"
-    state.chatMeshPeer?.meshReachable == true -> "Not in range — messages relay via nearby phones"
-    else -> "Not in range — open Chat History to try again"
+    state.btConnState == BtChatConnState.REQUEST_SENT -> "Chat request sent — waiting for them to accept"
+    state.btConnState == BtChatConnState.REQUEST_RECEIVED -> "They'd like to chat — answer the request to continue"
+    state.btConnState == BtChatConnState.DENIED -> "They declined the chat request"
+    state.btConnState == BtChatConnState.REQUEST_TIMEOUT -> "No answer — the request timed out"
+    state.btConnState == BtChatConnState.FAILED -> "Connection failed — tap back and try again"
+    state.btConnState == BtChatConnState.BT_UNAVAILABLE -> "Bluetooth is off"
+    state.btConnState == BtChatConnState.NO_PERMISSION -> "Bluetooth permission needed"
+    state.chatMeshPeer?.meshReachable == true -> "Not connected directly — messages relay via nearby phones"
+    else -> "Disconnected — go back and reconnect to keep chatting"
 }
 
 private val TIME_FORMAT = SimpleDateFormat("h:mm a", Locale.US)

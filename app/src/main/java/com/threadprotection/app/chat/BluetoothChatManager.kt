@@ -139,6 +139,12 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
     private val _connectedPeerPublicKeyB64 = MutableStateFlow<String?>(null)
     val connectedPeerPublicKeyB64: StateFlow<String?> = _connectedPeerPublicKeyB64.asStateFlow()
 
+    /** Short verification code for the live session — both phones show the same value only if no
+     *  one is relaying between them. The KEM exchange is unauthenticated (no server, no PKI), so
+     *  reading this aloud is the honest way for two people to rule out a machine-in-the-middle. */
+    private val _sessionSafetyCode = MutableStateFlow<String?>(null)
+    val sessionSafetyCode: StateFlow<String?> = _sessionSafetyCode.asStateFlow()
+
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
     val events = _events.asSharedFlow()
 
@@ -615,16 +621,26 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         }
         Log.i(TAG, "establishSession: ML-KEM-768 handshake complete, session encrypted")
 
-        // Best-effort: also swap long-term mesh identities over the channel this session key just
-        // secured, so this contact becomes reachable later via MeshRelayManager even without a
-        // live connection. Purely additive — if it fails, the live chat session still works fine.
-        val peerIdentity = runCatching { exchangeMeshIdentity(out, input, ok, isInitiator) }.getOrNull()
-
         activeSocket = socket
         sessionKey = ok
         _pendingPeerName.value = fallbackName ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
         _pendingPeerAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
-        _pendingPeerIdentity = peerIdentity
+        _pendingPeerIdentity = null
+
+        // Long-term mesh identity now travels as an ordinary encrypted frame *after* the session is
+        // up, never as part of the handshake.
+        //
+        // Root cause this replaces: the old exchangeMeshIdentity() did a blocking readFrame() with
+        // no timeout, right after a DataStore write (MeshIdentityStore.ensure). If that write threw
+        // or stalled on one device, that side's runCatching swallowed it and moved on to a live
+        // session — while the *other* side sat blocked in readFrame forever, never reaching
+        // readLoop, never answering anything. One phone showed a working connection, the other was
+        // wedged mid-handshake, and every message sent to it went unanswered. Worse, the abandoned
+        // read left the two sides out of step in the frame stream, so nothing could recover.
+        // Sending it as a normal typed frame removes the blocking read entirely: if it never
+        // arrives, the chat is simply not mesh-reachable, which is exactly the "purely additive"
+        // behaviour this was always documented to have.
+        sendOwnMeshIdentity()
 
         // The encrypted channel is up, but that is NOT the same as "the other person agreed to
         // chat". The initiator asks; the recipient waits for their user to answer. Only an explicit
@@ -689,25 +705,20 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         _connectedPeerNodeId.value = _pendingPeerIdentity?.nodeId
         _connectedPeerPublicKeyB64.value =
             _pendingPeerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
+        _sessionSafetyCode.value = sessionKey?.safetyCode
         _connState.value = BtChatConnState.CONNECTED
         Log.i(TAG, "promoteToConnected: chat is live with ${_connectedDeviceName.value}")
     }
 
-    private suspend fun exchangeMeshIdentity(
-        out: DataOutputStream,
-        input: DataInputStream,
-        key: PqcChatCrypto.SessionKey,
-        isInitiator: Boolean,
-    ): MeshIdentityInfo? {
-        val myIdentity = MeshIdentityStore.ensure(settingsRepository)
-        val myFrame = PqcChatCrypto.encrypt(key, MeshIdentityInfo(myIdentity.nodeId, myIdentity.publicKeyBytes).encode())
-        return if (isInitiator) {
-            writeFrame(out, myFrame)
-            readFrame(input)?.let { PqcChatCrypto.decrypt(key, it) }?.let { MeshIdentityInfo.decode(it) }
-        } else {
-            val peerFrame = readFrame(input)
-            writeFrame(out, myFrame)
-            peerFrame?.let { PqcChatCrypto.decrypt(key, it) }?.let { MeshIdentityInfo.decode(it) }
+    /** Fire-and-forget: builds this device's identity frame off the socket thread and sends it like
+     *  any other message. Nothing waits on it and nothing breaks if it fails. */
+    private fun sendOwnMeshIdentity() {
+        scope.launch {
+            val mine = runCatching { MeshIdentityStore.ensure(settingsRepository) }.getOrElse {
+                Log.w(TAG, "sendOwnMeshIdentity: couldn't load this device's identity — chat continues without mesh reachability", it)
+                return@launch
+            }
+            sendWire(ChatWireMessage.MeshIdentity(MeshIdentityInfo(mine.nodeId, mine.publicKeyBytes).encode()))
         }
     }
 
@@ -761,6 +772,22 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
                         return
                     }
                 }
+                is ChatWireMessage.MeshIdentity -> {
+                    val info = runCatching { MeshIdentityInfo.decode(wire.body) }.getOrNull()
+                    if (info == null) {
+                        Log.w(TAG, "readLoop: peer sent an unreadable mesh identity — ignoring")
+                    } else {
+                        _pendingPeerIdentity = info
+                        // If the chat is already live, publish it immediately so History records
+                        // this contact as mesh-reachable without waiting for the next connection.
+                        if (_connState.value == BtChatConnState.CONNECTED) {
+                            _connectedPeerNodeId.value = info.nodeId
+                            _connectedPeerPublicKeyB64.value =
+                                Base64.encodeToString(info.publicKeyBytes, Base64.NO_WRAP)
+                        }
+                        Log.d(TAG, "readLoop: learned peer mesh identity ${info.nodeId.take(8)}…")
+                    }
+                }
                 null -> Unit
             }
         }
@@ -786,6 +813,7 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         _connectedDeviceAddress.value = null
         _connectedPeerNodeId.value = null
         _connectedPeerPublicKeyB64.value = null
+        _sessionSafetyCode.value = null
         if (!terminal) _connState.value = BtChatConnState.IDLE
     }
 
@@ -845,6 +873,7 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         _connectedDeviceAddress.value = null
         _connectedPeerNodeId.value = null
         _connectedPeerPublicKeyB64.value = null
+        _sessionSafetyCode.value = null
         if (resetState) _connState.value = BtChatConnState.IDLE
     }
 
@@ -896,7 +925,10 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         private val APP_UUID: UUID = UUID.fromString("9f9f2f9f-303f-4071-beee-32741e782944")
         private const val SERVICE_NAME = "ThreadProtectionChat"
         private val MAGIC = "TPCHAT1".toByteArray()
-        private const val MAX_FRAME_BYTES = 1_048_576
+        /** Hardening: a hostile peer could previously declare a 1 MiB frame and make this side
+         *  allocate it before any authentication, repeatedly — cheap memory-pressure DoS. Chat
+         *  frames are short text, so this bounds it hard. */
+        private const val MAX_FRAME_BYTES = 65_536
 
         /** BLE presence/discovery UUID — distinct from [APP_UUID] above (that one is the classic
          *  RFCOMM channel the actual chat runs over once connected). This one only ever appears in
