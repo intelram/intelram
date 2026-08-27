@@ -123,7 +123,7 @@ fun ChatSessionScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(session.messages, key = { it.id }) { msg -> MessageBubble(msg) }
+            items(session.messages.distinctBy { it.id }, key = { it.id }) { msg -> MessageBubble(msg) }
         }
     }
 }

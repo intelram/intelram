@@ -50,6 +50,15 @@ sealed interface ChatEvent {
     data class MessageDelivered(val id: String) : ChatEvent
     data object PeerTyping : ChatEvent
     data object PeerDisconnected : ChatEvent
+
+    /** The peer wants to chat and is waiting on this user's Accept/Deny. */
+    data class ChatRequested(val requestId: String, val displayName: String) : ChatEvent
+
+    /** The peer accepted our request — only now may either side start chatting. */
+    data object ChatAccepted : ChatEvent
+
+    /** The peer declined our request. */
+    data object ChatDenied : ChatEvent
 }
 
 /**
@@ -146,6 +155,21 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
     @Volatile private var scanTimeoutJob: Job? = null
     @Volatile private var staleSweepJob: Job? = null
     @Volatile private var adapterStateReceiver: BroadcastReceiver? = null
+
+    // ── chat-request handshake (application level, on top of the encrypted channel) ──
+    /** Id of the request we sent and are waiting on; null once answered or timed out. */
+    @Volatile private var outgoingRequestId: String? = null
+
+    /** Id of the request the peer sent us, pending this user's Accept/Deny. */
+    @Volatile private var incomingRequestId: String? = null
+
+    @Volatile private var requestTimeoutJob: Job? = null
+
+    /** Peer details captured at handshake time but not published as "connected" until accepted. */
+    private val _pendingPeerName = MutableStateFlow<String?>(null)
+    private val _pendingPeerAddress = MutableStateFlow<String?>(null)
+
+    @Volatile private var _pendingPeerIdentity: MeshIdentityInfo? = null
 
     /** Guards the start/stop of BLE advertising against a race: building the advertisement payload
      *  needs a suspend read of the account name, so a `stopAdvertising()` call that lands while that
@@ -598,12 +622,75 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
 
         activeSocket = socket
         sessionKey = ok
-        _connectedDeviceAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
-        _connectedDeviceName.value = fallbackName ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
-        _connectedPeerNodeId.value = peerIdentity?.nodeId
-        _connectedPeerPublicKeyB64.value = peerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
-        _connState.value = BtChatConnState.CONNECTED
+        _pendingPeerName.value = fallbackName ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
+        _pendingPeerAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
+        _pendingPeerIdentity = peerIdentity
+
+        // The encrypted channel is up, but that is NOT the same as "the other person agreed to
+        // chat". The initiator asks; the recipient waits for their user to answer. Only an explicit
+        // ChatAccept moves either side to CONNECTED — see readLoop below.
+        if (isInitiator) {
+            val requestId = UUID.randomUUID().toString()
+            outgoingRequestId = requestId
+            val myName = runCatching { settingsRepository.accountFlow.first()?.name }.getOrNull()
+                ?.trim()?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
+            Log.i(TAG, "establishSession: sending chat request $requestId as \"$myName\"")
+            sendWire(ChatWireMessage.ChatRequest(requestId, myName))
+            _connState.value = BtChatConnState.REQUEST_SENT
+            startRequestTimeout(requestId)
+        } else {
+            // Responder: stay pending until the peer's ChatRequest frame arrives in readLoop.
+            Log.d(TAG, "establishSession: awaiting peer's chat request")
+        }
         readLoop(socket)
+    }
+
+    /** Fails a request that nobody ever answered, instead of leaving the UI pending forever. */
+    private fun startRequestTimeout(requestId: String) {
+        requestTimeoutJob?.cancel()
+        requestTimeoutJob = scope.launch {
+            delay(REQUEST_TIMEOUT_MS)
+            if (outgoingRequestId == requestId && _connState.value == BtChatConnState.REQUEST_SENT) {
+                Log.w(TAG, "chat request $requestId timed out after ${REQUEST_TIMEOUT_MS}ms")
+                _connState.value = BtChatConnState.REQUEST_TIMEOUT
+                outgoingRequestId = null
+                disconnect(resetState = false)
+            }
+        }
+    }
+
+    /** Called when this user taps Accept on an incoming request. */
+    fun acceptChatRequest() {
+        val id = incomingRequestId ?: return
+        Log.i(TAG, "acceptChatRequest: accepting $id")
+        incomingRequestId = null
+        sendWire(ChatWireMessage.ChatAccept(id))
+        promoteToConnected()
+    }
+
+    /** Called when this user taps Deny. Tells the peer, then drops the socket cleanly. */
+    fun denyChatRequest() {
+        val id = incomingRequestId ?: return
+        Log.i(TAG, "denyChatRequest: denying $id")
+        incomingRequestId = null
+        sendWire(ChatWireMessage.ChatDeny(id))
+        // Give the frame a moment to flush before tearing the socket down.
+        scope.launch {
+            delay(300)
+            disconnect()
+        }
+    }
+
+    /** The one place CONNECTED is set — reached only after a real accept on both sides. */
+    private fun promoteToConnected() {
+        requestTimeoutJob?.cancel(); requestTimeoutJob = null
+        _connectedDeviceAddress.value = _pendingPeerAddress.value
+        _connectedDeviceName.value = _pendingPeerName.value
+        _connectedPeerNodeId.value = _pendingPeerIdentity?.nodeId
+        _connectedPeerPublicKeyB64.value =
+            _pendingPeerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
+        _connState.value = BtChatConnState.CONNECTED
+        Log.i(TAG, "promoteToConnected: chat is live with ${_connectedDeviceName.value}")
     }
 
     private suspend fun exchangeMeshIdentity(
@@ -633,11 +720,47 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
             val plaintext = runCatching { PqcChatCrypto.decrypt(key, frame) }.getOrNull() ?: continue
             when (val wire = ChatWireMessage.decode(plaintext)) {
                 is ChatWireMessage.Text -> {
-                    _events.emit(ChatEvent.MessageReceived(wire.id, wire.body, System.currentTimeMillis()))
-                    sendWire(ChatWireMessage.Ack(wire.id))
+                    // Messages are only accepted once the chat has actually been agreed. A peer
+                    // that tries to talk before an accept is ignored rather than trusted.
+                    if (_connState.value != BtChatConnState.CONNECTED) {
+                        Log.w(TAG, "readLoop: dropping message received before the chat was accepted")
+                    } else {
+                        _events.emit(ChatEvent.MessageReceived(wire.id, wire.body, System.currentTimeMillis()))
+                        sendWire(ChatWireMessage.Ack(wire.id))
+                    }
                 }
                 is ChatWireMessage.Ack -> _events.emit(ChatEvent.MessageDelivered(wire.id))
                 ChatWireMessage.Typing -> _events.emit(ChatEvent.PeerTyping)
+                is ChatWireMessage.ChatRequest -> {
+                    // Ignore a duplicate/second request on an already-decided session so two
+                    // simultaneous requests can't leave the two sides in different states.
+                    if (incomingRequestId != null || _connState.value == BtChatConnState.CONNECTED) {
+                        Log.d(TAG, "readLoop: ignoring duplicate chat request ${wire.id}")
+                    } else {
+                        Log.i(TAG, "readLoop: chat request from \"${wire.displayName}\"")
+                        incomingRequestId = wire.id
+                        _connState.value = BtChatConnState.REQUEST_RECEIVED
+                        _events.emit(ChatEvent.ChatRequested(wire.id, wire.displayName))
+                    }
+                }
+                is ChatWireMessage.ChatAccept -> {
+                    if (wire.id == outgoingRequestId) {
+                        outgoingRequestId = null
+                        promoteToConnected()
+                        _events.emit(ChatEvent.ChatAccepted)
+                    }
+                }
+                is ChatWireMessage.ChatDeny -> {
+                    if (wire.id == outgoingRequestId) {
+                        Log.i(TAG, "readLoop: peer denied the chat request")
+                        outgoingRequestId = null
+                        requestTimeoutJob?.cancel(); requestTimeoutJob = null
+                        _connState.value = BtChatConnState.DENIED
+                        _events.emit(ChatEvent.ChatDenied)
+                        disconnect(resetState = false)
+                        return
+                    }
+                }
                 null -> Unit
             }
         }
@@ -646,18 +769,41 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
 
     private suspend fun onSessionEnded() {
         Log.i(TAG, "onSessionEnded: peer disconnected or socket closed")
+        // Preserve a terminal state the user still needs to read (they denied us, or we timed out);
+        // otherwise the socket closing is just an ordinary end-of-session.
+        val terminal = _connState.value == BtChatConnState.DENIED ||
+            _connState.value == BtChatConnState.REQUEST_TIMEOUT
         _events.emit(ChatEvent.PeerDisconnected)
         activeSocket = null
         sessionKey = null
+        requestTimeoutJob?.cancel(); requestTimeoutJob = null
+        outgoingRequestId = null
+        incomingRequestId = null
+        _pendingPeerIdentity = null
+        _pendingPeerName.value = null
+        _pendingPeerAddress.value = null
         _connectedDeviceName.value = null
         _connectedDeviceAddress.value = null
         _connectedPeerNodeId.value = null
         _connectedPeerPublicKeyB64.value = null
-        _connState.value = BtChatConnState.IDLE
+        if (!terminal) _connState.value = BtChatConnState.IDLE
     }
 
-    /** Sends a text message and returns its id (used to track delivery via the peer's Ack). */
-    fun sendText(text: String): String {
+    /**
+     * Sends a text message and returns its id (used to track delivery via the peer's Ack), or null
+     * if there is no accepted, live session to send it over. Returning null instead of throwing is
+     * what lets the caller show "not connected" rather than crash — the Send button used to assume
+     * this always produced an id.
+     */
+    fun sendText(text: String): String? {
+        if (_connState.value != BtChatConnState.CONNECTED) {
+            Log.w(TAG, "sendText: refused — no accepted chat session (state=${_connState.value})")
+            return null
+        }
+        if (activeSocket == null || sessionKey == null) {
+            Log.w(TAG, "sendText: refused — socket or session key is gone")
+            return null
+        }
         val id = UUID.randomUUID().toString()
         sendWire(ChatWireMessage.Text(id, text))
         return id
@@ -680,7 +826,18 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         }
     }
 
-    fun disconnect() {
+    /**
+     * Drops the session. [resetState] is false when the caller has already published a terminal
+     * state the user still needs to see (DENIED, REQUEST_TIMEOUT) — overwriting it with IDLE here
+     * would wipe the explanation off the screen before it could be read.
+     */
+    fun disconnect(resetState: Boolean = true) {
+        requestTimeoutJob?.cancel(); requestTimeoutJob = null
+        outgoingRequestId = null
+        incomingRequestId = null
+        _pendingPeerIdentity = null
+        _pendingPeerName.value = null
+        _pendingPeerAddress.value = null
         runCatching { activeSocket?.close() }
         activeSocket = null
         sessionKey = null
@@ -688,7 +845,7 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         _connectedDeviceAddress.value = null
         _connectedPeerNodeId.value = null
         _connectedPeerPublicKeyB64.value = null
-        _connState.value = BtChatConnState.IDLE
+        if (resetState) _connState.value = BtChatConnState.IDLE
     }
 
     /** Stops the server socket, BLE advertising and scanning — call when leaving Chat entirely. */
@@ -751,6 +908,9 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         private const val STALE_AFTER_MS = 8_000L
         private const val STALE_SWEEP_INTERVAL_MS = 3_000L
         private const val CONNECT_TIMEOUT_MS = 15_000L
+
+        /** How long the initiator waits for Accept/Deny before giving up and cleaning up. */
+        private const val REQUEST_TIMEOUT_MS = 45_000L
 
         /** `adb logcat -s TPChat` to trace the whole discover → connect → handshake flow on a real
          *  device: adapter state, permission checks, advertising start/failure, scan start/stop,

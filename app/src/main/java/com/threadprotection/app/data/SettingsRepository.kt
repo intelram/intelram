@@ -1,20 +1,24 @@
 package com.threadprotection.app.data
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.threadprotection.app.ui.theme.TpThemeMode
 import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.IOException
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "thread_protection_prefs")
 
@@ -145,8 +149,29 @@ class SettingsRepository(private val context: Context) {
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
+    /**
+     * Every read goes through here rather than touching `context.dataStore.data` directly.
+     *
+     * DataStore signals a read failure — a corrupt or unreadable preferences file, a disk error —
+     * by *throwing IOException into the flow*. That exception propagates straight out of whatever
+     * `collect {}` is consuming it, and since those collects run in bare `viewModelScope.launch`
+     * blocks with no handler, it reached the thread's default uncaught-exception handler and
+     * terminated the process. Recovering to empty preferences here is the pattern DataStore's own
+     * documentation prescribes: the app comes up with defaults instead of dying, and the real
+     * exception is logged rather than swallowed silently. Anything that is *not* an IOException is
+     * a genuine programming error and is deliberately rethrown.
+     */
+    private val prefs: Flow<Preferences> = context.dataStore.data.catch { e ->
+        if (e is IOException) {
+            Log.e(TAG, "DataStore read failed — recovering with empty preferences", e)
+            emit(emptyPreferences())
+        } else {
+            throw e
+        }
+    }
+
     /** All 5 protection toggles plus the scheduled-scan time/frequency the user picked in Settings. */
-    val protectionSettingsFlow: Flow<StoredProtectionSettings> = context.dataStore.data.map { prefs ->
+    val protectionSettingsFlow: Flow<StoredProtectionSettings> = prefs.map { prefs ->
         prefs[Keys.PROTECTION_SETTINGS]?.let { raw ->
             runCatching { Json.decodeFromString<StoredProtectionSettings>(raw) }.getOrNull()
         } ?: StoredProtectionSettings()
@@ -159,7 +184,7 @@ class SettingsRepository(private val context: Context) {
     /** Chat "History" — devices you've successfully connected to before, newest first, capped at
      *  30 so it can't grow unbounded. Address is the dedupe key (a re-chat just moves it to the top
      *  and refreshes the name, in case the peer's Bluetooth name changed). */
-    val chatHistoryFlow: Flow<List<StoredChatHistoryEntry>> = context.dataStore.data.map { prefs ->
+    val chatHistoryFlow: Flow<List<StoredChatHistoryEntry>> = prefs.map { prefs ->
         prefs[Keys.CHAT_HISTORY]?.let { raw ->
             runCatching { Json.decodeFromString<List<StoredChatHistoryEntry>>(raw) }.getOrNull()
         } ?: emptyList()
@@ -185,7 +210,7 @@ class SettingsRepository(private val context: Context) {
      * save. That incremental saving is also what preserves an interrupted conversation: the
      * messages received before the peer vanished are already on disk.
      */
-    val chatSessionsFlow: Flow<List<StoredChatSession>> = context.dataStore.data.map { prefs ->
+    val chatSessionsFlow: Flow<List<StoredChatSession>> = prefs.map { prefs ->
         prefs[Keys.CHAT_SESSIONS]?.let { raw ->
             runCatching { Json.decodeFromString<List<StoredChatSession>>(raw) }.getOrNull()
         } ?: emptyList()
@@ -242,7 +267,7 @@ class SettingsRepository(private val context: Context) {
     /** Everything this device is currently carrying to relay onward or deliver locally, oldest
      *  first. Not exposed as a live Flow — MeshRelayManager only needs a snapshot per gossip tick. */
     suspend fun meshOutboxOnce(): List<StoredMeshEnvelope> =
-        context.dataStore.data.map { prefs ->
+        prefs.map { prefs ->
             prefs[Keys.MESH_OUTBOX]?.let { raw -> runCatching { Json.decodeFromString<List<StoredMeshEnvelope>>(raw) }.getOrNull() } ?: emptyList()
         }.firstOrNull() ?: emptyList()
 
@@ -278,7 +303,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     /** Whether real-time (background) protection is on — also read by `BootReceiver`. */
-    val realtimeFlow: Flow<Boolean> = context.dataStore.data.map { it[Keys.REALTIME] ?: true }
+    val realtimeFlow: Flow<Boolean> = prefs.map { it[Keys.REALTIME] ?: true }
 
     suspend fun setRealtime(enabled: Boolean) {
         context.dataStore.edit { it[Keys.REALTIME] = enabled }
@@ -286,7 +311,7 @@ class SettingsRepository(private val context: Context) {
 
     /** Falls back to the device's own dark/light setting until the user picks a theme in
      *  Settings — a fresh install should match the phone, not always open in Night mode. */
-    val themeFlow: Flow<TpThemeMode> = context.dataStore.data.map { prefs ->
+    val themeFlow: Flow<TpThemeMode> = prefs.map { prefs ->
         when (prefs[Keys.THEME]) {
             "day" -> TpThemeMode.DAY
             "night" -> TpThemeMode.NIGHT
@@ -294,7 +319,7 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    val accountFlow: Flow<Account?> = context.dataStore.data.map { prefs ->
+    val accountFlow: Flow<Account?> = prefs.map { prefs ->
         prefs[Keys.ACCOUNT]?.let { raw ->
             runCatching { Json.decodeFromString<StoredAccount>(raw) }
                 .getOrNull()
@@ -302,7 +327,7 @@ class SettingsRepository(private val context: Context) {
         }
     }
 
-    val apiKeysFlow: Flow<ApiKeys> = context.dataStore.data.map { prefs ->
+    val apiKeysFlow: Flow<ApiKeys> = prefs.map { prefs ->
         ApiKeys(ApiKeyId.entries.associateWith { prefs[Keys.apiKey(it)].orEmpty() }.filterValues { it.isNotEmpty() })
     }
 
@@ -335,16 +360,18 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun verifyLocalCredential(email: String, password: String): Boolean {
-        val raw = context.dataStore.data.map { it[Keys.CREDENTIAL] }.firstOrNull() ?: return false
+        val raw = prefs.map { it[Keys.CREDENTIAL] }.firstOrNull() ?: return false
         val parts = raw.split("::")
         if (parts.size != 3 || !parts[0].equals(email, ignoreCase = true)) return false
         return PasswordHasher.verify(password, parts[1], parts[2])
     }
 
     /** True once a local "Create an account" credential exists, regardless of which email. */
-    val hasLocalCredentialFlow: Flow<Boolean> = context.dataStore.data.map { it[Keys.CREDENTIAL] != null }
+    val hasLocalCredentialFlow: Flow<Boolean> = prefs.map { it[Keys.CREDENTIAL] != null }
 
     private companion object {
+        const val TAG = "TPStore"
+
         /** Transcripts are small, but DataStore rewrites the whole file on every edit, so this
          *  stays bounded rather than growing without limit across the life of the install. */
         const val MAX_STORED_SESSIONS = 50

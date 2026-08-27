@@ -6,6 +6,7 @@ import com.threadprotection.app.chat.ChatHistoryEntry
 import com.threadprotection.app.chat.ChatMode
 import com.threadprotection.app.chat.ChatSession
 import com.threadprotection.app.chat.ChatUiMessage
+import com.threadprotection.app.chat.IncomingChatRequest
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.Finding
@@ -117,6 +118,12 @@ data class AppUiState(
     /** Address of the device the user last tapped Connect on, so only that row reflects the
      *  connecting/failed state rather than every row changing at once. */
     val btConnectingAddress: String? = null,
+    /** Recoverable failure to show the user instead of crashing — set by the ViewModel's coroutine
+     *  crash guard. Null when there's nothing wrong. */
+    val chatError: String? = null,
+    /** An incoming chat request awaiting this user's Accept/Deny, shown in-app (never as a fake
+     *  system notification). Null when no request is pending. */
+    val incomingChatRequest: IncomingChatRequest? = null,
     /** True when [btCanAdvertise] is false specifically because BLUETOOTH_ADVERTISE was denied —
      *  a user-fixable cause, unlike hardware that simply can't do BLE peripheral mode. */
     val btAdvertisePermissionMissing: Boolean = false,

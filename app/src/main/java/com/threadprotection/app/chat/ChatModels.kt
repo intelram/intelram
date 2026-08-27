@@ -4,7 +4,45 @@ import java.nio.charset.StandardCharsets
 
 enum class ChatMode { BLUETOOTH, INTERNET }
 
-enum class BtChatConnState { IDLE, BT_UNAVAILABLE, BLE_UNSUPPORTED, NO_PERMISSION, DISCOVERING, SCAN_FAILED, CONNECTING, HANDSHAKING, CONNECTED, FAILED }
+/**
+ * The full connection state machine. The happy path is
+ * `IDLE → DISCOVERING → CONNECTING → HANDSHAKING → REQUEST_SENT → CONNECTED → IDLE`,
+ * with `DENIED`, `REQUEST_TIMEOUT`, `SCAN_FAILED` and `FAILED` as the terminal failure states.
+ *
+ * [CONNECTED] specifically means: the RFCOMM socket is open, the magic-byte check passed, the
+ * ML-KEM-768 handshake completed, *and* the peer explicitly accepted the chat request. Nothing
+ * short of all four ever produces it, which is why the UI can bind "Connected" straight to it.
+ */
+enum class BtChatConnState {
+    IDLE,
+    BT_UNAVAILABLE,
+    BLE_UNSUPPORTED,
+    NO_PERMISSION,
+    DISCOVERING,
+    SCAN_FAILED,
+    CONNECTING,
+    HANDSHAKING,
+
+    /** Socket up and encrypted; we asked to chat and are waiting for Accept or Deny. */
+    REQUEST_SENT,
+
+    /** Socket up and encrypted; the peer asked *us* and the user hasn't answered yet. */
+    REQUEST_RECEIVED,
+
+    CONNECTED,
+
+    /** The peer tapped Deny. */
+    DENIED,
+
+    /** Nobody answered within REQUEST_TIMEOUT_MS. */
+    REQUEST_TIMEOUT,
+
+    FAILED,
+    ;
+
+    /** True while a socket exists but chatting hasn't been agreed yet. */
+    val isPending: Boolean get() = this == REQUEST_SENT || this == REQUEST_RECEIVED
+}
 
 /** A device found via BLE scanning, filtered at the OS/radio level to only devices advertising
  *  Thread Protection's own service UUID (see BluetoothChatManager.PRESENCE_SERVICE_UUID) — a
@@ -43,6 +81,9 @@ data class ChatUiMessage(
  *  both present, you can message this contact via MeshRelayManager even when they're out of
  *  direct range (see AppViewModel.messageFromHistory). Empty strings mean this entry predates the
  *  mesh feature or the identity exchange failed; reconnecting directly refreshes it. */
+/** A chat request from a nearby peer, waiting on this user's Accept or Deny. */
+data class IncomingChatRequest(val requestId: String, val displayName: String, val receivedAtMs: Long)
+
 /** A saved conversation as the UI sees it — the domain mirror of `StoredChatSession`. */
 data class ChatSession(
     val sessionId: String,
@@ -89,15 +130,31 @@ sealed interface ChatWireMessage {
     data class Ack(val id: String) : ChatWireMessage
     data object Typing : ChatWireMessage
 
+    /** Sent by the initiator right after the handshake: "I'd like to chat, here's who I am."
+     *  [displayName] is the sender's own account name, shown on the recipient's Accept/Deny card. */
+    data class ChatRequest(val id: String, val displayName: String) : ChatWireMessage
+
+    /** The recipient tapped Accept. Only after this does either side enter the chatting state. */
+    data class ChatAccept(val id: String) : ChatWireMessage
+
+    /** The recipient tapped Deny, or their request timed out on their side. */
+    data class ChatDeny(val id: String) : ChatWireMessage
+
     companion object {
         private const val TYPE_TEXT: Byte = 0
         private const val TYPE_ACK: Byte = 1
         private const val TYPE_TYPING: Byte = 2
+        private const val TYPE_REQUEST: Byte = 3
+        private const val TYPE_ACCEPT: Byte = 4
+        private const val TYPE_DENY: Byte = 5
 
         fun encode(message: ChatWireMessage): ByteArray = when (message) {
             is Text -> frame(TYPE_TEXT, message.id, message.body.toByteArray(StandardCharsets.UTF_8))
             is Ack -> frame(TYPE_ACK, message.id, ByteArray(0))
             Typing -> frame(TYPE_TYPING, "", ByteArray(0))
+            is ChatRequest -> frame(TYPE_REQUEST, message.id, message.displayName.toByteArray(StandardCharsets.UTF_8))
+            is ChatAccept -> frame(TYPE_ACCEPT, message.id, ByteArray(0))
+            is ChatDeny -> frame(TYPE_DENY, message.id, ByteArray(0))
         }
 
         fun decode(bytes: ByteArray): ChatWireMessage? {
@@ -112,6 +169,11 @@ sealed interface ChatWireMessage {
                 TYPE_TEXT -> Text(id, body)
                 TYPE_ACK -> Ack(id)
                 TYPE_TYPING -> Typing
+                TYPE_REQUEST -> ChatRequest(id, body)
+                TYPE_ACCEPT -> ChatAccept(id)
+                TYPE_DENY -> ChatDeny(id)
+                // An unrecognised type is a peer on a newer protocol version, not a fatal error —
+                // ignore that one frame and keep the session alive.
                 else -> null
             }
         }

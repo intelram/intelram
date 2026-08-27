@@ -69,6 +69,8 @@ import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
 import com.threadprotection.app.ui.components.NavTab
+import com.threadprotection.app.ui.components.OutlinedPillButton
+import com.threadprotection.app.ui.components.PrimaryPillButton
 import com.threadprotection.app.ui.components.SectionHeading
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
@@ -92,6 +94,9 @@ fun ChatScreen(
     onStartDiscovery: () -> Unit,
     onConnect: (String) -> Unit,
     onGoHistory: () -> Unit,
+    onAcceptRequest: () -> Unit,
+    onDenyRequest: () -> Unit,
+    onDismissError: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -177,7 +182,43 @@ fun ChatScreen(
                     border = palette.warnBorder20,
                 )
             } else {
+                // An incoming chat request is shown here, in the app's own Chat screen — not as a
+                // system notification — and nothing is connected until the user answers it.
+                state.incomingChatRequest?.let { request ->
+                    IncomingRequestCard(
+                        displayName = request.displayName,
+                        onAccept = onAcceptRequest,
+                        onDeny = onDenyRequest,
+                    )
+                }
+                state.chatError?.let { message ->
+                    InfoBanner(
+                        title = "Something went wrong",
+                        body = message,
+                        tint = palette.dangerTint08,
+                        border = palette.dangerBorder30,
+                    )
+                    OutlinedPillButton(text = "Dismiss", onClick = onDismissError, borderColor = palette.line3)
+                }
                 when (state.btConnState) {
+                    BtChatConnState.REQUEST_SENT -> InfoBanner(
+                        title = "Chat request sent",
+                        body = "Waiting for them to accept. They'll see your request inside their Chat screen.",
+                        tint = palette.accentTint08,
+                        border = palette.accentBorder30,
+                    )
+                    BtChatConnState.DENIED -> InfoBanner(
+                        title = "Request declined",
+                        body = "They chose not to chat right now. You can send another request later.",
+                        tint = palette.warnTint06,
+                        border = palette.warnBorder20,
+                    )
+                    BtChatConnState.REQUEST_TIMEOUT -> InfoBanner(
+                        title = "No answer",
+                        body = "They didn't respond in time, so the pending connection was closed. Try again when they're at their phone.",
+                        tint = palette.warnTint06,
+                        border = palette.warnBorder20,
+                    )
                     BtChatConnState.BT_UNAVAILABLE -> InfoBanner(
                         title = "Bluetooth is off",
                         body = "Turn on Bluetooth in your phone's quick settings, then come back here.",
@@ -225,7 +266,13 @@ fun ChatScreen(
                     )
                 }
 
-                val busy = state.btConnState == BtChatConnState.DISCOVERING || state.btConnState == BtChatConnState.CONNECTING || state.btConnState == BtChatConnState.HANDSHAKING
+                // Also blocked while a chat request is pending in either direction: starting a new
+                // scan mid-request would stop the radio servicing the connection that request is
+                // riding on, and silently strand it.
+                val busy = state.btConnState == BtChatConnState.DISCOVERING ||
+                    state.btConnState == BtChatConnState.CONNECTING ||
+                    state.btConnState == BtChatConnState.HANDSHAKING ||
+                    state.btConnState.isPending
                 RadarScanner(
                     connState = state.btConnState,
                     devicesFound = state.btDiscoveredDevices.size,
@@ -265,6 +312,46 @@ fun ChatScreen(
             }
         }
         BottomNavBar(active = NavTab.CHAT, onHome = onBack, onQr = onGoQr, onChat = {}, onBrain = onGoBrain, onSettings = onGoSettings)
+    }
+}
+
+/** The in-app Accept/Deny card for an incoming chat request. Deliberately part of the Chat screen
+ *  rather than a system notification, so the decision happens where the conversation will. */
+@Composable
+private fun IncomingRequestCard(displayName: String, onAccept: () -> Unit, onDeny: () -> Unit) {
+    val palette = LocalTpPalette.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(palette.accentTint08)
+            .border(BorderStroke(1.5.dp, palette.accentBorder30), RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PulsingDot()
+            Text(
+                "CHAT REQUEST",
+                style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp),
+                color = palette.accent,
+            )
+        }
+        Text(
+            "$displayName wants to start an encrypted Bluetooth chat with you.",
+            style = TpType.body.copy(fontSize = 15.sp, lineHeight = 22.sp),
+            color = palette.fg,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PrimaryPillButton(text = "Accept", onClick = onAccept, modifier = Modifier.weight(1f))
+            OutlinedPillButton(
+                text = "Deny",
+                onClick = onDeny,
+                modifier = Modifier.weight(1f),
+                borderColor = palette.dangerBorder35,
+                textColor = palette.danger,
+            )
+        }
     }
 }
 
@@ -421,12 +508,24 @@ private fun DeviceRow(device: BtDeviceInfo, connState: BtChatConnState, isTarget
     // once BtChatConnState.CONNECTED is set, which BluetoothChatManager only reaches after the
     // RFCOMM socket opened *and* the magic-byte check *and* the ML-KEM-768 handshake all succeeded.
     val (actionLabel, actionColor, enabled) = when {
-        !isTarget -> Triple("Connect", palette.accent, connState != BtChatConnState.CONNECTING && connState != BtChatConnState.HANDSHAKING)
+        // While one request is in flight, every other row is disabled — that's what stops two
+        // simultaneous requests putting the two devices into disagreeing states.
+        !isTarget -> Triple(
+            "Request chat",
+            palette.accent,
+            connState != BtChatConnState.CONNECTING &&
+                connState != BtChatConnState.HANDSHAKING &&
+                !connState.isPending &&
+                connState != BtChatConnState.CONNECTED,
+        )
         connState == BtChatConnState.CONNECTING -> Triple("Connecting…", palette.muted, false)
         connState == BtChatConnState.HANDSHAKING -> Triple("Verifying…", palette.muted, false)
+        connState == BtChatConnState.REQUEST_SENT -> Triple("Waiting for reply…", palette.muted, false)
         connState == BtChatConnState.CONNECTED -> Triple("Connected", palette.accent, false)
+        connState == BtChatConnState.DENIED -> Triple("Declined", palette.danger, true)
+        connState == BtChatConnState.REQUEST_TIMEOUT -> Triple("No answer · Retry", palette.warn, true)
         connState == BtChatConnState.FAILED -> Triple("Failed · Retry", palette.danger, true)
-        else -> Triple("Connect", palette.accent, true)
+        else -> Triple("Request chat", palette.accent, true)
     }
     Row(
         modifier = Modifier

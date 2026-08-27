@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.util.Base64
+import android.util.Log
 import com.threadprotection.app.chat.BluetoothChatManager
 import com.threadprotection.app.chat.ChatEvent
 import com.threadprotection.app.chat.ChatHistoryEntry
@@ -11,6 +12,7 @@ import com.threadprotection.app.chat.ChatMode
 import com.threadprotection.app.chat.ChatSession
 import com.threadprotection.app.chat.ChatSessionStatus
 import com.threadprotection.app.chat.ChatUiMessage
+import com.threadprotection.app.chat.IncomingChatRequest
 import com.threadprotection.app.chat.MeshRelayManager
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
@@ -29,6 +31,8 @@ import com.threadprotection.app.scan.PermissionAudit
 import com.threadprotection.app.ui.theme.TpThemeMode
 import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -48,6 +52,40 @@ class AppViewModel(
     // below resolves and overwrites it.
     private val _state = MutableStateFlow(AppUiState(theme = appContext?.let { systemThemeMode(it) } ?: TpThemeMode.NIGHT))
     val state: StateFlow<AppUiState> = _state.asStateFlow()
+
+    /**
+     * Catches anything that escapes a coroutine started with [safeLaunch].
+     *
+     * Root cause this exists to fix: every background job in this class used a bare
+     * `viewModelScope.launch {}`, which installs no CoroutineExceptionHandler, so a
+     * throw inside any of them — a DataStore write failure, a malformed stored key reaching
+     * `PqcChatCrypto.encapsulate()`, a serialization error — went to the thread's default uncaught
+     * handler and killed the process. That is exactly what made Send and Chat History crash.
+     *
+     * This is deliberately *not* an empty catch: the failure is logged with its full stack trace
+     * and surfaced to the user as a recoverable banner, so the app stays usable and the underlying
+     * problem stays visible.
+     */
+    private val crashGuard = CoroutineExceptionHandler { _, throwable ->
+        if (throwable is CancellationException) return@CoroutineExceptionHandler
+        Log.e(TAG, "Background task failed", throwable)
+        _state.update { it.copy(chatError = throwable.userMessage()) }
+    }
+
+    /** Use instead of `viewModelScope.launch` for anything that can fail — see [crashGuard]. */
+    private fun safeLaunch(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit): Job =
+        viewModelScope.launch(crashGuard, block = block)
+
+    fun dismissChatError() = _state.update { it.copy(chatError = null) }
+
+    /** Turns an exception into something a user can act on, without inventing a cause it doesn't
+     *  have. The full stack trace always goes to logcat under [TAG] regardless. */
+    private fun Throwable.userMessage(): String = when (this) {
+        is java.io.IOException -> "Couldn't save to this device's storage. Your messages are still on screen — try again."
+        is SecurityException -> "A required permission was refused. Check the app's Bluetooth and nearby-devices permissions."
+        is IllegalArgumentException -> "That contact's stored security key is unusable, so the message couldn't be sealed. Reconnect to them directly once to refresh it."
+        else -> "Something went wrong (${this::class.java.simpleName}). The app is still usable — the details are in the logs."
+    }
 
     private val threatIntel = ThreatIntelRepository()
     private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
@@ -74,33 +112,33 @@ class AppViewModel(
     init {
         startAmbientTimers()
         settingsRepository?.let { repo ->
-            viewModelScope.launch {
+            safeLaunch {
                 repo.themeFlow.collect { mode -> _state.update { it.copy(theme = mode) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.accountFlow.collect { account ->
                     if (account != null) {
                         _state.update { it.copy(account = account, screen = Screen.DASHBOARD) }
                     }
                 }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.apiKeysFlow.collect { keys -> _state.update { it.copy(apiKeys = keys) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.realtimeFlow.collect { enabled ->
                     _state.update { it.copy(realtime = enabled) }
                     syncProtectionService(enabled)
                 }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.protectionSettingsFlow.collect { stored ->
                     val settings = stored.toState()
                     _state.update { it.copy(settings = settings) }
                     syncScheduledScan(settings)
                 }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.chatHistoryFlow.collect { stored ->
                     val history = stored
                         .map { ChatHistoryEntry(it.address, it.name, it.lastChattedAtMs, it.nodeId, it.publicKeyB64) }
@@ -108,7 +146,7 @@ class AppViewModel(
                     _state.update { it.copy(chatHistory = history) }
                 }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 repo.chatSessionsFlow.collect { stored ->
                     val sessions = stored.map { s ->
                         ChatSession(
@@ -136,19 +174,19 @@ class AppViewModel(
             }
         }
         bluetoothChatManager?.let { chat ->
-            viewModelScope.launch {
+            safeLaunch {
                 chat.connState.collect { st -> _state.update { it.copy(btConnState = st) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 chat.discoveredDevices.collect { list -> _state.update { it.copy(btDiscoveredDevices = list) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 chat.canAdvertise.collect { v -> _state.update { it.copy(btCanAdvertise = v) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 chat.advertisePermissionMissing.collect { v -> _state.update { it.copy(btAdvertisePermissionMissing = v) } }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
                     if (name != null) {
@@ -166,13 +204,13 @@ class AppViewModel(
                             // the live connection later drops.
                             _state.update { it.copy(chatMeshPeer = ChatHistoryEntry(address, name, System.currentTimeMillis(), nodeId, publicKeyB64)) }
                             settingsRepository?.let { repo ->
-                                viewModelScope.launch { repo.recordChatHistory(address, name, nodeId, publicKeyB64) }
+                                safeLaunch { repo.recordChatHistory(address, name, nodeId, publicKeyB64) }
                             }
                         }
                     }
                 }
             }
-            viewModelScope.launch {
+            safeLaunch {
                 chat.events.collect { event ->
                     when (event) {
                         is ChatEvent.MessageReceived -> {
@@ -196,7 +234,7 @@ class AppViewModel(
                         }
                         ChatEvent.PeerTyping -> {
                             _state.update { it.copy(chatPeerTyping = true) }
-                            viewModelScope.launch {
+                            safeLaunch {
                                 delay(3000)
                                 _state.update { s -> if (s.chatPeerTyping) s.copy(chatPeerTyping = false) else s }
                             }
@@ -206,14 +244,37 @@ class AppViewModel(
                             // message already exchanged. The user stays on the conversation so they
                             // can read the transcript; the banner shows the disconnected state.
                             closeChatSession(ChatSessionStatus.INTERRUPTED)
-                            _state.update { it.copy(chatPeerName = null, chatPeerTyping = false) }
+                            _state.update {
+                                it.copy(chatPeerName = null, chatPeerTyping = false, incomingChatRequest = null)
+                            }
+                        }
+                        is ChatEvent.ChatRequested -> _state.update {
+                            it.copy(
+                                incomingChatRequest = IncomingChatRequest(
+                                    requestId = event.requestId,
+                                    displayName = event.displayName,
+                                    receivedAtMs = System.currentTimeMillis(),
+                                ),
+                            )
+                        }
+                        // Accepted on either side is the only route into an open conversation; the
+                        // peer name flow (collected above) is what actually navigates there.
+                        ChatEvent.ChatAccepted -> _state.update { it.copy(incomingChatRequest = null) }
+                        ChatEvent.ChatDenied -> _state.update {
+                            it.copy(
+                                incomingChatRequest = null,
+                                chatMeshPeer = null,
+                                chatPeerName = null,
+                                btConnectingAddress = null,
+                                screen = Screen.CHAT,
+                            )
                         }
                     }
                 }
             }
         }
         meshRelayManager?.let { mesh ->
-            viewModelScope.launch {
+            safeLaunch {
                 mesh.delivered.collect { msg ->
                     val contact = _state.value.chatHistory.firstOrNull { it.nodeId == msg.senderNodeId }
                     val displayName = contact?.name?.takeIf { it.isNotBlank() } ?: msg.senderName
@@ -247,7 +308,7 @@ class AppViewModel(
                     // it's the first time we've heard from them via relay rather than directly.
                     if (contact != null) {
                         settingsRepository?.let { repo ->
-                            viewModelScope.launch { repo.recordChatHistory(contact.address, contact.name, contact.nodeId, contact.publicKeyB64) }
+                            safeLaunch { repo.recordChatHistory(contact.address, contact.name, contact.nodeId, contact.publicKeyB64) }
                         }
                     }
                 }
@@ -294,7 +355,7 @@ class AppViewModel(
 
     private fun persistProtectionSettings(next: ProtectionSettings) {
         syncScheduledScan(next)
-        settingsRepository?.let { repo -> viewModelScope.launch { repo.setProtectionSettings(next.toStored()) } }
+        settingsRepository?.let { repo -> safeLaunch { repo.setProtectionSettings(next.toStored()) } }
     }
 
     /** Starts/stops the background hardware-watch service (README: "work in the background… even if closed"). */
@@ -315,21 +376,21 @@ class AppViewModel(
 
     private fun startAmbientTimers() {
         // "PROTECTING RIGHT NOW" counter — +1..3 every 1.4s (README §Sign in).
-        viewModelScope.launch {
+        safeLaunch {
             while (true) {
                 delay(1400)
                 _state.update { it.copy(blocked = it.blocked + 1 + Random.nextInt(3)) }
             }
         }
         // "LEARNING RIGHT NOW" counter — +1..4 every 1.9s (README §AI brain).
-        viewModelScope.launch {
+        safeLaunch {
             while (true) {
                 delay(1900)
                 _state.update { it.copy(learned = it.learned + 1 + Random.nextInt(4)) }
             }
         }
         // Rotating activity ticker on the sign-in screen — every 2.8s.
-        viewModelScope.launch {
+        safeLaunch {
             while (true) {
                 delay(2800)
                 _state.update { it.copy(tickIdx = (it.tickIdx + 1) % DemoData.ticker.size) }
@@ -428,7 +489,7 @@ class AppViewModel(
                 val account = Account(name = trimmedName, email = trimmedEmail, initial = trimmedName.take(1).uppercase())
                 _state.update { it.copy(account = account, screen = Screen.ONBOARDING, createAccountError = null) }
                 persistAccount(account)
-                settingsRepository?.let { repo -> viewModelScope.launch { repo.setLocalCredential(trimmedEmail, password) } }
+                settingsRepository?.let { repo -> safeLaunch { repo.setLocalCredential(trimmedEmail, password) } }
             }
         }
     }
@@ -451,7 +512,7 @@ class AppViewModel(
 
     private fun persistAccount(account: Account?) {
         settingsRepository ?: return
-        viewModelScope.launch { settingsRepository.setAccount(account) }
+        safeLaunch { settingsRepository.setAccount(account) }
     }
 
     // ───────────────────────── onboarding ─────────────────────────
@@ -467,7 +528,7 @@ class AppViewModel(
 
     fun applyTheme(mode: TpThemeMode) {
         _state.update { it.copy(theme = mode) }
-        settingsRepository?.let { repo -> viewModelScope.launch { repo.setTheme(mode) } }
+        settingsRepository?.let { repo -> safeLaunch { repo.setTheme(mode) } }
     }
 
     // ───────────────────────── realtime + settings toggles ─────────────────────────
@@ -476,7 +537,7 @@ class AppViewModel(
         val next = !_state.value.realtime
         _state.update { it.copy(realtime = next) }
         syncProtectionService(next)
-        settingsRepository?.let { repo -> viewModelScope.launch { repo.setRealtime(next) } }
+        settingsRepository?.let { repo -> safeLaunch { repo.setRealtime(next) } }
     }
 
     /** Toggles one of the Settings screen's 6 protection rows by key (README §Settings §Protection). */
@@ -527,7 +588,7 @@ class AppViewModel(
 
     fun setApiKey(id: ApiKeyId, value: String) {
         _state.update { it.copy(apiKeys = ApiKeys(it.apiKeys.values + (id to value))) }
-        settingsRepository?.let { repo -> viewModelScope.launch { repo.setApiKey(id, value) } }
+        settingsRepository?.let { repo -> safeLaunch { repo.setApiKey(id, value) } }
     }
 
     // ───────────────────────── scanning (real device scan) ─────────────────────────
@@ -539,7 +600,7 @@ class AppViewModel(
         _state.update {
             it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), scanPhase = ScanPhaseState(), scanFeed = emptyList())
         }
-        scanJob = viewModelScope.launch {
+        scanJob = safeLaunch {
             val result = scanner.scan(_state.value.apiKeys) { update ->
                 _state.update {
                     val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
@@ -620,7 +681,7 @@ class AppViewModel(
     fun refreshPermissions() {
         val audit = permissionAudit ?: return
         if (permJob?.isActive == true) return
-        permJob = viewModelScope.launch {
+        permJob = safeLaunch {
             val result = withContext(Dispatchers.IO) { audit.audit() }
             _state.update {
                 it.copy(scanData = it.scanData.copy(permApps = result.apps, appsScanned = result.totalInstalledCount))
@@ -651,7 +712,7 @@ class AppViewModel(
     private fun runQrCheck(payload: String, index: Int) {
         qrJob?.cancel()
         _state.update { it.copy(qrPhase = QrPhase.SCANNING, qrIndex = index, qrProgress = 0, qrVerdict = null) }
-        qrJob = viewModelScope.launch {
+        qrJob = safeLaunch {
             val progressJob = launch {
                 while (_state.value.qrProgress < 92) {
                     delay(60)
@@ -675,7 +736,7 @@ class AppViewModel(
         val email = _state.value.account?.email ?: return
         if (_state.value.breachChecking) return
         _state.update { it.copy(breachChecking = true) }
-        viewModelScope.launch {
+        safeLaunch {
             val result = threatIntel.checkEmailBreaches(email)
             _state.update { it.copy(breachResult = result, breachChecking = false) }
         }
@@ -691,7 +752,7 @@ class AppViewModel(
         val url = _state.value.websiteUrl.trim()
         if (url.isEmpty() || _state.value.websiteChecking) return
         _state.update { it.copy(websiteChecking = true, websiteVerdict = null) }
-        viewModelScope.launch {
+        safeLaunch {
             val verdict = threatIntel.checkUrl(url, _state.value.apiKeys)
             _state.update { it.copy(websiteVerdict = verdict, websiteChecking = false) }
         }
@@ -705,7 +766,7 @@ class AppViewModel(
 
     fun refreshHardwareStatus() {
         val watcher = hardwareWatcher ?: return
-        viewModelScope.launch {
+        safeLaunch {
             val devices = withContext(Dispatchers.IO) { watcher.scan() }
             _state.update { it.copy(liveHwDevices = devices) }
         }
@@ -810,7 +871,14 @@ class AppViewModel(
         if (text.isEmpty()) return
 
         if (_state.value.btConnState == com.threadprotection.app.chat.BtChatConnState.CONNECTED) {
-            val id = bluetoothChatManager?.sendText(text) ?: return
+            // sendText returns null when the socket or session key has gone away between the state
+            // check and the write — a real race when the peer walks out of range mid-tap. Surface
+            // it as an error instead of adding a message that was never transmitted.
+            val id = bluetoothChatManager?.sendText(text)
+            if (id == null) {
+                _state.update { it.copy(chatError = "That message wasn't sent — the connection dropped. Reconnect and try again.") }
+                return
+            }
             _state.update {
                 it.copy(
                     chatMessages = it.chatMessages + ChatUiMessage(id, text, fromMe = true, timestampMs = System.currentTimeMillis(), delivered = false),
@@ -826,10 +894,13 @@ class AppViewModel(
         // once; see BluetoothChatManager's identity exchange).
         val peer = _state.value.chatMeshPeer
         val mesh = meshRelayManager
-        if (peer == null || mesh == null || !peer.meshReachable) return
+        if (peer == null || mesh == null || !peer.meshReachable) {
+            _state.update { it.copy(chatError = "Not connected, and this contact can't be reached by relay yet. Connect to them directly once first.") }
+            return
+        }
         val publicKeyBytes = runCatching { Base64.decode(peer.publicKeyB64, Base64.NO_WRAP) }.getOrNull() ?: return
         val senderName = _state.value.account?.name?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
-        viewModelScope.launch { mesh.queueOutbound(peer.nodeId, publicKeyBytes, senderName, text) }
+        safeLaunch { mesh.queueOutbound(peer.nodeId, publicKeyBytes, senderName, text) }
         _state.update {
             it.copy(
                 chatMessages = it.chatMessages + ChatUiMessage(
@@ -848,6 +919,18 @@ class AppViewModel(
 
     fun disconnectChatPeer() {
         exitChat()
+    }
+
+    /** This user tapped Accept on an incoming request — tells the peer and opens the chat. */
+    fun acceptIncomingChatRequest() {
+        _state.update { it.copy(incomingChatRequest = null) }
+        bluetoothChatManager?.acceptChatRequest()
+    }
+
+    /** This user tapped Deny — tells the peer and closes the pending connection cleanly. */
+    fun denyIncomingChatRequest() {
+        _state.update { it.copy(incomingChatRequest = null) }
+        bluetoothChatManager?.denyChatRequest()
     }
 
     // ───────────────────────── chat sessions (real transcripts, persisted) ─────────────────────────
@@ -891,7 +974,7 @@ class AppViewModel(
             },
             messages = messages,
         )
-        viewModelScope.launch { repo.saveChatSession(stored) }
+        safeLaunch { repo.saveChatSession(stored) }
     }
 
     /** Finalises the session with how it actually ended, then forgets the live id. */
@@ -926,17 +1009,18 @@ class AppViewModel(
 
     fun deleteStoredSession(sessionId: String) {
         val repo = settingsRepository ?: return
-        viewModelScope.launch { repo.deleteChatSession(sessionId) }
+        safeLaunch { repo.deleteChatSession(sessionId) }
         _state.update { if (it.viewingSession?.sessionId == sessionId) it.copy(viewingSession = null) else it }
     }
 
     fun clearStoredSessions() {
         val repo = settingsRepository ?: return
-        viewModelScope.launch { repo.clearChatSessions() }
+        safeLaunch { repo.clearChatSessions() }
         _state.update { it.copy(viewingSession = null) }
     }
 
     companion object {
+        private const val TAG = "TPChat"
         private const val ESTIMATED_ITEMS = 300
         private const val SCAN_FEED_LIMIT = 8
     }

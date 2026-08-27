@@ -129,7 +129,7 @@ fun ChatConversationScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            items(state.chatMessages, key = { it.id }) { msg -> MessageBubble(msg) }
+            items(state.chatMessages.distinctBy { it.id }, key = { it.id }) { msg -> MessageBubble(msg) }
         }
 
         // The composer only opens once the connection is genuinely established (or the peer is

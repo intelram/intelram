@@ -429,6 +429,9 @@ class MainActivity : ComponentActivity() {
                                 onStartDiscovery = viewModel::startBtDiscovery,
                                 onConnect = viewModel::connectToBtDevice,
                                 onGoHistory = viewModel::goChatHistory,
+                                onAcceptRequest = viewModel::acceptIncomingChatRequest,
+                                onDenyRequest = viewModel::denyIncomingChatRequest,
+                                onDismissError = viewModel::dismissChatError,
                             )
                         }
 
