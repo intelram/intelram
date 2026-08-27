@@ -17,6 +17,7 @@ object NotificationHelper {
 
     const val NOTIF_ID_PERSISTENT = 1001
     private const val NOTIF_ID_COMING_SOON = 9001
+    private const val NOTIF_ID_CHAT_REQUEST = 9100
     private var nextAlertId = 2000
 
     fun ensureChannels(context: Context) {
@@ -78,6 +79,65 @@ object NotificationHelper {
             .build()
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         manager.notify(nextAlertId++, notification)
+    }
+
+    /**
+     * A real heads-up notification with working Accept and Deny buttons, posted when someone
+     * nearby asks to chat and the user isn't already looking at the Chat screen.
+     *
+     * This is the fix for "the recipient never sees anything": the in-app request card only exists
+     * while Chat is open, so a request arriving while the user was on any other screen — or with
+     * the app in the background — was invisible and simply timed out. The buttons broadcast to
+     * [ChatRequestActionReceiver], which drives the same shared BluetoothChatManager the UI does,
+     * so answering from the notification is exactly answering in the app.
+     */
+    fun postChatRequest(context: Context, displayName: String, requestId: String) {
+        ensureChannels(context)
+
+        fun action(name: String) = PendingIntent.getBroadcast(
+            context,
+            (requestId + name).hashCode(),
+            Intent(context, ChatRequestActionReceiver::class.java).apply {
+                this.action = name
+                setPackage(context.packageName)
+                putExtra(ChatRequestActionReceiver.EXTRA_REQUEST_ID, requestId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val openChat = PendingIntent.getActivity(
+            context, requestId.hashCode(),
+            Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_SCREEN
+                putExtra(MainActivity.EXTRA_TARGET_SCREEN, MainActivity.TARGET_CHAT)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_tile_permissions)
+            .setContentTitle("$displayName wants to chat")
+            .setContentText("Encrypted Bluetooth chat request from a device nearby.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$displayName wants to start an encrypted Bluetooth chat with you. Accept to begin, or deny to decline."))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            // Stays put until answered — a chat request the user swipes past by accident would
+            // otherwise silently time out with no way back to it.
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(openChat)
+            .addAction(0, "Accept", action(ChatRequestActionReceiver.ACTION_ACCEPT))
+            .addAction(0, "Deny", action(ChatRequestActionReceiver.ACTION_DENY))
+            .build()
+
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(NOTIF_ID_CHAT_REQUEST, notification)
+    }
+
+    /** Clears the request notification once it's answered, timed out, or the peer went away. */
+    fun cancelChatRequest(context: Context) {
+        context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_CHAT_REQUEST)
     }
 
     fun postComingSoon(context: Context, title: String, text: String, targetScreen: String) {

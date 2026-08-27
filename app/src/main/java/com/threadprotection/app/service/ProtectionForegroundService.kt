@@ -51,6 +51,7 @@ class ProtectionForegroundService : Service() {
         startForeground(NotificationHelper.NOTIF_ID_PERSISTENT, NotificationHelper.persistentNotification(this))
         registerReceivers()
         startMeshRelay()
+        startChatListener()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -67,6 +68,22 @@ class ProtectionForegroundService : Service() {
 
     /** Starts accepting inbound relay hops immediately, then ticks (brief discovery + gossip
      *  exchange with anything nearby) on a fixed interval for as long as this service is alive. */
+    /**
+     * Keeps the chat RFCOMM listener and BLE presence advertising running for as long as
+     * protection is on.
+     *
+     * Root cause this fixes: both used to start only in goChat() and stop the moment the user left
+     * the Chat screen. So a phone sitting on the Dashboard — or with the app merely backgrounded —
+     * had no server socket at all, and an incoming chat request simply had nothing to connect to.
+     * The recipient never saw a request because one never arrived.
+     */
+    private fun startChatListener() {
+        val app = application as? com.threadprotection.app.ThreadProtectionApp ?: return
+        com.threadprotection.app.chat.BluetoothChatManager
+            .getInstance(app, app.settingsRepository)
+            .startListening()
+    }
+
     private fun startMeshRelay() {
         val relay = MeshRelayManager.getInstance(applicationContext, SettingsRepository(applicationContext))
         relay.startListening()

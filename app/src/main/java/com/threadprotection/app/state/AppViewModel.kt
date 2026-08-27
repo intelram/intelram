@@ -93,7 +93,7 @@ class AppViewModel(
     private val hardwareWatcher by lazy { appContext?.let { HardwareWatcher(it) } }
     private val bluetoothChatManager by lazy {
         val ctx = appContext; val repo = settingsRepository
-        if (ctx != null && repo != null) BluetoothChatManager(ctx, repo) else null
+        if (ctx != null && repo != null) BluetoothChatManager.getInstance(ctx, repo) else null
     }
 
     /** Shared with ProtectionForegroundService (same process-wide instance via getInstance) —
@@ -247,23 +247,38 @@ class AppViewModel(
                             // message already exchanged. The user stays on the conversation so they
                             // can read the transcript; the banner shows the disconnected state.
                             closeChatSession(ChatSessionStatus.INTERRUPTED)
+                            appContext?.let { NotificationHelper.cancelChatRequest(it) }
                             _state.update {
                                 it.copy(chatPeerName = null, chatPeerTyping = false, incomingChatRequest = null)
                             }
                         }
-                        is ChatEvent.ChatRequested -> _state.update {
-                            it.copy(
-                                incomingChatRequest = IncomingChatRequest(
-                                    requestId = event.requestId,
-                                    displayName = event.displayName,
-                                    receivedAtMs = System.currentTimeMillis(),
-                                ),
-                            )
+                        is ChatEvent.ChatRequested -> {
+                            _state.update {
+                                it.copy(
+                                    incomingChatRequest = IncomingChatRequest(
+                                        requestId = event.requestId,
+                                        displayName = event.displayName,
+                                        receivedAtMs = System.currentTimeMillis(),
+                                    ),
+                                )
+                            }
+                            // The in-app card only exists while Chat is open. Post a real
+                            // heads-up notification with Accept/Deny buttons so the request
+                            // reaches the user wherever they are — including with the app
+                            // backgrounded, which is when it was being missed entirely.
+                            appContext?.let { ctx ->
+                                NotificationHelper.postChatRequest(ctx, event.displayName, event.requestId)
+                            }
                         }
                         // Accepted on either side is the only route into an open conversation; the
                         // peer name flow (collected above) is what actually navigates there.
-                        ChatEvent.ChatAccepted -> _state.update { it.copy(incomingChatRequest = null) }
-                        ChatEvent.ChatDenied -> _state.update {
+                        ChatEvent.ChatAccepted -> {
+                            appContext?.let { NotificationHelper.cancelChatRequest(it) }
+                            _state.update { it.copy(incomingChatRequest = null) }
+                        }
+                        ChatEvent.ChatDenied -> {
+                            appContext?.let { NotificationHelper.cancelChatRequest(it) }
+                            _state.update {
                             it.copy(
                                 incomingChatRequest = null,
                                 chatMeshPeer = null,
@@ -271,6 +286,7 @@ class AppViewModel(
                                 btConnectingAddress = null,
                                 screen = Screen.CHAT,
                             )
+                            }
                         }
                     }
                 }
@@ -483,13 +499,13 @@ class AppViewModel(
      *  left Chat. Call this before every transition that can move off a Chat screen. */
     private fun releaseChatRadioIfLeaving(next: Screen) {
         if (!_state.value.screen.isChatFeature || next.isChatFeature) return
-        bluetoothChatManager?.shutdown()
-        _state.update {
-            it.copy(
-                btDiscoveredDevices = emptyList(),
-                btConnState = com.threadprotection.app.chat.BtChatConnState.IDLE,
-            )
-        }
+        // Stop *scanning* only. The RFCOMM listener and BLE advertising deliberately keep running,
+        // owned by ProtectionForegroundService, so this phone stays discoverable and reachable
+        // after the user navigates away from Chat — that is the whole point of moving them there.
+        // Calling shutdown() here (as this used to) tore them down again the instant the user left
+        // the Chat screen, which is precisely why an incoming request had nothing to connect to.
+        bluetoothChatManager?.stopDiscovery()
+        _state.update { it.copy(btDiscoveredDevices = emptyList()) }
     }
 
     // ───────────────────────── splash ─────────────────────────
@@ -960,12 +976,14 @@ class AppViewModel(
 
     /** This user tapped Accept on an incoming request — tells the peer and opens the chat. */
     fun acceptIncomingChatRequest() {
+        appContext?.let { NotificationHelper.cancelChatRequest(it) }
         _state.update { it.copy(incomingChatRequest = null) }
         bluetoothChatManager?.acceptChatRequest()
     }
 
     /** This user tapped Deny — tells the peer and closes the pending connection cleanly. */
     fun denyIncomingChatRequest() {
+        appContext?.let { NotificationHelper.cancelChatRequest(it) }
         _state.update { it.copy(incomingChatRequest = null) }
         bluetoothChatManager?.denyChatRequest()
     }

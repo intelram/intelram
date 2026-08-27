@@ -56,6 +56,10 @@
         </service>
 
         <receiver
+            android:name=".service.ChatRequestActionReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".service.BootReceiver"
             android:exported="true"
             android:permission="android.permission.RECEIVE_BOOT_COMPLETED">

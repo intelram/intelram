@@ -44,6 +44,7 @@ import com.threadprotection.app.ui.screens.DashboardScreen
 import com.threadprotection.app.ui.screens.DataBreachScreen
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
 import com.threadprotection.app.ui.screens.HardwareDetailScreen
+import com.threadprotection.app.ui.screens.IncomingChatRequestOverlay
 import com.threadprotection.app.ui.screens.OnboardingScreen
 import com.threadprotection.app.ui.screens.OpenPortsScreen
 import com.threadprotection.app.ui.screens.OperatingSystemScreen
@@ -484,6 +485,18 @@ class MainActivity : ComponentActivity() {
                                 onSetScheduledScanFrequency = viewModel::setScheduledScanFrequency,
                             )
                         }
+                    }
+
+                    // Sits outside the screen `when`, so an incoming chat request interrupts
+                    // whatever the user is looking at — Dashboard, Settings, anywhere. Previously
+                    // the Accept/Deny card lived only inside the Chat screen, so a request that
+                    // arrived while the user was elsewhere was simply never shown.
+                    state.incomingChatRequest?.let { request ->
+                        IncomingChatRequestOverlay(
+                            displayName = request.displayName,
+                            onAccept = viewModel::acceptIncomingChatRequest,
+                            onDeny = viewModel::denyIncomingChatRequest,
+                        )
                     }
 
                     state.hwAlert?.let { alert ->

@@ -94,7 +94,10 @@ sealed interface ChatEvent {
  * be rediscovered. The listening server socket and BLE advertising only run while the Chat screen
  * is open, not as a background service.
  */
-class BluetoothChatManager(private val context: Context, private val settingsRepository: SettingsRepository) {
+class BluetoothChatManager private constructor(
+    private val context: Context,
+    private val settingsRepository: SettingsRepository,
+) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var serverJob: Job? = null
@@ -948,5 +951,18 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
          *  device: adapter state, permission checks, advertising start/failure, scan start/stop,
          *  every peer sighting and staleness drop, connection attempts and handshake outcome. */
         const val TAG = "TPChat"
+
+        @Volatile private var instance: BluetoothChatManager? = null
+
+        /**
+         * One instance per process. This has to be shared, not per-ViewModel: the foreground
+         * service keeps the RFCOMM listener alive so this phone stays reachable when Chat isn't
+         * on screen, and the notification's Accept/Deny buttons arrive on a BroadcastReceiver
+         * with no ViewModel at all. All three must be driving the same connection.
+         */
+        fun getInstance(context: Context, settingsRepository: SettingsRepository): BluetoothChatManager =
+            instance ?: synchronized(this) {
+                instance ?: BluetoothChatManager(context.applicationContext, settingsRepository).also { instance = it }
+            }
     }
 }
