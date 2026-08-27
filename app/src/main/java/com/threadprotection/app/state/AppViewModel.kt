@@ -686,8 +686,8 @@ class AppViewModel(
             appContext?.let { ctx ->
                 NotificationHelper.postComingSoon(
                     ctx,
-                    "Internet chat — coming soon",
-                    "Chatting over the internet isn't available yet. Bluetooth chat with nearby devices works right now.",
+                    "Internet chat is under maintenance",
+                    "This mode isn't ready yet — it needs a relay server that doesn't exist for this app yet. Bluetooth chat with nearby devices works right now.",
                     com.threadprotection.app.MainActivity.TARGET_CHAT,
                 )
             }

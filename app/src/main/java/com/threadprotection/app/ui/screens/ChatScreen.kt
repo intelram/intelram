@@ -36,12 +36,17 @@ import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.Laptop
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -105,6 +110,24 @@ fun ChatScreen(
         val granted = scanPermissions.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
         if (granted) onStartDiscovery() else permissionLauncher.launch(scanPermissions)
     }
+    var showMaintenancePopup by remember { mutableStateOf(false) }
+
+    if (showMaintenancePopup) {
+        AlertDialog(
+            onDismissRequest = { showMaintenancePopup = false },
+            confirmButton = { TextButton(onClick = { showMaintenancePopup = false }) { Text("Got it") } },
+            icon = { Icon(Icons.Filled.Public, contentDescription = null, tint = palette.warn) },
+            title = { Text("Internet chat is under maintenance", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg) },
+            text = {
+                Text(
+                    "This mode isn't ready yet — it needs a relay server to find and route messages between phones, which doesn't exist for this app yet. Bluetooth chat with nearby devices works right now.",
+                    style = TpType.body.copy(fontSize = 14.5.sp, lineHeight = 21.sp),
+                    color = palette.muted,
+                )
+            },
+            containerColor = palette.card,
+        )
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -122,13 +145,18 @@ fun ChatScreen(
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ModeOption("Bluetooth", state.chatMode == ChatMode.BLUETOOTH, Modifier.weight(1f)) { onSetChatMode(ChatMode.BLUETOOTH) }
-                ModeOption("Internet", state.chatMode == ChatMode.INTERNET, Modifier.weight(1f)) { onSetChatMode(ChatMode.INTERNET) }
+                ModeOption("Bluetooth", Icons.Filled.Bluetooth, state.chatMode == ChatMode.BLUETOOTH, Modifier.weight(1f)) {
+                    onSetChatMode(ChatMode.BLUETOOTH)
+                }
+                ModeOption("Internet", Icons.Filled.Public, state.chatMode == ChatMode.INTERNET, Modifier.weight(1f)) {
+                    onSetChatMode(ChatMode.INTERNET)
+                    showMaintenancePopup = true
+                }
             }
 
             if (state.chatMode == ChatMode.INTERNET) {
                 InfoBanner(
-                    title = "Not available yet",
+                    title = "Under maintenance",
                     body = "Reaching any other installed device over the internet needs a relay server to find and route messages between phones — most phones have no public address of their own. That server doesn't exist for this app yet. Switch to Bluetooth to chat with someone nearby right now.",
                     tint = palette.warnTint06,
                     border = palette.warnBorder20,
@@ -193,8 +221,9 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ModeOption(label: String, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun ModeOption(label: String, icon: ImageVector, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val palette = LocalTpPalette.current
+    val contentColor = if (active) palette.onAccent else palette.fg2
     Row(
         modifier = modifier
             .height(52.dp)
@@ -205,7 +234,8 @@ private fun ModeOption(label: String, active: Boolean, modifier: Modifier = Modi
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = TpType.cardTitle.copy(fontSize = 16.sp), color = if (active) palette.onAccent else palette.fg2)
+        Icon(icon, contentDescription = null, tint = contentColor, modifier = Modifier.size(18.dp))
+        Text(label, style = TpType.cardTitle.copy(fontSize = 16.sp), color = contentColor, modifier = Modifier.padding(start = 8.dp))
     }
 }
 
