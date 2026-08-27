@@ -705,7 +705,14 @@ class BluetoothChatManager private constructor(
         val advertisedName = _discovered.value.firstOrNull { it.address == address }?.name
         // Stop scanning before connecting: the radio can't do both well at once, and a live scan
         // measurably slows down (and sometimes outright fails) RFCOMM connection setup.
-        stopDiscovery()
+        //
+        // stopScanRadio(), not stopDiscovery(): the Chat screen still wants a live nearby list, and
+        // clearing that intent here is what used to leave the user staring at a frozen, empty list
+        // behind a "Couldn't connect" banner with no way back except leaving and re-entering Chat.
+        // Leaving the intent set means resumeDiscoveryIfWanted() puts the scan back the moment this
+        // attempt finishes, succeed or fail. Leaving Chat (releaseChatRadioIfLeaving) and shutdown()
+        // are what clear the intent for real.
+        stopScanRadio()
         val device = runCatching { a.getRemoteDevice(address) }.getOrElse {
             Log.e(TAG, "connectTo: getRemoteDevice($address) failed", it)
             failConnection("That device address is no longer valid — scan again.")
@@ -938,6 +945,7 @@ class BluetoothChatManager private constructor(
         _connectedPeerPublicKeyB64.value =
             _pendingPeerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
         _sessionSafetyCode.value = sessionKey?.safetyCode
+        _lastFailureReason.value = null
         _connState.value = BtChatConnState.CONNECTED
         Log.i(TAG, "promoteToConnected: chat is live with ${_connectedDeviceName.value}")
     }
