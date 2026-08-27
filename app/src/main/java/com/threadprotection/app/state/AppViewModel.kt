@@ -39,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -113,33 +114,49 @@ class AppViewModel(
         startAmbientTimers()
         settingsRepository?.let { repo ->
             safeLaunch {
-                repo.themeFlow.collect { mode -> _state.update { it.copy(theme = mode) } }
+                repo.themeFlow.distinctUntilChanged().collect { mode -> _state.update { it.copy(theme = mode) } }
             }
             safeLaunch {
-                repo.accountFlow.collect { account ->
-                    if (account != null) {
-                        _state.update { it.copy(account = account, screen = Screen.DASHBOARD) }
+                // distinctUntilChanged is essential, not cosmetic: DataStore re-emits the whole
+                // Preferences object on EVERY write to ANY key, so without it this collector fired
+                // again each time anything was saved.
+                //
+                // Root cause of "accepting a chat throws you back to Home": accepting writes chat
+                // history and the session transcript, DataStore re-emitted, this collector ran with
+                // an unchanged account and unconditionally forced screen = DASHBOARD — ripping the
+                // user out of the conversation they had just joined. Any save did it: sending a
+                // message, ignoring a finding, anything.
+                repo.accountFlow.distinctUntilChanged().collect { account ->
+                    if (account == null) return@collect
+                    _state.update { s ->
+                        // Only the sign-in transition navigates. Once the user is in the app, an
+                        // account refresh must never move them off the screen they are on.
+                        val landing = s.screen == Screen.SPLASH ||
+                            s.screen == Screen.SIGNIN ||
+                            s.screen == Screen.CREATE_ACCOUNT
+                        if (landing) s.copy(account = account, screen = Screen.DASHBOARD)
+                        else s.copy(account = account)
                     }
                 }
             }
             safeLaunch {
-                repo.apiKeysFlow.collect { keys -> _state.update { it.copy(apiKeys = keys) } }
+                repo.apiKeysFlow.distinctUntilChanged().collect { keys -> _state.update { it.copy(apiKeys = keys) } }
             }
             safeLaunch {
-                repo.realtimeFlow.collect { enabled ->
+                repo.realtimeFlow.distinctUntilChanged().collect { enabled ->
                     _state.update { it.copy(realtime = enabled) }
                     syncProtectionService(enabled)
                 }
             }
             safeLaunch {
-                repo.protectionSettingsFlow.collect { stored ->
+                repo.protectionSettingsFlow.distinctUntilChanged().collect { stored ->
                     val settings = stored.toState()
                     _state.update { it.copy(settings = settings) }
                     syncScheduledScan(settings)
                 }
             }
             safeLaunch {
-                repo.chatHistoryFlow.collect { stored ->
+                repo.chatHistoryFlow.distinctUntilChanged().collect { stored ->
                     val history = stored
                         .map { ChatHistoryEntry(it.address, it.name, it.lastChattedAtMs, it.nodeId, it.publicKeyB64) }
                         .sortedByDescending { it.lastChattedAtMs }
@@ -147,7 +164,7 @@ class AppViewModel(
                 }
             }
             safeLaunch {
-                repo.chatSessionsFlow.collect { stored ->
+                repo.chatSessionsFlow.distinctUntilChanged().collect { stored ->
                     val sessions = stored.map { s ->
                         ChatSession(
                             sessionId = s.sessionId,
@@ -856,6 +873,9 @@ class AppViewModel(
     fun goChat() {
         setScreen(Screen.CHAT)
         bluetoothChatManager?.startListening()
+        // Start looking straight away and keep the list fresh — the user shouldn't have to tap the
+        // radar to find out whether anyone is nearby.
+        bluetoothChatManager?.startContinuousDiscovery()
     }
 
     fun goChatHistory() = setScreen(Screen.CHAT_HISTORY)
@@ -889,7 +909,7 @@ class AppViewModel(
         // (or Bluetooth switched on afterwards) would never take effect — this device would scan
         // fine but stay invisible to everyone else until Chat was closed and reopened.
         bluetoothChatManager?.startListening()
-        bluetoothChatManager?.startDiscovery()
+        bluetoothChatManager?.startContinuousDiscovery()
     }
 
     fun connectToBtDevice(address: String) {

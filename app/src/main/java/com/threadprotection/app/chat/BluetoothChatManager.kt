@@ -317,8 +317,7 @@ class BluetoothChatManager private constructor(
             return
         }
         advertiseJob = scope.launch {
-            val displayName = runCatching { settingsRepository.accountFlow.first()?.name }.getOrNull()
-                ?.trim()?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
+            val displayName = advertisedDisplayName()
             val nameBytes = truncateUtf8(displayName, MAX_ADVERTISED_NAME_BYTES)
 
             val settings = AdvertiseSettings.Builder()
@@ -374,6 +373,22 @@ class BluetoothChatManager private constructor(
         }
     }
 
+    /**
+     * The name other phones see for this device.
+     *
+     * Falls back to the real hardware model (Build.MODEL — "SM-S921B", "Pixel 8") rather than the
+     * generic "Thread Protection user" everyone previously appeared as, which made a list of
+     * nearby devices impossible to tell apart. A user who has set an account name gets that
+     * instead, since it is the name they chose.
+     */
+    private suspend fun advertisedDisplayName(): String {
+        val account = runCatching { settingsRepository.accountFlow.first()?.name }.getOrNull()
+            ?.trim()?.takeIf { it.isNotBlank() }
+        if (account != null) return account
+        val model = Build.MODEL?.trim()?.takeIf { it.isNotBlank() }
+        return model ?: "Thread Protection user"
+    }
+
     private fun stopAdvertising() {
         advertiseJob?.cancel()
         advertiseJob = null
@@ -414,6 +429,15 @@ class BluetoothChatManager private constructor(
      *  Bluetooth radio/OS itself: [onScanResult] is only ever called for advertisements that
      *  actually carry our UUID, so nothing else (headphones, a laptop, a phone without this app)
      *  can appear in [discoveredDevices]. */
+    /** True while the Chat screen wants the nearby list kept fresh without further taps. */
+    @Volatile private var continuousDiscovery = false
+
+    /** Called when the Chat screen opens: scan straight away and keep the list refreshing. */
+    fun startContinuousDiscovery() {
+        continuousDiscovery = true
+        startDiscovery()
+    }
+
     fun startDiscovery() {
         val a = adapter ?: run {
             Log.w(TAG, "startDiscovery: no BluetoothAdapter on this device")
@@ -494,7 +518,16 @@ class BluetoothChatManager private constructor(
         scanTimeoutJob?.cancel()
         scanTimeoutJob = scope.launch {
             delay(SCAN_WINDOW_MS)
-            if (_connState.value == BtChatConnState.DISCOVERING) {
+            if (_connState.value != BtChatConnState.DISCOVERING) return@launch
+            if (continuousDiscovery) {
+                // Re-arm rather than stop: the nearby list is meant to fill in by itself while the
+                // user is on the Chat screen, not only for one 20-second burst after a tap. The
+                // radio still gets a brief gap between windows, and any connect or leaving Chat
+                // clears continuousDiscovery so this cannot run forever.
+                Log.d(TAG, "startDiscovery: window elapsed, re-arming continuous scan")
+                delay(SCAN_REARM_GAP_MS)
+                if (continuousDiscovery && _connState.value == BtChatConnState.DISCOVERING) startDiscovery()
+            } else {
                 Log.d(TAG, "startDiscovery: scan window elapsed with no connection, auto-stopping")
                 stopDiscovery()
             }
@@ -527,6 +560,7 @@ class BluetoothChatManager private constructor(
     }
 
     fun stopDiscovery() {
+        continuousDiscovery = false
         scanTimeoutJob?.cancel(); scanTimeoutJob = null
         staleSweepJob?.cancel(); staleSweepJob = null
         val callback = activeScanCallback
@@ -651,8 +685,7 @@ class BluetoothChatManager private constructor(
         if (isInitiator) {
             val requestId = UUID.randomUUID().toString()
             outgoingRequestId = requestId
-            val myName = runCatching { settingsRepository.accountFlow.first()?.name }.getOrNull()
-                ?.trim()?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
+            val myName = advertisedDisplayName()
             Log.i(TAG, "establishSession: sending chat request $requestId as \"$myName\"")
             sendWire(ChatWireMessage.ChatRequest(requestId, myName))
             _connState.value = BtChatConnState.REQUEST_SENT
@@ -940,6 +973,9 @@ class BluetoothChatManager private constructor(
         private val PRESENCE_SERVICE_UUID: UUID = UUID.fromString("9f9f2f9f-303f-4071-beee-32741e782946")
         private const val MAX_ADVERTISED_NAME_BYTES = 13
         private const val SCAN_WINDOW_MS = 20_000L
+
+        /** Brief pause between continuous-scan windows — lets the radio breathe between bursts. */
+        private const val SCAN_REARM_GAP_MS = 1_500L
         private const val STALE_AFTER_MS = 8_000L
         private const val STALE_SWEEP_INTERVAL_MS = 3_000L
         private const val CONNECT_TIMEOUT_MS = 15_000L
