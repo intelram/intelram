@@ -49,11 +49,21 @@ Minimum SDK 26, compiled/target SDK 35, Kotlin 2.0, Compose BOM 2024.12.
 A **Chat** tab on the bottom nav, per the brief: works over Bluetooth with no internet, only
 between phones that also have Thread Protection installed, encrypted to resist quantum attacks.
 
-- **Bluetooth mode (real, working today)** — `BluetoothChatManager` uses classic Bluetooth RFCOMM:
-  real device discovery (`BluetoothAdapter.startDiscovery()`), a real socket connection on an
-  app-specific service UUID, and a handshake that only another instance of this app can complete
-  (matching magic bytes, then a real key exchange) — a stray Bluetooth headset or someone else's
-  phone without the app never gets past that handshake into a usable connection.
+- **Bluetooth mode (real, working today)** — discovery and the chat connection deliberately use two
+  different Bluetooth technologies for two different jobs. **Discovery is BLE**: while Chat is
+  open, `BluetoothChatManager` advertises a small BLE packet carrying a Thread Protection-specific
+  128-bit service UUID plus the signed-in account's display name as service data; "Tap to scan"
+  runs a BLE scan with a hardware/OS-level `ScanFilter` on that exact UUID, so the radio itself
+  discards every advertisement that doesn't carry it — a stray Bluetooth headset, a laptop, or
+  someone else's phone without the app *never reaches the results list in the first place*, not
+  just never gets past a handshake. **The chat connection is classic Bluetooth (RFCOMM)**: tapping
+  a discovered device opens an RFCOMM socket to that address on an app-specific service UUID and
+  runs a handshake only another instance of this app can complete (matching magic bytes, then a
+  real key exchange). BLE proves presence; RFCOMM carries the actual conversation. One honest
+  limit: BLE *advertising* (not scanning) needs
+  `BluetoothAdapter.isMultipleAdvertisementSupported()`, which a minority of older/low-end phones
+  lack — those phones can still discover everyone else, just can't be discovered themselves, and
+  the app says so rather than pretending it works everywhere.
 - **The encryption is real, not a label**: every session does a fresh **ML-KEM-768** key exchange
   (FIPS 203, the actual NIST-standardized post-quantum algorithm, via Bouncy Castle's
   implementation — not hand-rolled), derives a session key with HKDF-SHA256, and encrypts every
@@ -69,13 +79,17 @@ between phones that also have Thread Protection installed, encrypted to resist q
   messages for offline recipients. That's a real backend that doesn't exist for this app. Rather
   than fake it, the screen says so plainly and points back to Bluetooth mode.
 - **Live nearby scan, radar UI, real signal data** — tapping the radar (pulsing rings, Bluetooth
-  glyph, "N devices found" counter) shows every device as Android's own `ACTION_FOUND` broadcast
-  reports it, growing the list in real time. Each row shows a device-type icon from the peer's
-  actual Bluetooth Class of Device (phone/computer/audio/wearable — read off the OS, not guessed
-  from the name), plus a distance estimate and signal bars computed from its real RSSI reading via
-  the standard log-distance path-loss model (`chat/SignalEstimate.kt`) — an industry-standard
+  glyph, "N devices found" counter) grows the list in real time as BLE scan results matching the
+  service-UUID filter above arrive; a device already in the list has its signal strength (and, if
+  it arrives a beat later in the scan-response packet, its display name) refreshed in place rather
+  than duplicated. Since BLE has no explicit "device left" event, a background sweep drops a device
+  once its advertisements stop arriving for a few seconds — the honest way to reflect it going out
+  of range or closing the app. Distance estimate and signal bars come from the real RSSI reading
+  via the standard log-distance path-loss model (`chat/SignalEstimate.kt`) — an industry-standard
   technique, honestly still an *estimate* (walls and orientation shift the reading), same caveat
-  every commercial Bluetooth-finder app carries.
+  every commercial Bluetooth-finder app carries. Scanning auto-stops after a bounded window (and
+  immediately once you tap a device) since continuous BLE scanning is one of the more
+  battery-hungry radio states.
 - **Chat History**: every device you've successfully connected to is remembered — address, name,
   last-chatted time — in `SettingsRepository.chatHistoryFlow` (persisted, newest first, capped at
   30). The Chat screen shows it compressed behind one "History" row; opening it lists every past
