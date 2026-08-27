@@ -198,6 +198,15 @@ class AppViewModel(
                 chat.discoveredDevices.collect { list -> _state.update { it.copy(btDiscoveredDevices = list) } }
             }
             safeLaunch {
+                // Scanning is now published separately from the connection state, so the radar can
+                // show "scanning" without a scan event ever being able to overwrite — or be
+                // mistaken for — a real connection status. See BluetoothChatManager.isScanning.
+                chat.isScanning.collect { on -> _state.update { it.copy(btScanning = on) } }
+            }
+            safeLaunch {
+                chat.lastFailureReason.collect { why -> _state.update { it.copy(btFailureReason = why) } }
+            }
+            safeLaunch {
                 chat.canAdvertise.collect { v -> _state.update { it.copy(btCanAdvertise = v) } }
             }
             safeLaunch {
@@ -476,23 +485,13 @@ class AppViewModel(
      * where going "back" into them would be wrong (re-entering a finished scan, or landing back on
      * sign-in after signing in).
      */
-    private fun Screen.isBackStackable(): Boolean = when (this) {
-        Screen.SPLASH, Screen.SIGNIN, Screen.CREATE_ACCOUNT, Screen.ONBOARDING, Screen.SCANNING -> false
-        else -> true
-    }
-
     private fun setScreen(screen: Screen) {
         releaseChatRadioIfLeaving(screen)
         _state.update { s ->
             if (s.screen == screen) return@update s
-            val stack = if (s.screen.isBackStackable()) {
-                // Cap it so a long session can't grow the stack without bound, and drop any earlier
-                // visit to this same screen so back doesn't walk a loop.
-                (s.backStack.filter { it != screen } + s.screen).takeLast(MAX_BACK_STACK)
-            } else {
-                s.backStack
-            }
-            s.copy(screen = screen, backStack = stack)
+            // The stack maths lives in BackStackRules so it can be unit tested — see
+            // ChatFlowTest for the navigation cases.
+            s.copy(screen = screen, backStack = BackStackRules.push(s.backStack, s.screen, screen, MAX_BACK_STACK))
         }
     }
 
@@ -502,10 +501,10 @@ class AppViewModel(
      * the caller can let the system handle it (exit the app).
      */
     fun navigateBack(): Boolean {
-        val previous = _state.value.backStack.lastOrNull() ?: return false
+        val previous = BackStackRules.peek(_state.value.backStack) ?: return false
         releaseChatRadioIfLeaving(previous)
         _state.update { s ->
-            s.copy(screen = previous, backStack = s.backStack.dropLast(1))
+            s.copy(screen = previous, backStack = BackStackRules.pop(s.backStack))
         }
         return true
     }
@@ -912,6 +911,17 @@ class AppViewModel(
         bluetoothChatManager?.startContinuousDiscovery()
     }
 
+    /** Retries the last connection the user asked for. Reports honestly when there's nothing to
+     *  retry rather than showing a spinner for a connection that was never attempted. */
+    fun retryBtConnect() {
+        val manager = bluetoothChatManager
+        val retried = manager?.retryLastConnect() ?: false
+        if (!retried) {
+            _state.update { it.copy(chatError = "There's no earlier connection to retry — pick a device from the list below.") }
+            manager?.startContinuousDiscovery()
+        }
+    }
+
     fun connectToBtDevice(address: String) {
         // Remember which row the user tapped so that row — and only that row — can show
         // "Connecting…" / "Verifying…" / "Failed", driven by the real BtChatConnState rather than
@@ -1013,7 +1023,22 @@ class AppViewModel(
     fun acceptIncomingChatRequest() {
         appContext?.let { NotificationHelper.cancelChatRequest(it) }
         _state.update { it.copy(incomingChatRequest = null) }
-        bluetoothChatManager?.acceptChatRequest()
+        // acceptChatRequest() returns false when the request died between arriving and this tap —
+        // the peer hung up, or it timed out. Tell the user instead of leaving a dead screen: the
+        // manager has already released the radio, so they can go straight back to the device list.
+        val accepted = bluetoothChatManager?.acceptChatRequest() ?: false
+        if (!accepted) {
+            _state.update {
+                it.copy(
+                    chatError = "That chat request is no longer open — the other phone hung up or it timed out.",
+                    screen = if (it.screen == Screen.CHAT_CONVERSATION) Screen.CHAT else it.screen,
+                )
+            }
+            return
+        }
+        // Accepting is what puts this user *into* the conversation. Do it here rather than waiting
+        // on the connectedDeviceName collector alone, so the screen never lags a state behind.
+        setScreen(Screen.CHAT_CONVERSATION)
     }
 
     /** This user tapped Deny — tells the peer and closes the pending connection cleanly. */

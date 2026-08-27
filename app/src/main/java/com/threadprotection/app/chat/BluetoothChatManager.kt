@@ -41,9 +41,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 sealed interface ChatEvent {
     data class MessageReceived(val id: String, val text: String, val atMs: Long) : ChatEvent
@@ -107,6 +109,41 @@ class BluetoothChatManager private constructor(
 
     private val _connState = MutableStateFlow(BtChatConnState.IDLE)
     val connState: StateFlow<BtChatConnState> = _connState.asStateFlow()
+
+    /**
+     * Whether the BLE radio is scanning right now, published *separately* from [connState].
+     *
+     * Root cause this fixes — the reported "sender says Connected, recipient says Connection
+     * Failed". Scanning and connecting used to share this one [connState] flow, so a scan-lifecycle
+     * event could overwrite a perfectly healthy connection state and vice versa. The recipient's
+     * Chat screen keeps a continuous scan running; when an inbound RFCOMM link came in, the BLE
+     * stack routinely reports `onScanFailed` for the scan it can no longer service, which wrote
+     * `SCAN_FAILED` straight over `REQUEST_RECEIVED`/`CONNECTED`. One phone showed a live chat, the
+     * other showed a failure banner for a connection that was actually fine. Scan lifecycle now
+     * lives here and in [scanFailed]; only real connection transitions may touch [connState].
+     */
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    /** Set when the BLE scan itself couldn't start or was dropped by the stack. Independent of
+     *  [connState] so a scan problem never masquerades as a connection problem. */
+    private val _scanFailed = MutableStateFlow(false)
+    val scanFailed: StateFlow<Boolean> = _scanFailed.asStateFlow()
+
+    /** True while a connection attempt, pending request or live chat owns the radio. Discovery may
+     *  not publish state while this holds — its updates would be describing a different thing.
+     *  The rule itself lives in [ChatStateRules] so it can be unit tested. */
+    private fun connectionInProgress(): Boolean = ChatStateRules.ownsRadio(_connState.value)
+
+    /** Publishes a state that came from the *discovery* path, dropping it if a connection is live.
+     *  This is the single guard that keeps the two sides of a chat consistent. */
+    private fun publishScanState(state: BtChatConnState) {
+        if (!ChatStateRules.mayPublishScanState(_connState.value)) {
+            Log.d(TAG, "publishScanState: ignoring $state — a connection (${_connState.value}) owns the state")
+            return
+        }
+        _connState.value = state
+    }
 
     private val _discovered = MutableStateFlow<List<BtDeviceInfo>>(emptyList())
     val discoveredDevices: StateFlow<List<BtDeviceInfo>> = _discovered.asStateFlow()
@@ -174,6 +211,25 @@ class BluetoothChatManager private constructor(
 
     @Volatile private var requestTimeoutJob: Job? = null
 
+    /**
+     * Exactly one connection attempt or live session at a time, reserved *before* any I/O.
+     *
+     * Edge case this closes: the accept loop only checked `activeSocket != null`, but activeSocket
+     * is assigned at the *end* of the handshake. Two phones requesting at the same moment (or a
+     * double-tap on Connect) both got past that check and ran overlapping handshakes on one radio,
+     * which is another way the two sides ended up disagreeing about whether they were connected.
+     */
+    private val connectionSlot = AtomicBoolean(false)
+
+    /** The address of the last connect the user asked for, so [retryLastConnect] has something
+     *  real to dial — never a remembered "connection" that isn't there. */
+    @Volatile private var lastConnectAddress: String? = null
+
+    /** Why the last connection attempt failed, in the user's words. Cleared when a new attempt
+     *  starts. Null when nothing has failed. */
+    private val _lastFailureReason = MutableStateFlow<String?>(null)
+    val lastFailureReason: StateFlow<String?> = _lastFailureReason.asStateFlow()
+
     /** Peer details captured at handshake time but not published as "connected" until accepted. */
     private val _pendingPeerName = MutableStateFlow<String?>(null)
     private val _pendingPeerAddress = MutableStateFlow<String?>(null)
@@ -200,12 +256,17 @@ class BluetoothChatManager private constructor(
                     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                         Log.w(TAG, "adapterState: Bluetooth turned off — clearing scan/advertise state")
                         forgetRadioState()
+                        connectionSlot.set(false)
                         _connState.value = BtChatConnState.BT_UNAVAILABLE
                     }
                     BluetoothAdapter.STATE_ON -> {
                         Log.i(TAG, "adapterState: Bluetooth turned back on — restarting listener and advertising")
                         _connState.value = BtChatConnState.IDLE
                         startListening()
+                        // Network-interruption edge case: the radio going down and back up is the
+                        // one moment the nearby list is guaranteed stale, so rebuild it rather than
+                        // leaving the user looking at devices that were visible before the outage.
+                        resumeDiscoveryIfWanted()
                     }
                 }
             }
@@ -226,6 +287,7 @@ class BluetoothChatManager private constructor(
         serverJob?.cancel(); serverJob = null
         _discovered.value = emptyList()
         _canAdvertise.value = null
+        _isScanning.value = false
     }
 
     /** Starts the listening server socket (accepts inbound connections) and BLE presence
@@ -261,7 +323,9 @@ class BluetoothChatManager private constructor(
                 a.listenUsingInsecureRfcommWithServiceRecord(SERVICE_NAME, APP_UUID)
             }.getOrElse {
                 Log.e(TAG, "startListening: listenUsingInsecureRfcommWithServiceRecord failed", it)
-                _connState.value = BtChatConnState.NO_PERMISSION
+                // Never over a live connection: startListening() is idempotent and gets re-run on
+                // every entry to Chat, and it must not relabel an open chat as a permission error.
+                publishScanState(BtChatConnState.NO_PERMISSION)
                 return@launch
             }
             Log.d(TAG, "startListening: RFCOMM server socket bound on $APP_UUID, accepting")
@@ -413,8 +477,10 @@ class BluetoothChatManager private constructor(
                 runCatching { serverSocket.close() }
                 return
             }
-            if (activeSocket != null) {
-                Log.d(TAG, "acceptLoop: rejecting inbound connection — already in a conversation")
+            // Reserve the slot up front, not after the handshake — see [connectionSlot]. A second
+            // caller arriving mid-handshake is turned away cleanly instead of racing the first.
+            if (!connectionSlot.compareAndSet(false, true)) {
+                Log.d(TAG, "acceptLoop: rejecting inbound connection — already in a conversation (${_connState.value})")
                 runCatching { socket.close() }
                 continue
             }
@@ -439,19 +505,25 @@ class BluetoothChatManager private constructor(
     }
 
     fun startDiscovery() {
+        // A live connection outranks a scan: never re-arm the radio underneath a chat that is
+        // connecting, waiting on an accept, or already open.
+        if (connectionInProgress()) {
+            Log.d(TAG, "startDiscovery: skipped — a connection (${_connState.value}) is using the radio")
+            return
+        }
         val a = adapter ?: run {
             Log.w(TAG, "startDiscovery: no BluetoothAdapter on this device")
-            _connState.value = BtChatConnState.BT_UNAVAILABLE
+            publishScanState(BtChatConnState.BT_UNAVAILABLE)
             return
         }
         if (!a.isEnabled) {
             Log.w(TAG, "startDiscovery: Bluetooth is disabled")
-            _connState.value = BtChatConnState.BT_UNAVAILABLE
+            publishScanState(BtChatConnState.BT_UNAVAILABLE)
             return
         }
         val scanner = a.bluetoothLeScanner ?: run {
             Log.e(TAG, "startDiscovery: getBluetoothLeScanner() returned null — BLE unsupported on this hardware")
-            _connState.value = BtChatConnState.BLE_UNSUPPORTED
+            publishScanState(BtChatConnState.BLE_UNSUPPORTED)
             return
         }
         // Root-cause fix: this used to skip straight to scanner.startScan() and infer a missing
@@ -461,14 +533,22 @@ class BluetoothChatManager private constructor(
         // explicitly first makes that failure mode deterministic and visible in logs.
         if (!hasScanPermission()) {
             Log.w(TAG, "startDiscovery: scan permission not granted (needs BLUETOOTH_SCAN on API 31+, ACCESS_FINE_LOCATION below)")
-            _connState.value = BtChatConnState.NO_PERMISSION
+            publishScanState(BtChatConnState.NO_PERMISSION)
             return
         }
         if (activeScanCallback != null) {
             Log.d(TAG, "startDiscovery: a scan is already running — restarting it")
         }
-        stopDiscovery()
-        _discovered.value = emptyList()
+        // stopScanRadio(), not stopDiscovery(): the latter also clears the *intent* to keep
+        // scanning. Root cause this fixes — startContinuousDiscovery() set continuousDiscovery=true
+        // and then immediately called startDiscovery(), whose first act was stopDiscovery(), which
+        // set it straight back to false. Continuous discovery therefore never actually ran: the
+        // nearby list filled in for one 20-second burst after entering Chat and then went quiet,
+        // which is exactly the "devices appear late, or not at all" behaviour that was reported.
+        stopScanRadio()
+        // Deliberately *not* clearing _discovered here. Re-arming the scan every 20s used to empty
+        // the nearby list on each cycle, so devices flickered in and out even while sitting still.
+        // The stale sweep below is what removes a device that genuinely stopped advertising.
 
         val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(PRESENCE_SERVICE_UUID)).build())
         val settings = ScanSettings.Builder()
@@ -483,8 +563,12 @@ class BluetoothChatManager private constructor(
             }
             override fun onScanFailed(errorCode: Int) {
                 Log.e(TAG, "startDiscovery: onScanFailed errorCode=$errorCode")
-                _connState.value = BtChatConnState.SCAN_FAILED
                 activeScanCallback = null
+                _isScanning.value = false
+                // A scan failure is reported on its own channel. It must never be shown as, or
+                // overwrite, a connection state — see [_isScanning].
+                _scanFailed.value = true
+                publishScanState(BtChatConnState.SCAN_FAILED)
             }
         }
         activeScanCallback = callback
@@ -494,10 +578,13 @@ class BluetoothChatManager private constructor(
             .getOrDefault(false)
         if (!started) {
             activeScanCallback = null
-            _connState.value = BtChatConnState.NO_PERMISSION
+            _isScanning.value = false
+            publishScanState(BtChatConnState.NO_PERMISSION)
             return
         }
-        _connState.value = BtChatConnState.DISCOVERING
+        _isScanning.value = true
+        _scanFailed.value = false
+        publishScanState(BtChatConnState.DISCOVERING)
 
         // Devices don't send an explicit "I'm gone" signal over BLE — we infer it by how long it's
         // been since a device's last advertisement, and drop it from the list once it goes stale.
@@ -507,8 +594,8 @@ class BluetoothChatManager private constructor(
                 delay(STALE_SWEEP_INTERVAL_MS)
                 val cutoff = System.currentTimeMillis() - STALE_AFTER_MS
                 _discovered.update { list ->
-                    val (fresh, stale) = list.partition { it.lastSeenMs >= cutoff }
-                    stale.forEach { Log.d(TAG, "staleSweep: dropping ${it.address} (\"${it.name}\") — no advertisement in ${STALE_AFTER_MS}ms, likely out of range") }
+                    val fresh = NearbyDeviceList.dropStale(list, cutoff)
+                    (list - fresh.toSet()).forEach { Log.d(TAG, "staleSweep: dropping ${it.address} (\"${it.name}\") — no advertisement in ${STALE_AFTER_MS}ms, likely out of range") }
                     fresh
                 }
             }
@@ -518,7 +605,7 @@ class BluetoothChatManager private constructor(
         scanTimeoutJob?.cancel()
         scanTimeoutJob = scope.launch {
             delay(SCAN_WINDOW_MS)
-            if (_connState.value != BtChatConnState.DISCOVERING) return@launch
+            if (!_isScanning.value) return@launch
             if (continuousDiscovery) {
                 // Re-arm rather than stop: the nearby list is meant to fill in by itself while the
                 // user is on the Chat screen, not only for one 20-second burst after a tap. The
@@ -526,7 +613,7 @@ class BluetoothChatManager private constructor(
                 // clears continuousDiscovery so this cannot run forever.
                 Log.d(TAG, "startDiscovery: window elapsed, re-arming continuous scan")
                 delay(SCAN_REARM_GAP_MS)
-                if (continuousDiscovery && _connState.value == BtChatConnState.DISCOVERING) startDiscovery()
+                if (continuousDiscovery && !connectionInProgress()) startDiscovery()
             } else {
                 Log.d(TAG, "startDiscovery: scan window elapsed with no connection, auto-stopping")
                 stopDiscovery()
@@ -542,7 +629,7 @@ class BluetoothChatManager private constructor(
             ?.takeIf { it.isNotBlank() }
         val info = BtDeviceInfo(
             address = result.device.address,
-            name = advertisedName ?: "Thread Protection user",
+            name = advertisedName ?: NearbyDeviceList.PLACEHOLDER_NAME,
             bonded = false,
             rssi = result.rssi,
             kind = BtDeviceKind.PHONE,
@@ -551,26 +638,46 @@ class BluetoothChatManager private constructor(
         // Update in place (not just append-if-new) so signal strength — and a name that arrives a
         // beat later in the scan-response packet — keeps refreshing live for the same device.
         _discovered.update { list ->
-            val known = list.any { it.address == info.address }
-            if (!known) {
+            if (list.none { it.address == info.address }) {
                 Log.i(TAG, "recordSighting: NEW peer ${info.address} name=\"${info.name}\" rssi=${info.rssi} (advertised our service UUID, so it is running this app)")
             }
-            if (known) list.map { if (it.address == info.address) info else it } else list + info
+            NearbyDeviceList.merge(list, info)
         }
     }
 
+    /** Stops scanning *and* the intent to keep scanning — the user left Chat or started a connect
+     *  they own. Use [stopScanRadio] when the scan should resume by itself afterwards. */
     fun stopDiscovery() {
         continuousDiscovery = false
+        stopScanRadio()
+    }
+
+    /** Frees the BLE radio but leaves [continuousDiscovery] alone, so discovery resumes on its own
+     *  once whatever borrowed the radio (a handshake, a live chat) is finished with it. */
+    private fun stopScanRadio() {
         scanTimeoutJob?.cancel(); scanTimeoutJob = null
         staleSweepJob?.cancel(); staleSweepJob = null
         val callback = activeScanCallback
         activeScanCallback = null
+        _isScanning.value = false
         if (callback != null) {
-            Log.d(TAG, "stopDiscovery: stopping BLE scan (${_discovered.value.size} peers were visible)")
+            Log.d(TAG, "stopScanRadio: stopping BLE scan (${_discovered.value.size} peers were visible)")
             runCatching { adapter?.bluetoothLeScanner?.stopScan(callback) }
-                .onFailure { Log.w(TAG, "stopDiscovery: stopScan() threw", it) }
+                .onFailure { Log.w(TAG, "stopScanRadio: stopScan() threw", it) }
         }
         if (_connState.value == BtChatConnState.DISCOVERING) _connState.value = BtChatConnState.IDLE
+    }
+
+    /** Puts the scan back if the Chat screen still wants one — called after a session ends or a
+     *  connection attempt fails, so the user isn't left staring at an empty, frozen nearby list. */
+    private fun resumeDiscoveryIfWanted() {
+        if (!continuousDiscovery) return
+        if (connectionInProgress()) return
+        Log.d(TAG, "resumeDiscoveryIfWanted: radio free again, restarting nearby scan")
+        scope.launch {
+            delay(SCAN_REARM_GAP_MS)
+            if (continuousDiscovery && !connectionInProgress()) startDiscovery()
+        }
     }
 
     fun connectTo(address: String) {
@@ -584,6 +691,15 @@ class BluetoothChatManager private constructor(
             _connState.value = BtChatConnState.NO_PERMISSION
             return
         }
+        // Edge case: two taps on Connect, or a tap while an inbound request is already being
+        // handled. Without this the second attempt tears down the first one's socket halfway
+        // through its handshake, and both phones end up in different states.
+        if (!connectionSlot.compareAndSet(false, true)) {
+            Log.w(TAG, "connectTo: refused — a connection (${_connState.value}) is already in progress")
+            return
+        }
+        lastConnectAddress = address
+        _lastFailureReason.value = null
         // The BLE scan already learned this peer's real app display name — carry it forward
         // instead of falling back to the phone's generic Bluetooth adapter name.
         val advertisedName = _discovered.value.firstOrNull { it.address == address }?.name
@@ -592,7 +708,7 @@ class BluetoothChatManager private constructor(
         stopDiscovery()
         val device = runCatching { a.getRemoteDevice(address) }.getOrElse {
             Log.e(TAG, "connectTo: getRemoteDevice($address) failed", it)
-            _connState.value = BtChatConnState.FAILED
+            failConnection("That device address is no longer valid — scan again.")
             return
         }
         Log.d(TAG, "connectTo: connecting to $address (\"$advertisedName\") over RFCOMM $APP_UUID")
@@ -602,7 +718,7 @@ class BluetoothChatManager private constructor(
                 device.createInsecureRfcommSocketToServiceRecord(APP_UUID)
             }.getOrElse {
                 Log.e(TAG, "connectTo: createInsecureRfcommSocketToServiceRecord failed", it)
-                _connState.value = BtChatConnState.FAILED
+                failConnection("Couldn't open a Bluetooth channel to that device.")
                 return@launch
             }
             // BluetoothSocket.connect() blocks with no timeout parameter of its own and can hang for
@@ -619,7 +735,7 @@ class BluetoothChatManager private constructor(
             watchdog.cancel()
             if (!connected) {
                 runCatching { socket.close() }
-                _connState.value = BtChatConnState.FAILED
+                failConnection("That device didn't answer — it may have moved out of range or left the Chat screen.")
                 return@launch
             }
             Log.i(TAG, "connectTo: RFCOMM socket connected to $address, starting handshake")
@@ -628,40 +744,73 @@ class BluetoothChatManager private constructor(
     }
 
     private suspend fun establishSession(socket: BluetoothSocket, isInitiator: Boolean, fallbackName: String? = null) {
+        // Free the radio for the whole handshake, on *both* sides.
+        //
+        // Root cause this fixes — the reported "sender is connected, recipient says Connection
+        // Failed". connectTo() already stopped scanning before dialling, but the receiving side
+        // reached this method straight from acceptLoop() with a SCAN_MODE_LOW_LATENCY BLE scan
+        // still running. A single Bluetooth radio cannot service a low-latency scan and a
+        // multi-round-trip RFCOMM key exchange at the same time: the recipient's reads timed out or
+        // returned short, its handshake failed, and it published FAILED — while the initiator, whose
+        // radio was free, completed and showed a live chat. Stopping the scan here (without
+        // clearing the intent to scan, so it resumes afterwards) removes the contention entirely.
+        stopScanRadio()
         _connState.value = BtChatConnState.HANDSHAKING
         val out = DataOutputStream(socket.outputStream)
         val input = DataInputStream(socket.inputStream)
 
-        val ok = runCatching {
-            writeFrame(out, MAGIC)
-            val peerMagic = readFrame(input) ?: error("no magic")
-            if (!peerMagic.contentEquals(MAGIC)) error("peer isn't Thread Protection")
+        // BluetoothSocket's streams have no read timeout of their own, so a peer that connects and
+        // then says nothing used to wedge this coroutine — and, on the responder, the whole accept
+        // loop — for good. Closing the socket from a watchdog is the documented way to break a
+        // blocked read; withTimeoutOrNull then gives us a definite answer either way.
+        val handshakeWatchdog = scope.launch {
+            delay(HANDSHAKE_TIMEOUT_MS)
+            Log.w(TAG, "establishSession: handshake exceeded ${HANDSHAKE_TIMEOUT_MS}ms, closing socket")
+            runCatching { socket.close() }
+        }
+        val ok = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS + 2_000L) {
+            runCatching {
+                writeFrame(out, MAGIC)
+                val peerMagic = readFrame(input) ?: error("no magic")
+                if (!peerMagic.contentEquals(MAGIC)) error("peer isn't Thread Protection")
 
-            if (isInitiator) {
-                val keyPair = PqcChatCrypto.generateKeyPair()
-                writeFrame(out, keyPair.publicKeyBytes)
-                val ciphertext = readFrame(input) ?: error("no ciphertext")
-                PqcChatCrypto.decapsulate(keyPair.privateKey, ciphertext)
-            } else {
-                val peerPublicKey = readFrame(input) ?: error("no public key")
-                val (ciphertext, sessionKey) = PqcChatCrypto.encapsulate(peerPublicKey)
-                writeFrame(out, ciphertext)
-                sessionKey
-            }
-        }.getOrNull()
+                if (isInitiator) {
+                    val keyPair = PqcChatCrypto.generateKeyPair()
+                    writeFrame(out, keyPair.publicKeyBytes)
+                    val ciphertext = readFrame(input) ?: error("no ciphertext")
+                    PqcChatCrypto.decapsulate(keyPair.privateKey, ciphertext)
+                } else {
+                    val peerPublicKey = readFrame(input) ?: error("no public key")
+                    val (ciphertext, sessionKey) = PqcChatCrypto.encapsulate(peerPublicKey)
+                    writeFrame(out, ciphertext)
+                    sessionKey
+                }
+            }.getOrNull()
+        }
+        handshakeWatchdog.cancel()
 
         if (ok == null) {
-            Log.e(TAG, "establishSession: handshake failed (peer isn't this app, or the socket dropped mid-exchange)")
+            Log.e(TAG, "establishSession: handshake failed (peer isn't this app, the socket dropped mid-exchange, or it timed out)")
             runCatching { socket.close() }
-            _connState.value = BtChatConnState.FAILED
+            failConnection(
+                if (isInitiator) "The secure handshake didn't complete. Move the phones closer together and try again."
+                else "A nearby phone tried to connect but the secure handshake didn't complete."
+            )
             return
         }
         Log.i(TAG, "establishSession: ML-KEM-768 handshake complete, session encrypted")
 
         activeSocket = socket
         sessionKey = ok
-        _pendingPeerName.value = fallbackName ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
-        _pendingPeerAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
+        // Name resolution, best first: the name carried in this app's own BLE advertisement (what
+        // the other user actually set, or their phone's model), then the classic Bluetooth adapter
+        // name, then the address. The responder has no fallbackName — it never scanned this peer —
+        // so look the address up in whatever the last scan did see before falling back.
+        val peerAddress = runCatching { socket.remoteDevice.address }.getOrNull()
+        _pendingPeerName.value = fallbackName
+            ?: peerAddress?.let { addr -> _discovered.value.firstOrNull { it.address == addr }?.name }
+            ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
+        _pendingPeerAddress.value = peerAddress
         _pendingPeerIdentity = null
 
         // Long-term mesh identity now travels as an ordinary encrypted frame *after* the session is
@@ -705,6 +854,7 @@ class BluetoothChatManager private constructor(
             if (outgoingRequestId == requestId && _connState.value == BtChatConnState.REQUEST_SENT) {
                 Log.w(TAG, "chat request $requestId timed out after ${REQUEST_TIMEOUT_MS}ms")
                 _connState.value = BtChatConnState.REQUEST_TIMEOUT
+                _lastFailureReason.value = "They didn't answer in time. You can send another request."
                 outgoingRequestId = null
                 disconnect(resetState = false)
             }
@@ -712,17 +862,29 @@ class BluetoothChatManager private constructor(
     }
 
     /** Called when this user taps Accept on an incoming request. */
-    fun acceptChatRequest() {
-        val id = incomingRequestId ?: return
+    fun acceptChatRequest(): Boolean {
+        val id = incomingRequestId
+        if (id == null || activeSocket == null || sessionKey == null) {
+            // The request expired, or the other phone hung up, between it appearing and this tap.
+            // Saying so beats a dead button that looks like the app froze.
+            Log.w(TAG, "acceptChatRequest: nothing to accept (id=$id, socket=${activeSocket != null}, state=${_connState.value})")
+            _lastFailureReason.value = "That request is no longer open — the other phone hung up or it timed out."
+            if (!connectionInProgress()) resumeDiscoveryIfWanted()
+            return false
+        }
         Log.i(TAG, "acceptChatRequest: accepting $id")
         incomingRequestId = null
         sendWire(ChatWireMessage.ChatAccept(id))
         promoteToConnected()
+        return true
     }
 
     /** Called when this user taps Deny. Tells the peer, then drops the socket cleanly. */
     fun denyChatRequest() {
-        val id = incomingRequestId ?: return
+        val id = incomingRequestId ?: run {
+            Log.d(TAG, "denyChatRequest: nothing pending to deny")
+            return
+        }
         Log.i(TAG, "denyChatRequest: denying $id")
         incomingRequestId = null
         sendWire(ChatWireMessage.ChatDeny(id))
@@ -731,6 +893,40 @@ class BluetoothChatManager private constructor(
             delay(300)
             disconnect()
         }
+    }
+
+    /**
+     * The single exit for a failed connection attempt: publish FAILED with a reason the user can
+     * act on, release the connection slot, and put discovery back so the nearby list keeps working
+     * instead of freezing behind a failure banner.
+     */
+    private fun failConnection(reason: String) {
+        Log.w(TAG, "failConnection: $reason")
+        _lastFailureReason.value = reason
+        _connState.value = BtChatConnState.FAILED
+        connectionSlot.set(false)
+        resumeDiscoveryIfWanted()
+    }
+
+    /**
+     * Re-dials the device the user last tapped Connect on. Returns false when there is nothing to
+     * retry — the caller shows that honestly rather than pretending a retry is in flight.
+     */
+    fun retryLastConnect(): Boolean {
+        val address = lastConnectAddress
+        if (address == null) {
+            Log.d(TAG, "retryLastConnect: nothing to retry — no previous connect target")
+            return false
+        }
+        if (connectionSlot.get()) {
+            Log.d(TAG, "retryLastConnect: an attempt is already in progress (${_connState.value})")
+            return false
+        }
+        Log.i(TAG, "retryLastConnect: retrying $address")
+        _lastFailureReason.value = null
+        _connState.value = BtChatConnState.IDLE
+        connectTo(address)
+        return true
     }
 
     /** The one place CONNECTED is set — reached only after a real accept on both sides. */
@@ -802,6 +998,7 @@ class BluetoothChatManager private constructor(
                         Log.i(TAG, "readLoop: peer denied the chat request")
                         outgoingRequestId = null
                         requestTimeoutJob?.cancel(); requestTimeoutJob = null
+                        _lastFailureReason.value = "They declined the chat request."
                         _connState.value = BtChatConnState.DENIED
                         _events.emit(ChatEvent.ChatDenied)
                         disconnect(resetState = false)
@@ -834,8 +1031,7 @@ class BluetoothChatManager private constructor(
         Log.i(TAG, "onSessionEnded: peer disconnected or socket closed")
         // Preserve a terminal state the user still needs to read (they denied us, or we timed out);
         // otherwise the socket closing is just an ordinary end-of-session.
-        val terminal = _connState.value == BtChatConnState.DENIED ||
-            _connState.value == BtChatConnState.REQUEST_TIMEOUT
+        val terminal = ChatStateRules.isTerminalExplanation(_connState.value)
         _events.emit(ChatEvent.PeerDisconnected)
         activeSocket = null
         sessionKey = null
@@ -851,6 +1047,8 @@ class BluetoothChatManager private constructor(
         _connectedPeerPublicKeyB64.value = null
         _sessionSafetyCode.value = null
         if (!terminal) _connState.value = BtChatConnState.IDLE
+        connectionSlot.set(false)
+        resumeDiscoveryIfWanted()
     }
 
     /**
@@ -860,12 +1058,8 @@ class BluetoothChatManager private constructor(
      * this always produced an id.
      */
     fun sendText(text: String): String? {
-        if (_connState.value != BtChatConnState.CONNECTED) {
-            Log.w(TAG, "sendText: refused — no accepted chat session (state=${_connState.value})")
-            return null
-        }
-        if (activeSocket == null || sessionKey == null) {
-            Log.w(TAG, "sendText: refused — socket or session key is gone")
+        if (!ChatStateRules.canSendText(_connState.value, activeSocket != null, sessionKey != null)) {
+            Log.w(TAG, "sendText: refused — no accepted, live chat session (state=${_connState.value}, socket=${activeSocket != null}, key=${sessionKey != null})")
             return null
         }
         val id = UUID.randomUUID().toString()
@@ -911,16 +1105,20 @@ class BluetoothChatManager private constructor(
         _connectedPeerPublicKeyB64.value = null
         _sessionSafetyCode.value = null
         if (resetState) _connState.value = BtChatConnState.IDLE
+        connectionSlot.set(false)
+        resumeDiscoveryIfWanted()
     }
 
     /** Stops the server socket, BLE advertising and scanning — call when leaving Chat entirely. */
     fun shutdown() {
         Log.d(TAG, "shutdown: tearing down chat session, listener, scan and advertising")
         MeshRelayManager.foregroundBleActive = false
+        // Clear the intent to keep scanning *before* disconnect(), so the session teardown's
+        // resumeDiscoveryIfWanted() has nothing to re-arm on the way out.
+        stopDiscovery()
         disconnect()
         serverJob?.cancel()
         serverJob = null
-        stopDiscovery()
         stopAdvertising()
         adapterStateReceiver?.let { runCatching { context.unregisterReceiver(it) } }
         adapterStateReceiver = null
@@ -982,6 +1180,11 @@ class BluetoothChatManager private constructor(
 
         /** How long the initiator waits for Accept/Deny before giving up and cleaning up. */
         private const val REQUEST_TIMEOUT_MS = 45_000L
+
+        /** Upper bound on the ML-KEM handshake. Generous enough for a slow RFCOMM link on a busy
+         *  radio, short enough that a peer that connects and says nothing doesn't wedge the accept
+         *  loop for the rest of the session. */
+        private const val HANDSHAKE_TIMEOUT_MS = 12_000L
 
         /** `adb logcat -s TPChat` to trace the whole discover → connect → handshake flow on a real
          *  device: adapter state, permission checks, advertising start/failure, scan start/stop,

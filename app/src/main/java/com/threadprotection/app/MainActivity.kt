@@ -436,6 +436,7 @@ class MainActivity : ComponentActivity() {
                                 onAcceptRequest = viewModel::acceptIncomingChatRequest,
                                 onDenyRequest = viewModel::denyIncomingChatRequest,
                                 onDismissError = viewModel::dismissChatError,
+                                onRetryConnect = viewModel::retryBtConnect,
                             )
                         }
 

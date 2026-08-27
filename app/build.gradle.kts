@@ -91,4 +91,8 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
 
     implementation(libs.bouncycastle)
+
+    // JVM unit tests for the pure chat/navigation rules — see app/src/test. These run with
+    // `./gradlew :app:testDebugUnitTest`, on a plain JVM, with no device or emulator involved.
+    testImplementation(libs.junit)
 }

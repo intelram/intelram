@@ -120,6 +120,12 @@ data class AppUiState(
     val chatMode: ChatMode = ChatMode.BLUETOOTH,
     val btConnState: BtChatConnState = BtChatConnState.IDLE,
     val btDiscoveredDevices: List<BtDeviceInfo> = emptyList(),
+    /** Whether the BLE radio is scanning right now. Deliberately separate from [btConnState]: a
+     *  scan starting, stopping or failing must never be able to overwrite — or be displayed as —
+     *  a real connection status. See BluetoothChatManager.isScanning. */
+    val btScanning: Boolean = false,
+    /** Plain-language reason the last connection attempt failed, shown with a Retry action. */
+    val btFailureReason: String? = null,
     /** null = not determined yet; false = this phone isn't broadcasting its presence, so other
      *  devices can't find it (it can still find others) — see BluetoothChatManager. */
     val btCanAdvertise: Boolean? = null,

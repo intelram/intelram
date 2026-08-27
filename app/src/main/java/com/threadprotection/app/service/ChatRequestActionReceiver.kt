@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.threadprotection.app.MainActivity
 import com.threadprotection.app.ThreadProtectionApp
 import com.threadprotection.app.chat.BluetoothChatManager
 
@@ -25,7 +26,21 @@ class ChatRequestActionReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_ACCEPT -> {
                 Log.i(TAG, "Accept tapped on the chat-request notification")
-                manager.acceptChatRequest()
+                if (manager.acceptChatRequest()) {
+                    // Accepting from the shade must land the user *in* the conversation. Without
+                    // this the chat opened correctly but stayed behind whatever they were doing,
+                    // so from their side accepting appeared to do nothing at all.
+                    val open = Intent(context, MainActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        putExtra(MainActivity.EXTRA_TARGET_SCREEN, MainActivity.TARGET_CHAT)
+                    }
+                    runCatching { context.startActivity(open) }
+                        .onFailure { Log.w(TAG, "Couldn't bring the chat to the front", it) }
+                } else {
+                    // The request expired or the peer hung up between the notification appearing
+                    // and this tap. Say so rather than silently doing nothing.
+                    Log.w(TAG, "Accept tapped but the request was no longer open")
+                }
             }
             ACTION_DENY -> {
                 Log.i(TAG, "Deny tapped on the chat-request notification")

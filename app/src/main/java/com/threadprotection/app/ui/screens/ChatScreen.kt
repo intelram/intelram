@@ -97,6 +97,7 @@ fun ChatScreen(
     onAcceptRequest: () -> Unit,
     onDenyRequest: () -> Unit,
     onDismissError: () -> Unit,
+    onRetryConnect: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -207,18 +208,26 @@ fun ChatScreen(
                         tint = palette.accentTint08,
                         border = palette.accentBorder30,
                     )
-                    BtChatConnState.DENIED -> InfoBanner(
-                        title = "Request declined",
-                        body = "They chose not to chat right now. You can send another request later.",
-                        tint = palette.warnTint06,
-                        border = palette.warnBorder20,
-                    )
-                    BtChatConnState.REQUEST_TIMEOUT -> InfoBanner(
-                        title = "No answer",
-                        body = "They didn't respond in time, so the pending connection was closed. Try again when they're at their phone.",
-                        tint = palette.warnTint06,
-                        border = palette.warnBorder20,
-                    )
+                    BtChatConnState.DENIED -> {
+                        InfoBanner(
+                            title = "Request declined",
+                            body = state.btFailureReason
+                                ?: "They chose not to chat right now. You can send another request later.",
+                            tint = palette.warnTint06,
+                            border = palette.warnBorder20,
+                        )
+                        OutlinedPillButton(text = "Send another request", onClick = onRetryConnect, borderColor = palette.line3)
+                    }
+                    BtChatConnState.REQUEST_TIMEOUT -> {
+                        InfoBanner(
+                            title = "No answer",
+                            body = state.btFailureReason
+                                ?: "They didn't respond in time, so the pending connection was closed. Try again when they're at their phone.",
+                            tint = palette.warnTint06,
+                            border = palette.warnBorder20,
+                        )
+                        OutlinedPillButton(text = "Try again", onClick = onRetryConnect, borderColor = palette.line3)
+                    }
                     BtChatConnState.BT_UNAVAILABLE -> InfoBanner(
                         title = "Bluetooth is off",
                         body = "Turn on Bluetooth in your phone's quick settings, then come back here.",
@@ -237,18 +246,28 @@ fun ChatScreen(
                         tint = palette.dangerTint08,
                         border = palette.dangerBorder30,
                     )
-                    BtChatConnState.SCAN_FAILED -> InfoBanner(
-                        title = "Scan failed",
-                        body = "The Bluetooth scan couldn't start — try again in a moment.",
-                        tint = palette.warnTint06,
-                        border = palette.warnBorder20,
-                    )
-                    BtChatConnState.FAILED -> InfoBanner(
-                        title = "Couldn't connect",
-                        body = "That device didn't respond correctly — it may not have Thread Protection installed, or moved out of range.",
-                        tint = palette.dangerTint08,
-                        border = palette.dangerBorder30,
-                    )
+                    BtChatConnState.SCAN_FAILED -> {
+                        InfoBanner(
+                            title = "Scan failed",
+                            body = "The Bluetooth scan couldn't start — try again in a moment.",
+                            tint = palette.warnTint06,
+                            border = palette.warnBorder20,
+                        )
+                        OutlinedPillButton(text = "Scan again", onClick = requestScan, borderColor = palette.line3)
+                    }
+                    // The reason comes from the manager, so it says what actually failed (no
+                    // answer, handshake didn't complete, address gone stale) rather than one
+                    // catch-all sentence that fits none of them well.
+                    BtChatConnState.FAILED -> {
+                        InfoBanner(
+                            title = "Couldn't connect",
+                            body = state.btFailureReason
+                                ?: "That device didn't respond correctly — it may not have Thread Protection installed, or moved out of range.",
+                            tint = palette.dangerTint08,
+                            border = palette.dangerBorder30,
+                        )
+                        OutlinedPillButton(text = "Retry connection", onClick = onRetryConnect, borderColor = palette.line3)
+                    }
                     else -> Unit
                 }
                 if (state.btAdvertisePermissionMissing) {
@@ -269,12 +288,13 @@ fun ChatScreen(
                 // Also blocked while a chat request is pending in either direction: starting a new
                 // scan mid-request would stop the radio servicing the connection that request is
                 // riding on, and silently strand it.
-                val busy = state.btConnState == BtChatConnState.DISCOVERING ||
+                val busy = state.btScanning ||
                     state.btConnState == BtChatConnState.CONNECTING ||
                     state.btConnState == BtChatConnState.HANDSHAKING ||
                     state.btConnState.isPending
                 RadarScanner(
                     connState = state.btConnState,
+                    scanning = state.btScanning,
                     devicesFound = state.btDiscoveredDevices.size,
                     enabled = !busy,
                     onClick = requestScan,
@@ -284,14 +304,14 @@ fun ChatScreen(
 
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionHeading("Nearby devices")
-                    if (state.btConnState == BtChatConnState.DISCOVERING) {
+                    if (state.btScanning) {
                         PulsingDot()
                         Text("live", style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold), color = palette.accent)
                     }
                 }
                 if (state.btDiscoveredDevices.isEmpty()) {
                     Text(
-                        if (state.btConnState == BtChatConnState.DISCOVERING) "Looking for nearby devices…" else "No nearby devices found yet. Tap the scanner above — make sure the other phone has Bluetooth on and Thread Protection open.",
+                        if (state.btScanning) "Looking for nearby devices…" else "No nearby devices found yet. Tap the scanner above — make sure the other phone has Bluetooth on and Thread Protection open.",
                         style = TpType.caption.copy(fontSize = 14.sp, lineHeight = 20.sp),
                         color = palette.muted,
                     )
@@ -375,19 +395,22 @@ private fun ModeOption(label: String, icon: ImageVector, active: Boolean, modifi
 }
 
 /**
- * The scan trigger, redesigned as a radar: expanding pulse rings while discovering (driven by the
- * *real* `BtChatConnState.DISCOVERING` state, not a decorative loop that runs regardless), a
- * Bluetooth glyph at the center, and a live "N devices found" readout tied to the actual size of
- * `btDiscoveredDevices` as it grows in real time.
+ * The scan trigger, redesigned as a radar: expanding pulse rings while discovering (driven by
+ * BluetoothChatManager's real `isScanning` flag — the radio's actual state, not a decorative loop
+ * that runs regardless), a Bluetooth glyph at the center, and a live "N devices found" readout tied
+ * to the actual size of `btDiscoveredDevices` as it grows in real time.
+ *
+ * [scanning] is passed in separately from [connState] on purpose: the two used to be the same
+ * value, which is how a scan event could be rendered as a connection status and vice versa.
  */
 @Composable
-private fun RadarScanner(connState: BtChatConnState, devicesFound: Int, enabled: Boolean, onClick: () -> Unit) {
+private fun RadarScanner(connState: BtChatConnState, scanning: Boolean, devicesFound: Int, enabled: Boolean, onClick: () -> Unit) {
     val palette = LocalTpPalette.current
-    val scanning = connState == BtChatConnState.DISCOVERING
-    val busyLabel = when (connState) {
-        BtChatConnState.DISCOVERING -> "SCANNING…"
-        BtChatConnState.CONNECTING -> "CONNECTING…"
-        BtChatConnState.HANDSHAKING -> "SECURING CONNECTION…"
+    val busyLabel = when {
+        connState == BtChatConnState.CONNECTING -> "CONNECTING…"
+        connState == BtChatConnState.HANDSHAKING -> "SECURING CONNECTION…"
+        connState == BtChatConnState.REQUEST_SENT -> "WAITING FOR THEM…"
+        scanning -> "SCANNING…"
         else -> "TAP TO SCAN"
     }
     val transition = rememberInfiniteTransition(label = "radar")
