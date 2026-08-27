@@ -37,6 +37,7 @@ import com.threadprotection.app.ui.screens.AppPermissionDetailScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
 import com.threadprotection.app.ui.screens.ChatConversationScreen
 import com.threadprotection.app.ui.screens.ChatHistoryScreen
+import com.threadprotection.app.ui.screens.ChatSessionScreen
 import com.threadprotection.app.ui.screens.ChatScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
@@ -127,6 +128,27 @@ class MainActivity : ComponentActivity() {
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
+                    }
+                }
+
+                // Android's own Permission manager (Settings → Privacy → Permission manager), the
+                // only real place a user can review permissions across every app at once. There is
+                // no API for an app to revoke another app's permissions in bulk, or at all.
+                val openPermissionManager: () -> Unit = {
+                    val opened = runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_PRIVACY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                        true
+                    }.getOrDefault(false)
+                    if (!opened) {
+                        // Not every OEM build ships a privacy screen; the all-apps list always exists.
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
                     }
                 }
 
@@ -300,7 +322,7 @@ class MainActivity : ComponentActivity() {
                                 onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
-                                onTurnOffAllRisky = viewModel::turnOffAllRiskyPermissions,
+                                onOpenPermissionManager = openPermissionManager,
                                 onOpenDetail = viewModel::openAppPermissionDetail,
                             )
                         }
@@ -312,7 +334,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = viewModel::closeAppPermissionDetail,
                                 onOpenAppSettings = openAppSettings,
                                 onUninstall = uninstallApp,
-                                onTogglePermission = viewModel::togglePermission,
+                                onRefresh = viewModel::refreshPermissions,
                             )
                         }
 
@@ -416,6 +438,17 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::leaveChatHistory,
                                 onSelect = viewModel::messageFromHistory,
+                                onOpenSession = viewModel::openStoredSession,
+                                onClearSessions = viewModel::clearStoredSessions,
+                            )
+                        }
+
+                        Screen.CHAT_SESSION -> {
+                            BackHandler(enabled = true) { viewModel.closeStoredSession() }
+                            ChatSessionScreen(
+                                state = state,
+                                onBack = viewModel::closeStoredSession,
+                                onDelete = viewModel::deleteStoredSession,
                             )
                         }
 
@@ -426,6 +459,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = viewModel::disconnectChatPeer,
                                 onDraftChange = viewModel::setChatDraft,
                                 onSend = viewModel::sendChatMessage,
+                                onExitChat = viewModel::exitChat,
                             )
                         }
 

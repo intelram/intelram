@@ -8,6 +8,8 @@ import com.threadprotection.app.chat.BluetoothChatManager
 import com.threadprotection.app.chat.ChatEvent
 import com.threadprotection.app.chat.ChatHistoryEntry
 import com.threadprotection.app.chat.ChatMode
+import com.threadprotection.app.chat.ChatSession
+import com.threadprotection.app.chat.ChatSessionStatus
 import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.chat.MeshRelayManager
 import com.threadprotection.app.data.Account
@@ -16,6 +18,9 @@ import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.data.SettingsRepository
 import com.threadprotection.app.data.StoredChatHistoryEntry
+import com.threadprotection.app.data.StoredChatMessage
+import com.threadprotection.app.data.StoredChatSession
+import com.threadprotection.app.data.StoredSessionStatus
 import com.threadprotection.app.service.NotificationHelper
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.scan.DeviceScanner
@@ -103,6 +108,32 @@ class AppViewModel(
                     _state.update { it.copy(chatHistory = history) }
                 }
             }
+            viewModelScope.launch {
+                repo.chatSessionsFlow.collect { stored ->
+                    val sessions = stored.map { s ->
+                        ChatSession(
+                            sessionId = s.sessionId,
+                            address = s.address,
+                            name = s.name,
+                            startedAtMs = s.startedAtMs,
+                            endedAtMs = s.endedAtMs,
+                            status = when (s.status) {
+                                StoredSessionStatus.ACTIVE -> ChatSessionStatus.ACTIVE
+                                StoredSessionStatus.COMPLETED -> ChatSessionStatus.COMPLETED
+                                StoredSessionStatus.INTERRUPTED -> ChatSessionStatus.INTERRUPTED
+                            },
+                            messages = s.messages.map {
+                                ChatUiMessage(it.id, it.text, it.fromMe, it.timestampMs, it.delivered, it.relayed)
+                            },
+                        )
+                    }.sortedByDescending { it.startedAtMs }
+                    _state.update { st ->
+                        // Keep an open transcript in sync if the user is reading it.
+                        val viewing = st.viewingSession?.let { v -> sessions.firstOrNull { it.sessionId == v.sessionId } }
+                        st.copy(chatSessions = sessions, viewingSession = viewing ?: st.viewingSession)
+                    }
+                }
+            }
         }
         bluetoothChatManager?.let { chat ->
             viewModelScope.launch {
@@ -126,6 +157,10 @@ class AppViewModel(
                         val nodeId = chat.connectedPeerNodeId.value.orEmpty()
                         val publicKeyB64 = chat.connectedPeerPublicKeyB64.value.orEmpty()
                         if (address != null) {
+                            // A real connection just completed its handshake — this is the only
+                            // place a session is opened, so "Connected" can never be shown for a
+                            // socket that didn't get all the way through.
+                            openChatSession(address, name)
                             // Also remember this contact as mesh-reachable (if the identity
                             // exchange succeeded) so the conversation can keep going via relay if
                             // the live connection later drops.
@@ -140,14 +175,24 @@ class AppViewModel(
             viewModelScope.launch {
                 chat.events.collect { event ->
                     when (event) {
-                        is ChatEvent.MessageReceived -> _state.update {
-                            it.copy(
-                                chatMessages = it.chatMessages + ChatUiMessage(event.id, event.text, fromMe = false, timestampMs = event.atMs, delivered = true),
-                                chatPeerTyping = false,
-                            )
+                        is ChatEvent.MessageReceived -> {
+                            _state.update {
+                                it.copy(
+                                    chatMessages = it.chatMessages + ChatUiMessage(event.id, event.text, fromMe = false, timestampMs = event.atMs, delivered = true),
+                                    chatPeerTyping = false,
+                                )
+                            }
+                            // Save straight away: if the peer disappears a second from now, this
+                            // message is already on disk rather than lost with the live session.
+                            persistActiveSession(ChatSessionStatus.ACTIVE)
                         }
-                        is ChatEvent.MessageDelivered -> _state.update {
-                            it.copy(chatMessages = it.chatMessages.map { m -> if (m.id == event.id) m.copy(delivered = true) else m })
+                        // `delivered` flips only here, driven by the peer's real ACK over the
+                        // encrypted channel — never optimistically on send.
+                        is ChatEvent.MessageDelivered -> {
+                            _state.update {
+                                it.copy(chatMessages = it.chatMessages.map { m -> if (m.id == event.id) m.copy(delivered = true) else m })
+                            }
+                            persistActiveSession(ChatSessionStatus.ACTIVE)
                         }
                         ChatEvent.PeerTyping -> {
                             _state.update { it.copy(chatPeerTyping = true) }
@@ -156,7 +201,13 @@ class AppViewModel(
                                 _state.update { s -> if (s.chatPeerTyping) s.copy(chatPeerTyping = false) else s }
                             }
                         }
-                        ChatEvent.PeerDisconnected -> _state.update { it.copy(chatPeerName = null, chatPeerTyping = false) }
+                        ChatEvent.PeerDisconnected -> {
+                            // Unexpected drop: close the session as INTERRUPTED, keeping every
+                            // message already exchanged. The user stays on the conversation so they
+                            // can read the transcript; the banner shows the disconnected state.
+                            closeChatSession(ChatSessionStatus.INTERRUPTED)
+                            _state.update { it.copy(chatPeerName = null, chatPeerTyping = false) }
+                        }
                     }
                 }
             }
@@ -181,6 +232,7 @@ class AppViewModel(
                                 ),
                             )
                         }
+                        persistActiveSession(ChatSessionStatus.ACTIVE)
                     } else {
                         appContext?.let { ctx ->
                             NotificationHelper.postAlert(
@@ -555,32 +607,24 @@ class AppViewModel(
     // ───────────────────────── app permissions (independent quick audit) ─────────────────────────
 
     fun ensurePermissionsLoaded() {
+        if (_state.value.scanData.permApps.isNotEmpty()) return
+        refreshPermissions()
+    }
+
+    /**
+     * Re-reads every installed app's live permission state from PackageManager. Called on entering
+     * the permissions screens and, crucially, every time the app detail screen resumes — which is
+     * how a change the user just made in system Settings becomes visible here. There is no cached
+     * "we think it's off" state anywhere; the OS is the only source of truth.
+     */
+    fun refreshPermissions() {
         val audit = permissionAudit ?: return
-        if (_state.value.scanData.permApps.isNotEmpty() || permJob?.isActive == true) return
+        if (permJob?.isActive == true) return
         permJob = viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { audit.audit() }
             _state.update {
                 it.copy(scanData = it.scanData.copy(permApps = result.apps, appsScanned = result.totalInstalledCount))
             }
-        }
-    }
-
-    fun togglePermission(app: String, permId: String) {
-        val key = "$app|$permId"
-        _state.update { s ->
-            val off = s.permOff.toMutableSet()
-            if (!off.add(key)) off.remove(key)
-            s.copy(permOff = off)
-        }
-    }
-
-    fun turnOffAllRiskyPermissions() {
-        _state.update { s ->
-            val off = s.permOff.toMutableSet()
-            s.scanData.permApps.forEach { app ->
-                app.perms.forEach { p -> if (p.risk) off.add("${app.app}|${p.id}") }
-            }
-            s.copy(permOff = off)
         }
     }
 
@@ -720,7 +764,10 @@ class AppViewModel(
     }
 
     fun connectToBtDevice(address: String) {
-        _state.update { it.copy(chatMessages = emptyList()) }
+        // Remember which row the user tapped so that row — and only that row — can show
+        // "Connecting…" / "Verifying…" / "Failed", driven by the real BtChatConnState rather than
+        // an optimistic label flipped the moment the button was pressed.
+        _state.update { it.copy(chatMessages = emptyList(), btConnectingAddress = address) }
         bluetoothChatManager?.connectTo(address)
     }
 
@@ -736,6 +783,13 @@ class AppViewModel(
                 chatMeshPeer = entry,
                 chatPeerName = entry.name,
                 chatMessages = emptyList(),
+                // Record this as a session up front, so a relay-only conversation (no live socket,
+                // therefore no handshake to trigger openChatSession) is still saved to History.
+                // If the background connect below does succeed, openChatSession sees an id already
+                // set and leaves this one alone rather than starting a second session for the same
+                // conversation.
+                activeSessionId = java.util.UUID.randomUUID().toString(),
+                activeSessionStartedAtMs = System.currentTimeMillis(),
                 screen = Screen.CHAT_CONVERSATION,
             )
         }
@@ -763,6 +817,7 @@ class AppViewModel(
                     chatDraft = "",
                 )
             }
+            persistActiveSession(ChatSessionStatus.ACTIVE)
             return
         }
 
@@ -788,11 +843,97 @@ class AppViewModel(
                 chatDraft = "",
             )
         }
+        persistActiveSession(ChatSessionStatus.ACTIVE)
     }
 
     fun disconnectChatPeer() {
+        exitChat()
+    }
+
+    // ───────────────────────── chat sessions (real transcripts, persisted) ─────────────────────────
+
+    /** Opens a recording session the moment a connection is genuinely established. */
+    private fun openChatSession(address: String, name: String) {
+        if (_state.value.activeSessionId != null) return
+        _state.update {
+            it.copy(
+                activeSessionId = java.util.UUID.randomUUID().toString(),
+                activeSessionStartedAtMs = System.currentTimeMillis(),
+                chatMessages = emptyList(),
+            )
+        }
+    }
+
+    /**
+     * Writes the live conversation to disk under its stable session id. Called after every message
+     * in either direction, so an interrupted chat (peer walked away, Bluetooth died, process
+     * killed) still has everything received up to that point already saved.
+     */
+    private fun persistActiveSession(status: ChatSessionStatus, endedAtMs: Long? = null) {
+        val s = _state.value
+        val sessionId = s.activeSessionId ?: return
+        val repo = settingsRepository ?: return
+        val address = s.chatMeshPeer?.address ?: bluetoothChatManager?.connectedDeviceAddress?.value ?: return
+        val name = s.chatPeerName ?: s.chatMeshPeer?.name ?: address
+        val messages = s.chatMessages.map {
+            StoredChatMessage(it.id, it.text, it.fromMe, it.timestampMs, it.delivered, it.relayed)
+        }
+        val stored = StoredChatSession(
+            sessionId = sessionId,
+            address = address,
+            name = name,
+            startedAtMs = s.activeSessionStartedAtMs,
+            endedAtMs = endedAtMs,
+            status = when (status) {
+                ChatSessionStatus.ACTIVE -> StoredSessionStatus.ACTIVE
+                ChatSessionStatus.COMPLETED -> StoredSessionStatus.COMPLETED
+                ChatSessionStatus.INTERRUPTED -> StoredSessionStatus.INTERRUPTED
+            },
+            messages = messages,
+        )
+        viewModelScope.launch { repo.saveChatSession(stored) }
+    }
+
+    /** Finalises the session with how it actually ended, then forgets the live id. */
+    private fun closeChatSession(status: ChatSessionStatus) {
+        if (_state.value.activeSessionId == null) return
+        persistActiveSession(status, endedAtMs = System.currentTimeMillis())
+        _state.update { it.copy(activeSessionId = null, activeSessionStartedAtMs = 0L) }
+    }
+
+    /**
+     * "Exit Chat" — the deliberate end of a conversation. Saves the transcript as COMPLETED, drops
+     * the Bluetooth connection, and returns to History so the user immediately sees the session
+     * they just finished. Radio teardown itself is handled by setScreen when they leave the Chat
+     * feature entirely.
+     */
+    fun exitChat() {
+        closeChatSession(ChatSessionStatus.COMPLETED)
         bluetoothChatManager?.disconnect()
-        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, chatMeshPeer = null, screen = Screen.CHAT) }
+        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, chatMeshPeer = null) }
+        setScreen(Screen.CHAT_HISTORY)
+    }
+
+    fun openStoredSession(sessionId: String) {
+        val session = _state.value.chatSessions.firstOrNull { it.sessionId == sessionId } ?: return
+        _state.update { it.copy(viewingSession = session, screen = Screen.CHAT_SESSION) }
+    }
+
+    fun closeStoredSession() {
+        _state.update { it.copy(viewingSession = null) }
+        setScreen(Screen.CHAT_HISTORY)
+    }
+
+    fun deleteStoredSession(sessionId: String) {
+        val repo = settingsRepository ?: return
+        viewModelScope.launch { repo.deleteChatSession(sessionId) }
+        _state.update { if (it.viewingSession?.sessionId == sessionId) it.copy(viewingSession = null) else it }
+    }
+
+    fun clearStoredSessions() {
+        val repo = settingsRepository ?: return
+        viewModelScope.launch { repo.clearChatSessions() }
+        _state.update { it.copy(viewingSession = null) }
     }
 
     companion object {

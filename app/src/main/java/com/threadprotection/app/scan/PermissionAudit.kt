@@ -59,11 +59,18 @@ class PermissionAudit(private val context: Context) {
 
             val rows = mutableListOf<AppPermission>()
             for (permName in requested) {
-                if (pm.checkPermission(permName, appInfo.packageName) != PackageManager.PERMISSION_GRANTED) continue
                 val entry = PermissionCatalog.lookup(permName) ?: continue
+                // Every declared permission in the catalogue is listed now, granted or not, with
+                // its real OS state attached — previously anything not currently granted was
+                // dropped entirely, so the screen could never show a denied or policy-restricted
+                // permission and the user had no way to tell "denied" from "never asked for".
+                val state = PermissionState.of(pm, packageInfo, permName)
+                if (state == PermGrantState.NOT_REQUESTED || state == PermGrantState.UNKNOWN) continue
                 val days = UsageAccess.daysSinceUsed(lastUsed[appInfo.packageName])
                 val stale = days != null && days >= 90
+                val holdsIt = state == PermGrantState.GRANTED || state == PermGrantState.ALWAYS_ON
                 val why = when {
+                    !holdsIt -> state.label
                     stale -> "Not used in $days days"
                     days != null -> "Used $days day${if (days == 1) "" else "s"} ago"
                     entry.baselineRisky -> "Potentially unnecessary for this app"
@@ -71,19 +78,27 @@ class PermissionAudit(private val context: Context) {
                 }
                 rows += AppPermission(
                     id = permName.substringAfterLast('.'),
+                    permissionName = permName,
                     name = entry.plainName,
                     description = entry.description,
                     why = why,
-                    risk = entry.baselineRisky || stale,
+                    // Only a permission the app actually holds can be a risk; a denied one is not.
+                    risk = holdsIt && (entry.baselineRisky || stale),
+                    state = state,
                 )
             }
             if (hasAccessibility) {
                 rows += AppPermission(
                     id = "accessibility",
+                    // Accessibility isn't a manifest permission the user toggles in the app's
+                    // permission page — it's a separate opt-in service, so it carries no
+                    // android.permission.* name and its own Settings destination (below).
+                    permissionName = "",
                     name = PermissionCatalog.accessibilityEntry.plainName,
                     description = PermissionCatalog.accessibilityEntry.description,
                     why = "Can read everything on screen and act on your behalf",
                     risk = true,
+                    state = PermGrantState.GRANTED,
                 )
             }
             if (rows.isEmpty()) continue
@@ -98,7 +113,11 @@ class PermissionAudit(private val context: Context) {
                 else -> "Installed app"
             }
             val riskyCount = rows.count { it.risk }
-            val safetyScore = safetyScoreFor(riskyCount = riskyCount, totalPerms = rows.size, sideloaded = sideload, isSystemApp = isSystemApp)
+            // Score against permissions the app actually holds — the list now also carries denied
+            // and policy-restricted entries, and those grant it nothing, so counting them would
+            // dilute the ratio and make a permission-hungry app look better than it is.
+            val heldCount = rows.count { it.state == PermGrantState.GRANTED || it.state == PermGrantState.ALWAYS_ON }
+            val safetyScore = safetyScoreFor(riskyCount = riskyCount, totalPerms = heldCount, sideloaded = sideload, isSystemApp = isSystemApp)
             permApps += PermApp(
                 app = label,
                 packageName = appInfo.packageName,

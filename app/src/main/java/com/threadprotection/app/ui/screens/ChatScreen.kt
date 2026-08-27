@@ -252,7 +252,14 @@ fun ChatScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         state.btDiscoveredDevices
                             .sortedByDescending { it.rssi ?: Int.MIN_VALUE }
-                            .forEach { device -> DeviceRow(device, onClick = { onConnect(device.address) }) }
+                            .forEach { device ->
+                                DeviceRow(
+                                    device = device,
+                                    connState = state.btConnState,
+                                    isTarget = state.btConnectingAddress == device.address,
+                                    onClick = { onConnect(device.address) },
+                                )
+                            }
                     }
                 }
             }
@@ -408,15 +415,29 @@ private fun PulsingDot() {
 }
 
 @Composable
-private fun DeviceRow(device: BtDeviceInfo, onClick: () -> Unit) {
+private fun DeviceRow(device: BtDeviceInfo, connState: BtChatConnState, isTarget: Boolean, onClick: () -> Unit) {
     val palette = LocalTpPalette.current
+    // The action label mirrors the real connection state machine. "Connected" can only ever appear
+    // once BtChatConnState.CONNECTED is set, which BluetoothChatManager only reaches after the
+    // RFCOMM socket opened *and* the magic-byte check *and* the ML-KEM-768 handshake all succeeded.
+    val (actionLabel, actionColor, enabled) = when {
+        !isTarget -> Triple("Connect", palette.accent, connState != BtChatConnState.CONNECTING && connState != BtChatConnState.HANDSHAKING)
+        connState == BtChatConnState.CONNECTING -> Triple("Connecting…", palette.muted, false)
+        connState == BtChatConnState.HANDSHAKING -> Triple("Verifying…", palette.muted, false)
+        connState == BtChatConnState.CONNECTED -> Triple("Connected", palette.accent, false)
+        connState == BtChatConnState.FAILED -> Triple("Failed · Retry", palette.danger, true)
+        else -> Triple("Connect", palette.accent, true)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(palette.card)
-            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
+            .border(
+                BorderStroke(1.dp, if (isTarget && connState == BtChatConnState.FAILED) palette.dangerBorder30 else palette.line),
+                RoundedCornerShape(16.dp),
+            )
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -435,7 +456,7 @@ private fun DeviceRow(device: BtDeviceInfo, onClick: () -> Unit) {
                 SignalBars(bars = SignalEstimate.bars(device.rssi))
             }
         }
-        Text("Connect", style = TpType.caption.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold), color = palette.accent)
+        Text(actionLabel, style = TpType.caption.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold), color = actionColor)
     }
 }
 

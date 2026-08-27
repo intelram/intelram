@@ -21,14 +21,21 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,13 +56,38 @@ fun ChatConversationScreen(
     onBack: () -> Unit,
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
+    onExitChat: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
     val listState = rememberLazyListState()
+    var showExitConfirm by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.chatMessages.size) {
         if (state.chatMessages.isNotEmpty()) listState.animateScrollToItem(state.chatMessages.size - 1)
+    }
+
+    if (showExitConfirm) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirm = false },
+            title = { Text("End this chat?", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg) },
+            text = {
+                Text(
+                    "The conversation will be saved to Chat History and the Bluetooth connection will be closed.",
+                    style = TpType.body.copy(fontSize = 14.5.sp, lineHeight = 21.sp),
+                    color = palette.muted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showExitConfirm = false; onExitChat() }) {
+                    Text("Exit chat", color = palette.danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitConfirm = false }) { Text("Keep chatting", color = palette.fg2) }
+            },
+            containerColor = palette.card,
+        )
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -79,6 +111,15 @@ fun ChatConversationScreen(
                     color = if (state.btConnState == BtChatConnState.CONNECTED) palette.accent else palette.muted,
                 )
             }
+            Text(
+                "Exit",
+                style = TpType.caption.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                color = palette.danger,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { showExitConfirm = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
         }
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(palette.line))
 
@@ -91,6 +132,22 @@ fun ChatConversationScreen(
             items(state.chatMessages, key = { it.id }) { msg -> MessageBubble(msg) }
         }
 
+        // The composer only opens once the connection is genuinely established (or the peer is
+        // reachable via the store-and-forward relay). Until then there is nothing to send over, so
+        // it stays disabled rather than accepting text that would silently go nowhere.
+        val canSend = state.btConnState == BtChatConnState.CONNECTED || state.chatMeshPeer?.meshReachable == true
+        if (!canSend) {
+            Text(
+                when (state.btConnState) {
+                    BtChatConnState.CONNECTING -> "Connecting to this device…"
+                    BtChatConnState.HANDSHAKING -> "Verifying the other device and securing the connection…"
+                    else -> "Not connected. Messages can't be sent until the connection is re-established."
+                },
+                style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                color = palette.muted,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -99,6 +156,7 @@ fun ChatConversationScreen(
             TextField(
                 value = state.chatDraft,
                 onValueChange = onDraftChange,
+                enabled = canSend,
                 placeholder = { Text("Message", color = palette.muted3) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 modifier = Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(26.dp)),
@@ -116,8 +174,8 @@ fun ChatConversationScreen(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(if (state.chatDraft.isNotBlank()) palette.accent else palette.muted3)
-                    .clickable(enabled = state.chatDraft.isNotBlank(), onClick = onSend),
+                    .background(if (canSend && state.chatDraft.isNotBlank()) palette.accent else palette.muted3)
+                    .clickable(enabled = canSend && state.chatDraft.isNotBlank(), onClick = onSend),
                 contentAlignment = Alignment.Center,
             ) {
                 Text("➤", color = palette.onAccent, fontSize = 18.sp)
@@ -138,7 +196,7 @@ private fun connectionStatusLine(state: AppUiState): String = when {
 private val TIME_FORMAT = SimpleDateFormat("h:mm a", Locale.US)
 
 @Composable
-private fun MessageBubble(msg: ChatUiMessage) {
+internal fun MessageBubble(msg: ChatUiMessage) {
     val palette = LocalTpPalette.current
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = if (msg.fromMe) Arrangement.End else Arrangement.Start) {
         Column(

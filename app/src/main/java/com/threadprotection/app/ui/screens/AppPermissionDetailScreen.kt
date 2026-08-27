@@ -23,19 +23,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.threadprotection.app.data.AppPermission
 import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.scan.PermGrantState
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.ui.components.AppIcon
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.ConicProgressRing
 import com.threadprotection.app.ui.components.OutlinedPillButton
 import com.threadprotection.app.ui.components.SectionHeading
-import com.threadprotection.app.ui.components.ToggleSwitch
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpPalette
 import com.threadprotection.app.ui.theme.TpType
@@ -56,11 +60,24 @@ fun AppPermissionDetailScreen(
     onBack: () -> Unit,
     onOpenAppSettings: (packageName: String) -> Unit,
     onUninstall: (packageName: String) -> Unit,
-    onTogglePermission: (app: String, permId: String) -> Unit,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
     val app = state.scanData.permApps.firstOrNull { it.packageName == state.selectedPermApp }
+
+    // Re-read the real grant states from PackageManager every time this screen comes back to the
+    // foreground — which is exactly what happens when the user returns from the system Settings
+    // page one of the buttons below sent them to. Without this the screen would keep showing the
+    // states captured before they made the change.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) onRefresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -163,18 +180,31 @@ fun AppPermissionDetailScreen(
             SectionHeading("Permissions (${app.perms.size})")
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 app.perms.forEach { perm ->
-                    val key = "${app.app}|${perm.id}"
-                    val on = key !in state.permOff
-                    PermissionDetailRow(perm, on = on, onToggle = { onTogglePermission(app.app, perm.id) })
+                    PermissionDetailRow(perm, onChange = { onOpenAppSettings(app.packageName) })
                 }
             }
         }
     }
 }
 
+/**
+ * One permission, showing the state Android itself reports right now. There is deliberately no
+ * in-app switch: Android does not let one app change another app's permissions, so a switch here
+ * could only ever have recorded a local preference while the real permission stayed exactly as it
+ * was — which is what this screen used to do. Instead each user-changeable permission gets a
+ * "Change in Settings" action that opens the real system page, and the state below is re-read from
+ * the OS when the user comes back.
+ */
 @Composable
-private fun PermissionDetailRow(perm: AppPermission, on: Boolean, onToggle: () -> Unit) {
+private fun PermissionDetailRow(perm: AppPermission, onChange: () -> Unit) {
     val palette = LocalTpPalette.current
+    val stateColor = when (perm.state) {
+        PermGrantState.GRANTED -> if (perm.risk) palette.warn else palette.accent
+        PermGrantState.ALWAYS_ON -> palette.muted
+        PermGrantState.DENIED -> palette.accent
+        PermGrantState.RESTRICTED -> palette.danger
+        PermGrantState.NOT_REQUESTED, PermGrantState.UNKNOWN -> palette.muted2
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -191,14 +221,32 @@ private fun PermissionDetailRow(perm: AppPermission, on: Boolean, onToggle: () -
                     Text("Flagged as risky", style = TpType.caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold), color = palette.warn)
                 }
             }
-            ToggleSwitch(checked = on, onCheckedChange = onToggle)
+            Text(
+                perm.state.label,
+                style = TpType.caption.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                color = stateColor,
+            )
         }
         Text(perm.description, style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp), color = palette.fg2)
-        Text(
-            if (!on) "Turned off by you (tracked here — see \"Manage access\" to change it at the system level)" else perm.why,
-            style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
-            color = if (!on) palette.accent else palette.muted,
-        )
+        Text(perm.why, style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp), color = palette.muted)
+        when (perm.state) {
+            PermGrantState.GRANTED, PermGrantState.DENIED -> OutlinedPillButton(
+                text = if (perm.state == PermGrantState.GRANTED) "Turn off in Settings" else "Turn on in Settings",
+                onClick = onChange,
+                borderColor = palette.line3,
+            )
+            PermGrantState.ALWAYS_ON -> Text(
+                "Granted at install time. Android doesn't allow this one to be turned off — not by you, not by Settings, not by this app.",
+                style = TpType.caption.copy(fontSize = 11.5.sp, lineHeight = 16.5.sp),
+                color = palette.muted2,
+            )
+            PermGrantState.RESTRICTED -> Text(
+                "Blocked by a device or work-profile policy. Only whoever manages this device can change it.",
+                style = TpType.caption.copy(fontSize = 11.5.sp, lineHeight = 16.5.sp),
+                color = palette.muted2,
+            )
+            PermGrantState.NOT_REQUESTED, PermGrantState.UNKNOWN -> Unit
+        }
     }
 }
 

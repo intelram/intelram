@@ -48,7 +48,7 @@ fun AppPermissionsScreen(
     onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
-    onTurnOffAllRisky: () -> Unit,
+    onOpenPermissionManager: () -> Unit,
     onOpenDetail: (packageName: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -79,7 +79,12 @@ fun AppPermissionsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("$riskyTotal permissions look unnecessary", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg)
-                PrimaryPillButton(text = "Turn all of them off", onClick = onTurnOffAllRisky)
+                Text(
+                    "Android has no way for one app to switch off another app's permissions in bulk — that stays with you and the system. This opens Android's own Permission manager, where you can review every app by permission type.",
+                    style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                    color = palette.muted,
+                )
+                PrimaryPillButton(text = "Open Android's permission manager", onClick = onOpenPermissionManager)
             }
 
             if (state.scanData.permApps.isEmpty()) {

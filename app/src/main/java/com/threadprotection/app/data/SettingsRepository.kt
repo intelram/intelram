@@ -48,6 +48,45 @@ data class StoredChatHistoryEntry(
     val publicKeyB64: String = "",
 )
 
+/** How a conversation ended — recorded from what actually happened, not assumed. */
+@Serializable
+enum class StoredSessionStatus {
+    /** Still open right now. Persisted anyway so nothing is lost if the process dies. */
+    ACTIVE,
+
+    /** The user ended it deliberately via Exit Chat. */
+    COMPLETED,
+
+    /** The peer went away, the socket dropped, or Bluetooth was turned off mid-conversation. */
+    INTERRUPTED,
+}
+
+/** One message exactly as it was shown in the conversation — `delivered` is only ever true because
+ *  the peer sent back a real ACK over the encrypted channel (see ChatWireMessage.Ack), never
+ *  because the app optimistically assumed it arrived. */
+@Serializable
+data class StoredChatMessage(
+    val id: String,
+    val text: String,
+    val fromMe: Boolean,
+    val timestampMs: Long,
+    val delivered: Boolean,
+    val relayed: Boolean = false,
+)
+
+/** A full saved conversation. `sessionId` is minted once per connection and is the dedupe key, so
+ *  repeated incremental saves of a live conversation update one entry rather than piling up. */
+@Serializable
+data class StoredChatSession(
+    val sessionId: String,
+    val address: String,
+    val name: String,
+    val startedAtMs: Long,
+    val endedAtMs: Long?,
+    val status: StoredSessionStatus,
+    val messages: List<StoredChatMessage>,
+)
+
 /** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
  *  independent of the Bluetooth MAC (used for mesh routing); the keypair is ML-KEM-768, generated
  *  once and kept for the life of the install so contacts can address a message to this device
@@ -100,6 +139,7 @@ class SettingsRepository(private val context: Context) {
         val REALTIME = booleanPreferencesKey("tp_realtime")
         val PROTECTION_SETTINGS = stringPreferencesKey("tp_protection_settings")
         val CHAT_HISTORY = stringPreferencesKey("tp_chat_history")
+        val CHAT_SESSIONS = stringPreferencesKey("tp_chat_sessions")
         val IDENTITY = stringPreferencesKey("tp_mesh_identity")
         val MESH_OUTBOX = stringPreferencesKey("tp_mesh_outbox")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
@@ -134,6 +174,49 @@ class SettingsRepository(private val context: Context) {
                 current.filter { it.address != address }).take(30)
             prefs[Keys.CHAT_HISTORY] = Json.encodeToString(updated)
         }
+    }
+
+    /**
+     * Full conversation transcripts, newest first, capped at [MAX_STORED_SESSIONS].
+     *
+     * Keyed by a `sessionId` minted once when a connection is established, so saving the same
+     * session repeatedly (as messages arrive, on an unexpected disconnect, and again on a clean
+     * Exit Chat) updates that one entry in place instead of creating a duplicate history item per
+     * save. That incremental saving is also what preserves an interrupted conversation: the
+     * messages received before the peer vanished are already on disk.
+     */
+    val chatSessionsFlow: Flow<List<StoredChatSession>> = context.dataStore.data.map { prefs ->
+        prefs[Keys.CHAT_SESSIONS]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredChatSession>>(raw) }.getOrNull()
+        } ?: emptyList()
+    }
+
+    suspend fun saveChatSession(session: StoredChatSession) {
+        // Don't persist an empty conversation — connecting and immediately leaving shouldn't leave
+        // a blank entry cluttering History.
+        if (session.messages.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.CHAT_SESSIONS]?.let { raw ->
+                runCatching { Json.decodeFromString<List<StoredChatSession>>(raw) }.getOrNull()
+            } ?: emptyList()
+            val updated = (listOf(session) + current.filter { it.sessionId != session.sessionId })
+                .sortedByDescending { it.startedAtMs }
+                .take(MAX_STORED_SESSIONS)
+            prefs[Keys.CHAT_SESSIONS] = Json.encodeToString(updated)
+        }
+    }
+
+    suspend fun deleteChatSession(sessionId: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.CHAT_SESSIONS]?.let { raw ->
+                runCatching { Json.decodeFromString<List<StoredChatSession>>(raw) }.getOrNull()
+            } ?: emptyList()
+            prefs[Keys.CHAT_SESSIONS] = Json.encodeToString(current.filter { it.sessionId != sessionId })
+        }
+    }
+
+    suspend fun clearChatSessions() {
+        context.dataStore.edit { prefs -> prefs[Keys.CHAT_SESSIONS] = Json.encodeToString(emptyList<StoredChatSession>()) }
     }
 
     // ── Mesh relay: long-term identity + store-and-forward outbox (chat/MeshRelayManager.kt) ──
@@ -260,4 +343,10 @@ class SettingsRepository(private val context: Context) {
 
     /** True once a local "Create an account" credential exists, regardless of which email. */
     val hasLocalCredentialFlow: Flow<Boolean> = context.dataStore.data.map { it[Keys.CREDENTIAL] != null }
+
+    private companion object {
+        /** Transcripts are small, but DataStore rewrites the whole file on every edit, so this
+         *  stays bounded rather than growing without limit across the life of the install. */
+        const val MAX_STORED_SESSIONS = 50
+    }
 }

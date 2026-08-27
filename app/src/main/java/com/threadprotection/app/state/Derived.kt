@@ -112,8 +112,12 @@ object Derived {
         }
     }
 
+    /** Counts permissions that are genuinely held and genuinely look unnecessary, straight from the
+     *  last PackageManager read — `AppPermission.risk` is already false for anything the app
+     *  doesn't currently hold. No local "the user switched this off in our UI" overlay any more:
+     *  that could never affect the real permission, so it only ever made this number wrong. */
     fun riskyPermTotal(state: AppUiState): Int =
-        state.scanData.permApps.sumOf { app -> app.perms.count { it.risk && "${app.app}|${it.id}" !in state.permOff } }
+        state.scanData.permApps.sumOf { app -> app.perms.count { it.risk } }
 
     fun sevOf(finding: Finding, fixed: Boolean): Severity = if (fixed) Severity.FIXED else finding.sev
 }

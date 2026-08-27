@@ -53,7 +53,18 @@ data class HwSim(
 
 data class Feed(val name: String, val kind: String, val items: String)
 
-data class AppPermission(val id: String, val name: String, val description: String, val why: String, val risk: Boolean)
+/** [state] is the live OS-reported grant state, re-read from PackageManager on every audit — see
+ *  scan/PermissionState.kt. [permissionName] is the full `android.permission.*` string, kept so the
+ *  UI can name exactly which switch the user needs to find in system Settings. */
+data class AppPermission(
+    val id: String,
+    val permissionName: String,
+    val name: String,
+    val description: String,
+    val why: String,
+    val risk: Boolean,
+    val state: com.threadprotection.app.scan.PermGrantState = com.threadprotection.app.scan.PermGrantState.UNKNOWN,
+)
 
 /** installerLabel is a human-readable source ("Google Play Store", "Sideloaded / unknown source",
  *  "Preinstalled (system)") derived from the real installer package PackageManager reports — see

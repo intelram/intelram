@@ -4,6 +4,7 @@ import com.threadprotection.app.chat.BtChatConnState
 import com.threadprotection.app.chat.BtDeviceInfo
 import com.threadprotection.app.chat.ChatHistoryEntry
 import com.threadprotection.app.chat.ChatMode
+import com.threadprotection.app.chat.ChatSession
 import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeys
@@ -19,11 +20,12 @@ import com.threadprotection.app.ui.theme.TpThemeMode
 enum class Screen {
     SPLASH, SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
     OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION,
-    CHAT_HISTORY, APP_PERMISSION_DETAIL;
+    CHAT_HISTORY, CHAT_SESSION, APP_PERMISSION_DETAIL;
 
     /** Screens that make up the Chat feature — while on any of them the BLE advertiser and the
      *  RFCOMM listener should be running; leaving all of them must tear them down. */
-    val isChatFeature: Boolean get() = this == CHAT || this == CHAT_CONVERSATION || this == CHAT_HISTORY
+    val isChatFeature: Boolean
+        get() = this == CHAT || this == CHAT_CONVERSATION || this == CHAT_HISTORY || this == CHAT_SESSION
 }
 
 enum class QrPhase { IDLE, SCANNING, RESULT }
@@ -91,7 +93,6 @@ data class AppUiState(
     val hwAlert: HwSim? = null,
     val hwIdx: Int = 0,
     val hwHandled: HwHandled? = null,
-    val permOff: Set<String> = emptySet(),
     val hwOpen: Boolean = false,
     val blocked: Long = 41_827_384,
     val tickIdx: Int = 0,
@@ -113,10 +114,20 @@ data class AppUiState(
     /** null = not determined yet; false = this phone isn't broadcasting its presence, so other
      *  devices can't find it (it can still find others) — see BluetoothChatManager. */
     val btCanAdvertise: Boolean? = null,
+    /** Address of the device the user last tapped Connect on, so only that row reflects the
+     *  connecting/failed state rather than every row changing at once. */
+    val btConnectingAddress: String? = null,
     /** True when [btCanAdvertise] is false specifically because BLUETOOTH_ADVERTISE was denied —
      *  a user-fixable cause, unlike hardware that simply can't do BLE peripheral mode. */
     val btAdvertisePermissionMissing: Boolean = false,
     val chatHistory: List<ChatHistoryEntry> = emptyList(),
+    /** Saved transcripts, newest first — persisted, survives restarting the app. */
+    val chatSessions: List<ChatSession> = emptyList(),
+    /** The session currently being read from History (null when not viewing one). */
+    val viewingSession: ChatSession? = null,
+    /** Identity of the live conversation being recorded, so incremental saves update one entry. */
+    val activeSessionId: String? = null,
+    val activeSessionStartedAtMs: Long = 0L,
     /** Set when a conversation was opened from History for messaging (not necessarily a live
      *  connection) — this is who sendChatMessage() addresses a mesh-relayed message to when
      *  there's no live socket. Cleared on disconnect/leave. */

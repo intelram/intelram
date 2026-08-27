@@ -43,6 +43,30 @@ data class ChatUiMessage(
  *  both present, you can message this contact via MeshRelayManager even when they're out of
  *  direct range (see AppViewModel.messageFromHistory). Empty strings mean this entry predates the
  *  mesh feature or the identity exchange failed; reconnecting directly refreshes it. */
+/** A saved conversation as the UI sees it — the domain mirror of `StoredChatSession`. */
+data class ChatSession(
+    val sessionId: String,
+    val address: String,
+    val name: String,
+    val startedAtMs: Long,
+    val endedAtMs: Long?,
+    val status: ChatSessionStatus,
+    val messages: List<ChatUiMessage>,
+) {
+    val sentCount: Int get() = messages.count { it.fromMe }
+    val receivedCount: Int get() = messages.count { !it.fromMe }
+}
+
+enum class ChatSessionStatus { ACTIVE, COMPLETED, INTERRUPTED;
+
+    val label: String
+        get() = when (this) {
+            ACTIVE -> "In progress"
+            COMPLETED -> "Ended normally"
+            INTERRUPTED -> "Disconnected unexpectedly"
+        }
+}
+
 data class ChatHistoryEntry(
     val address: String,
     val name: String,
