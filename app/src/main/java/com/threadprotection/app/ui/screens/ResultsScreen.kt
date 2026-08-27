@@ -1,5 +1,7 @@
 package com.threadprotection.app.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -19,10 +21,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -30,7 +34,10 @@ import androidx.compose.ui.unit.sp
 import com.threadprotection.app.data.Finding
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.state.Derived
+import com.threadprotection.app.state.FixProgress
+import com.threadprotection.app.state.ScanStatus
 import com.threadprotection.app.ui.components.BackCircleButton
+import com.threadprotection.app.ui.components.ConicProgressRing
 import com.threadprotection.app.ui.components.OutlinedPillButton
 import com.threadprotection.app.ui.components.PrimaryPillButton
 import com.threadprotection.app.ui.components.SeverityBadgeFor
@@ -39,61 +46,39 @@ import com.threadprotection.app.ui.theme.Severity
 import com.threadprotection.app.ui.theme.TpType
 import com.threadprotection.app.ui.theme.severityColor
 
+/**
+ * Scan results.
+ *
+ * The header — "Scan complete", the live security score and the threat count — is pinned outside
+ * the scrolling region, so the two numbers that matter stay on screen while the user works down a
+ * long list. Everything below it is derived from state on every recomposition rather than
+ * remembered locally, which is what keeps the score, the list and the Start Fixing button
+ * describing the same reality at the same instant: resolving a threat updates all three at once,
+ * with no refresh and no chance of one lagging behind another.
+ */
 @Composable
 fun ResultsScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onOpen: (String) -> Unit,
+    onStartFixing: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
     val threats = Derived.threats(state)
-    val active = Derived.activeThreats(state)
-    val hasThreats = threats.isNotEmpty()
-
-    val headline = if (active.isEmpty()) {
-        if (hasThreats) "All reviewed — rescan to confirm" else "No threats found"
-    } else if (active.size > 1) {
-        "threats need your attention"
-    } else {
-        "threat needs your attention"
-    }
+    val groups = Derived.threatsBySeverity(state)
+    val resolved = Derived.resolvedThreats(state)
+    val ignored = Derived.ignoredThreats(state)
+    val progress = Derived.fixProgress(state)
 
     Column(modifier = modifier.fillMaxSize()) {
+        StickyResultsHeader(state = state, progress = progress, onBack = onBack)
+
         Column(
-            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                BackCircleButton(onClick = onBack)
-                Text("Scan complete", style = TpType.screenTitle, color = palette.fg)
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (active.isNotEmpty()) palette.dangerTint08 else palette.accentTint08)
-                    .border(BorderStroke(1.dp, if (active.isNotEmpty()) palette.dangerBorder30 else palette.accentBorder30), RoundedCornerShape(16.dp))
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Text(
-                    "${active.size}",
-                    style = TpType.cardTitleBold.copy(fontSize = 31.5.sp),
-                    color = if (active.isNotEmpty()) palette.danger else palette.accent,
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(headline, style = TpType.cardTitle, color = palette.fg)
-                    Text(
-                        "${state.scannedCount.let { "%,d".format(it) }} items scanned across software, services, ports, licences and OS",
-                        style = TpType.caption.copy(fontSize = 14.5.sp),
-                        color = palette.muted,
-                    )
-                }
-            }
-
             val scan = state.scanData
             val inventory = listOf(
                 "Apps & packages" to "${scan.appsScanned}",
@@ -112,15 +97,50 @@ fun ResultsScreen(
                 }
             }
 
-            if (hasThreats) {
+            // Active threats, grouped by how bad they are. Empty bands are dropped entirely rather
+            // than shown as "0 critical" — an empty heading reads as a finding of its own.
+            groups.forEach { group ->
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    threats.forEach { finding ->
-                        ThreatRow(finding = finding, fixed = finding.id in state.fixed, onClick = { onOpen(finding.id) })
+                    SeverityGroupHeading(group.label, group.findings.size, palette.severityColor(group.severity))
+                    group.findings.forEach { finding ->
+                        ThreatRow(finding = finding, fixed = false, onClick = { onOpen(finding.id) })
                     }
                 }
-            } else {
+            }
+
+            if (ignored.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SeverityGroupHeading("Ignored for now", ignored.size, palette.muted)
+                    Text(
+                        "Not counted in your score for this session. The next scan raises them again — ignoring isn't fixing.",
+                        style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 18.5.sp),
+                        color = palette.muted2,
+                    )
+                    ignored.forEach { finding ->
+                        ThreatRow(finding = finding, fixed = false, muted = true, onClick = { onOpen(finding.id) })
+                    }
+                }
+            }
+
+            // Resolved items stay visible rather than vanishing: seeing the work done is the point,
+            // and tapping one is how the user un-resolves it if they were wrong.
+            if (resolved.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SeverityGroupHeading("Resolved", resolved.size, palette.accent)
+                    Text(
+                        "Kept resolved across scans and restarts. If the problem comes back — or gets worse — it reappears above automatically.",
+                        style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 18.5.sp),
+                        color = palette.muted2,
+                    )
+                    resolved.forEach { finding ->
+                        ThreatRow(finding = finding, fixed = true, onClick = { onOpen(finding.id) })
+                    }
+                }
+            }
+
+            if (threats.isEmpty()) {
                 Text(
-                    "No active threats. Your device is fully protected.",
+                    "No threats found. Your device is fully protected.",
                     style = TpType.body.copy(fontSize = 17.sp),
                     color = palette.muted,
                     textAlign = TextAlign.Center,
@@ -135,12 +155,224 @@ fun ResultsScreen(
                 .fillMaxWidth()
                 .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
         ) {
-            if (active.isNotEmpty()) {
-                PrimaryPillButton(text = "Start fixing", onClick = { onOpen(active.first().id) })
-            } else {
-                OutlinedPillButton(text = "Back to dashboard", onClick = onBack, borderColor = palette.line3)
+            StartFixingButton(progress = progress, onStartFixing = onStartFixing, onBack = onBack)
+        }
+    }
+}
+
+/**
+ * The pinned top block: title, live score, and the count of what still needs attention. Sits
+ * outside the scroll container, so all three stay put while the list moves under them.
+ */
+@Composable
+private fun StickyResultsHeader(state: AppUiState, progress: FixProgress, onBack: () -> Unit) {
+    val palette = LocalTpPalette.current
+    val score = Derived.securityScore(state)
+    val status = Derived.scanStatus(state)
+    val statusColor = when (status) {
+        ScanStatus.NEEDED -> palette.warn
+        ScanStatus.AT_RISK -> palette.danger
+        ScanStatus.PROTECTED -> palette.accent
+    }
+    val remaining = progress.remaining
+    val headline = when {
+        !progress.hasThreats -> "No threats found"
+        remaining == 0 -> "All threats resolved"
+        remaining == 1 -> "threat needs your attention"
+        else -> "threats need your attention"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(palette.bg)
+            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            BackCircleButton(onClick = onBack)
+            Text("Scan complete", style = TpType.screenTitle, color = palette.fg, modifier = Modifier.weight(1f))
+            // Same ring, same number, same colour rule as the home screen's score — just sized to
+            // sit inside a header rather than fill a card.
+            CompactSecurityScore(score = score, color = statusColor)
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (remaining > 0) palette.dangerTint08 else palette.accentTint08)
+                .border(
+                    BorderStroke(1.dp, if (remaining > 0) palette.dangerBorder30 else palette.accentBorder30),
+                    RoundedCornerShape(16.dp),
+                )
+                .padding(horizontal = 16.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            if (progress.hasThreats && remaining > 0) {
+                Text(
+                    "$remaining",
+                    style = TpType.cardTitleBold.copy(fontSize = 31.5.sp),
+                    color = palette.danger,
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    headline,
+                    style = TpType.cardTitle,
+                    color = if (remaining > 0) palette.fg else palette.accent,
+                )
+                Text(
+                    headerCaption(state, progress),
+                    style = TpType.caption.copy(fontSize = 13.5.sp, lineHeight = 18.5.sp),
+                    color = palette.muted,
+                )
             }
         }
+    }
+}
+
+private fun headerCaption(state: AppUiState, progress: FixProgress): String {
+    val scanned = "%,d".format(state.scannedCount)
+    return when {
+        !progress.hasThreats -> "$scanned items checked across software, services, ports, licences and OS"
+        progress.remaining == 0 && progress.ignored > 0 ->
+            "${progress.resolved} resolved, ${progress.ignored} ignored for now · rescan to confirm"
+        progress.remaining == 0 -> "All ${progress.total} resolved · rescan to confirm"
+        progress.resolved > 0 || progress.ignored > 0 ->
+            "${progress.resolved} of ${progress.total} resolved · $scanned items checked"
+        else -> "$scanned items checked across software, services, ports, licences and OS"
+    }
+}
+
+/** The home screen's score ring at header size, so the two read as the same element. */
+@Composable
+private fun CompactSecurityScore(score: Int, color: androidx.compose.ui.graphics.Color) {
+    val palette = LocalTpPalette.current
+    // Animated so a resolved threat visibly moves the score rather than snapping, making the
+    // live update legible instead of easy to miss.
+    val fraction by animateFloatAsState(targetValue = score / 100f, animationSpec = tween(450), label = "score")
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        ConicProgressRing(
+            size = 58.dp,
+            inset = 6.dp,
+            progressFraction = fraction,
+            activeColor = color,
+            trackColor = palette.line,
+            innerBackground = palette.bg,
+            animate = false,
+        ) {
+            Text("$score", style = TpType.cardTitleBold.copy(fontSize = 19.sp), color = color)
+        }
+        Text(
+            "SECURITY SCORE",
+            style = TpType.caption.copy(fontSize = 8.5.sp, letterSpacing = 0.6.sp, fontWeight = FontWeight.SemiBold),
+            color = palette.muted,
+        )
+    }
+}
+
+@Composable
+private fun SeverityGroupHeading(label: String, count: Int, color: androidx.compose.ui.graphics.Color) {
+    val palette = LocalTpPalette.current
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+        Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(color))
+        Text(
+            label.uppercase(),
+            style = TpType.caption.copy(fontSize = 12.sp, letterSpacing = 0.9.sp, fontWeight = FontWeight.Bold),
+            color = palette.fg2,
+        )
+        Text(
+            "$count",
+            style = TpType.caption.copy(fontSize = 12.sp, fontWeight = FontWeight.Bold),
+            color = color,
+        )
+    }
+}
+
+/**
+ * The action at the bottom, driven entirely by [FixProgress] — there is no separate "button state"
+ * to fall out of sync with the list above it.
+ */
+@Composable
+private fun StartFixingButton(progress: FixProgress, onStartFixing: () -> Unit, onBack: () -> Unit) {
+    val palette = LocalTpPalette.current
+    when {
+        !progress.hasThreats ->
+            OutlinedPillButton(text = "Back to dashboard", onClick = onBack, borderColor = palette.line3)
+
+        progress.allResolved -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(palette.accentTint08)
+                    .border(BorderStroke(1.dp, palette.accentBorder40), RoundedCornerShape(999.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (progress.ignored > 0) "✓ Nothing left to act on" else "✓ All threats resolved",
+                    style = TpType.primaryButtonLg.copy(fontSize = 15.5.sp),
+                    color = palette.accent,
+                )
+            }
+            OutlinedPillButton(text = "Back to dashboard", onClick = onBack, borderColor = palette.line3)
+        }
+
+        else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            val started = progress.resolved > 0 || progress.ignored > 0 || progress.fixing
+            if (started) {
+                FixProgressBar(progress)
+            }
+            PrimaryPillButton(
+                text = when {
+                    progress.fixing -> "Finish fixing (${progress.remaining} left)"
+                    started -> "Continue fixing (${progress.remaining} left)"
+                    progress.remaining == 1 -> "Start fixing (1 threat)"
+                    else -> "Start fixing (${progress.remaining} threats)"
+                },
+                onClick = onStartFixing,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FixProgressBar(progress: FixProgress) {
+    val palette = LocalTpPalette.current
+    val fraction by animateFloatAsState(targetValue = progress.fraction, animationSpec = tween(400), label = "fixProgress")
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(palette.line),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(palette.accent),
+            )
+        }
+        Text(
+            if (progress.fixing) {
+                "Applying a fix in Android Settings — come back and confirm it to mark it resolved."
+            } else {
+                "${progress.resolved} resolved of ${progress.total}" +
+                    if (progress.ignored > 0) " · ${progress.ignored} ignored" else ""
+            },
+            style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 17.sp),
+            color = palette.muted,
+        )
     }
 }
 
@@ -161,14 +393,14 @@ private fun InventoryTile(label: String, value: String, modifier: Modifier = Mod
 }
 
 @Composable
-private fun ThreatRow(finding: Finding, fixed: Boolean, onClick: () -> Unit) {
+private fun ThreatRow(finding: Finding, fixed: Boolean, muted: Boolean = false, onClick: () -> Unit) {
     val palette = LocalTpPalette.current
     val sev = if (fixed) Severity.FIXED else finding.sev
     val sevColor = palette.severityColor(sev)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .alpha(if (fixed) 0.55f else 1f)
+            .alpha(if (fixed || muted) 0.55f else 1f)
             .clip(RoundedCornerShape(16.dp))
             .background(palette.card)
             .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
@@ -205,7 +437,11 @@ private fun ThreatRow(finding: Finding, fixed: Boolean, onClick: () -> Unit) {
                 )
             }
             Text(
-                if (fixed) "Resolved" else "Risk potential ${finding.risk}/100",
+                when {
+                    fixed -> "Resolved"
+                    muted -> "Ignored · risk ${finding.risk}/100"
+                    else -> "Risk potential ${finding.risk}/100"
+                },
                 style = TpType.caption.copy(fontSize = 13.5.sp),
                 color = palette.muted,
             )

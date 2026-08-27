@@ -79,7 +79,17 @@ data class AppUiState(
     val account: Account? = null,
     val progress: Float = 0f,
     val scannedCount: Int = 0,
+    /** Findings the user has marked resolved *and* whose stored fingerprint still matches what
+     *  this scan found. Seeded from disk at startup and after every scan, so a resolved threat
+     *  stays resolved across scans and app restarts — see FindingIdentity. */
     val fixed: Set<String> = emptySet(),
+    /** The raw id → fingerprint records on disk, kept so a scan can tell "resolved and unchanged"
+     *  from "resolved earlier but the problem is back". */
+    val resolvedRecords: Map<String, String> = emptyMap(),
+    /** True while a fix is being applied (the user has been sent to the relevant Settings screen
+     *  and hasn't come back yet) — drives the "fixing in progress" state of the Start Fixing
+     *  button rather than a timer or a guess. */
+    val fixInProgressId: String? = null,
     /** Findings the user chose to "Ignore for now". Session-scoped on purpose: it is held in
      *  memory only and cleared by the next scan, so ignoring something quiets it for now without
      *  ever permanently hiding a real problem. Kept separate from [fixed] because ignoring a

@@ -91,6 +91,21 @@ data class StoredChatSession(
     val messages: List<StoredChatMessage>,
 )
 
+/**
+ * One threat the user marked resolved.
+ *
+ * [fingerprint] is what keeps the record honest across scans: it describes the *situation* the
+ * finding reported (severity, risk score, type line), so a record only suppresses the finding
+ * while that situation still holds. If the problem comes back — or gets worse — the fingerprint
+ * no longer matches and the finding is shown again. See FindingIdentity.
+ */
+@Serializable
+data class StoredResolvedFinding(
+    val id: String,
+    val fingerprint: String,
+    val resolvedAtMs: Long,
+)
+
 /** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
  *  independent of the Bluetooth MAC (used for mesh routing); the keypair is ML-KEM-768, generated
  *  once and kept for the life of the install so contacts can address a message to this device
@@ -146,6 +161,7 @@ class SettingsRepository(private val context: Context) {
         val CHAT_SESSIONS = stringPreferencesKey("tp_chat_sessions")
         val IDENTITY = stringPreferencesKey("tp_mesh_identity")
         val MESH_OUTBOX = stringPreferencesKey("tp_mesh_outbox")
+        val RESOLVED_FINDINGS = stringPreferencesKey("tp_resolved_findings")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -230,6 +246,53 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.CHAT_SESSIONS] = Json.encodeToString(updated)
         }
     }
+
+    // ───────────────────────── resolved findings ─────────────────────────
+
+    /**
+     * Threats the user has marked resolved, kept across scans and app restarts.
+     *
+     * Stored as id + fingerprint rather than id alone — see [com.threadprotection.app.data.FindingIdentity].
+     * The fingerprint is what makes "don't show it again unless it comes back" truthful: the record
+     * only suppresses a finding while the situation it described still matches.
+     */
+    val resolvedFindingsFlow: Flow<List<StoredResolvedFinding>> = prefs.map { prefs ->
+        prefs[Keys.RESOLVED_FINDINGS]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredResolvedFinding>>(raw) }.getOrNull()
+        } ?: emptyList()
+    }
+
+    /** Records one finding as resolved. Re-resolving the same id replaces its record, so a finding
+     *  that came back and was dealt with again is stored against its *current* fingerprint. */
+    suspend fun markFindingResolved(id: String, fingerprint: String) {
+        context.dataStore.edit { prefs ->
+            val current = readResolved(prefs)
+            val updated = (listOf(StoredResolvedFinding(id, fingerprint, System.currentTimeMillis())) +
+                current.filter { it.id != id })
+                .sortedByDescending { it.resolvedAtMs }
+                .take(MAX_RESOLVED_FINDINGS)
+            prefs[Keys.RESOLVED_FINDINGS] = Json.encodeToString(updated)
+        }
+    }
+
+    /** Drops resolution records — used when a finding reappears with a different fingerprint, and
+     *  when the user deliberately un-resolves one. */
+    suspend fun clearResolvedFindings(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val remaining = readResolved(prefs).filter { it.id !in ids }
+            prefs[Keys.RESOLVED_FINDINGS] = Json.encodeToString(remaining)
+        }
+    }
+
+    suspend fun clearAllResolvedFindings() {
+        context.dataStore.edit { prefs -> prefs.remove(Keys.RESOLVED_FINDINGS) }
+    }
+
+    private fun readResolved(prefs: Preferences): List<StoredResolvedFinding> =
+        prefs[Keys.RESOLVED_FINDINGS]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredResolvedFinding>>(raw) }.getOrNull()
+        } ?: emptyList()
 
     suspend fun deleteChatSession(sessionId: String) {
         context.dataStore.edit { prefs ->
@@ -375,5 +438,9 @@ class SettingsRepository(private val context: Context) {
         /** Transcripts are small, but DataStore rewrites the whole file on every edit, so this
          *  stays bounded rather than growing without limit across the life of the install. */
         const val MAX_STORED_SESSIONS = 50
+
+        /** Plenty for a phone's worth of findings, and bounded so the record can't grow forever
+         *  as apps come and go over months of scans. */
+        const val MAX_RESOLVED_FINDINGS = 300
     }
 }

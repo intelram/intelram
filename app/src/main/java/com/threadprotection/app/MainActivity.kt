@@ -274,6 +274,7 @@ class MainActivity : ComponentActivity() {
                                 state = state,
                                 onBack = viewModel::goDashboard,
                                 onOpen = viewModel::openFinding,
+                                onStartFixing = viewModel::startFixing,
                             )
                         }
 
@@ -285,7 +286,12 @@ class MainActivity : ComponentActivity() {
                                 onVoteUp = viewModel::voteUp,
                                 onVoteDown = viewModel::voteDown,
                                 onFix = viewModel::fixSelected,
+                                onBeginFix = viewModel::beginFix,
+                                onUnresolve = viewModel::unresolveFinding,
                                 onIgnore = viewModel::ignoreSelectedFinding,
+                                onUnignore = viewModel::unignoreFinding,
+                                resolved = com.threadprotection.app.state.Derived.selectedFinding(state)?.id
+                                    ?.let { it in state.fixed } == true,
                                 ignored = com.threadprotection.app.state.Derived.selectedFinding(state)?.id
                                     ?.let { it in state.ignoredFindings } == true,
                                 onOpenRemedy = openRemedy,

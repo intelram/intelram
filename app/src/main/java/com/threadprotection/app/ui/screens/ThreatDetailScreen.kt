@@ -47,8 +47,17 @@ fun ThreatDetailScreen(
     onVoteUp: () -> Unit,
     onVoteDown: () -> Unit,
     onFix: () -> Unit,
+    /** Called when the user is handed off to Android Settings, before they've confirmed anything.
+     *  Drives the "fixing in progress" state — this app can't change a system setting itself, so
+     *  in-progress means exactly "they've been sent there and haven't confirmed yet". */
+    onBeginFix: (String) -> Unit,
+    onUnresolve: (String) -> Unit,
     onIgnore: () -> Unit,
+    /** Undo an "Ignore for now". Separate from [onIgnore]: the two are opposite actions, and
+     *  wiring both buttons to the same handler is why "count it again" previously did nothing. */
+    onUnignore: (String) -> Unit,
     ignored: Boolean,
+    resolved: Boolean,
     onOpenRemedy: (Remedy) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -58,7 +67,7 @@ fun ThreatDetailScreen(
         androidx.compose.runtime.LaunchedEffect(Unit) { onBack() }
         return
     }
-    val fixed = sel.id in state.fixed
+    val fixed = resolved
     val sev = if (fixed) Severity.FIXED else sel.sev
     val sevColor = palette.severityColor(sev)
     val sevTint = palette.severityTint(sev)
@@ -266,17 +275,38 @@ fun ThreatDetailScreen(
         ) {
             if (!fixed) {
                 val hasRemedy = sel.remedy != Remedy.None
+                val fixing = state.fixInProgressId == sel.id
                 PrimaryPillButton(
-                    text = if (hasRemedy) sel.fix else "Got it",
+                    text = when {
+                        !hasRemedy -> "Got it"
+                        fixing -> "I've done it — mark resolved"
+                        else -> sel.fix
+                    },
                     onClick = {
-                        onOpenRemedy(sel.remedy)
-                        onFix()
+                        if (!hasRemedy) {
+                            // Nothing for Android to open — acknowledging *is* the resolution.
+                            onFix()
+                            return@PrimaryPillButton
+                        }
+                        if (fixing) {
+                            // Second tap: the user is back from Settings and confirming. Only now
+                            // is it recorded as resolved, so the score never moves on a fix that
+                            // was never actually applied.
+                            onFix()
+                        } else {
+                            onOpenRemedy(sel.remedy)
+                            onBeginFix(sel.id)
+                        }
                     },
                 )
                 if (hasRemedy) {
                     Text(
-                        "Opens Android Settings — this app can't change it for you, only you can.",
-                        style = TpType.caption.copy(fontSize = 12.5.sp),
+                        if (fixing) {
+                            "Waiting on you: change it in Android Settings, then tap above to mark it resolved. Nothing is recorded until you confirm."
+                        } else {
+                            "Opens Android Settings — this app can't change it for you, only you can."
+                        },
+                        style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 17.5.sp),
                         color = palette.muted,
                     )
                 }
@@ -289,14 +319,28 @@ fun ThreatDetailScreen(
                         .border(BorderStroke(1.dp, palette.accentBorder40), RoundedCornerShape(999.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("✓ Reviewed — rescan to confirm", style = TpType.primaryButtonLg.copy(fontSize = 15.sp), color = palette.accent)
+                    Text("✓ Resolved", style = TpType.primaryButtonLg.copy(fontSize = 15.sp), color = palette.accent)
                 }
+                // Resolutions persist across scans, so there has to be a way back out of one —
+                // otherwise a mistaken tap hides a real threat for good.
+                SubtlePillButton(text = "Not fixed after all — undo", onClick = { onUnresolve(sel.id); onBack() })
+                Text(
+                    "Kept resolved across scans and restarts. It comes back on its own if the problem reappears or gets worse.",
+                    style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
+                    color = palette.muted2,
+                )
             }
             // Previously this only navigated back, so nothing changed and the finding kept
             // counting against the security score. It now really does mark the finding ignored
             // for this session: it drops out of the active list and the score recalculates.
-            if (ignored) {
-                SubtlePillButton(text = "Ignored — count it again", onClick = { onIgnore(); onBack() })
+            //
+            // Not offered on an already-resolved finding: "ignore" and "resolved" are two ways of
+            // saying the same thing to the score, and showing both invites the user to put one
+            // finding into two states at once.
+            if (fixed) {
+                // nothing — undo above is the only way back out of a resolution
+            } else if (ignored) {
+                SubtlePillButton(text = "Ignored — count it again", onClick = { onUnignore(sel.id); onBack() })
                 Text(
                     "Not counted in your security score for now. The next scan will raise it again — ignoring isn't fixing.",
                     style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),

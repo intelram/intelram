@@ -2,6 +2,7 @@ package com.threadprotection.app.state
 
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.Finding
+import com.threadprotection.app.data.FindingIdentity
 import com.threadprotection.app.ui.theme.Severity
 import kotlin.math.max
 import kotlin.math.min
@@ -10,6 +11,29 @@ import kotlin.math.roundToInt
 enum class ScanStatus { NEEDED, AT_RISK, PROTECTED }
 
 data class AuditArea(val name: String, val cat: Category, val hasIssue: Boolean, val scanned: Boolean, val caption: String)
+
+/** One severity band on the results screen, with the active findings that fall into it. */
+data class ThreatGroup(val severity: Severity, val label: String, val findings: List<Finding>)
+
+/**
+ * The live state of "how much of this scan has the user dealt with", used to keep the Start Fixing
+ * button, the threat list and the security score describing the same thing at the same time.
+ */
+data class FixProgress(
+    val total: Int,
+    val resolved: Int,
+    val ignored: Int,
+    val remaining: Int,
+    /** The finding Start Fixing should open next — null when there is nothing left to fix. */
+    val nextId: String?,
+    /** True while the user is part-way through applying a fix they haven't confirmed yet. */
+    val fixing: Boolean,
+) {
+    val hasThreats: Boolean get() = total > 0
+    val allResolved: Boolean get() = total > 0 && remaining == 0
+    /** 0f..1f — how much of this scan's findings have been resolved or consciously ignored. */
+    val fraction: Float get() = if (total == 0) 1f else (resolved + ignored).toFloat() / total.toFloat()
+}
 
 /**
  * Pure functions ported from the prototype's `renderVals()` — computed fresh from state each
@@ -22,7 +46,59 @@ object Derived {
 
     /** Findings still counting against the user: neither fixed nor deliberately ignored. */
     fun activeThreats(state: AppUiState): List<Finding> =
-        threats(state).filter { it.id !in state.fixed && it.id !in state.ignoredFindings }
+        FindingIdentity.active(threats(state), state.fixed, state.ignoredFindings)
+
+    /** Findings the user has already resolved. Shown in their own section rather than hidden, so
+     *  the work done stays visible without competing with what still needs attention. */
+    fun resolvedThreats(state: AppUiState): List<Finding> =
+        threats(state).filter { it.id in state.fixed }
+
+    /**
+     * Active threats grouped by severity, most severe first, with empty groups dropped.
+     * Critical and High are kept as separate groups — they mean different things and a user
+     * triaging their phone should see the critical ones on their own.
+     */
+    fun threatsBySeverity(state: AppUiState): List<ThreatGroup> {
+        val active = activeThreats(state)
+        return SEVERITY_ORDER.mapNotNull { sev ->
+            val items = active.filter { it.sev == sev }.sortedByDescending { it.risk }
+            if (items.isEmpty()) null else ThreatGroup(sev, groupLabel(sev), items)
+        }
+    }
+
+    fun groupLabel(sev: Severity): String = when (sev) {
+        Severity.CRITICAL -> "Critical"
+        Severity.HIGH -> "Major / High"
+        Severity.MEDIUM -> "Medium"
+        Severity.LOW -> "Low"
+        Severity.FIXED -> "Resolved"
+    }
+
+    private val SEVERITY_ORDER = listOf(Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW)
+
+    /**
+     * What the Start Fixing button should currently say and do. Derived from the real threat state
+     * on every recomposition, so the button, the list and the score can never disagree.
+     */
+    fun fixProgress(state: AppUiState): FixProgress {
+        val all = threats(state)
+        val active = activeThreats(state)
+        val resolved = resolvedThreats(state).size
+        val ignored = ignoredThreats(state).size
+        // Deliberately the *displayed* order, not the raw scan order: Start Fixing has to open the
+        // row the user sees at the top of the list, and the most severe threat is the one worth
+        // dealing with first. Taking active.first() here instead let the button jump to a low
+        // finding while a critical one sat above it on screen.
+        val nextInDisplayOrder = threatsBySeverity(state).firstOrNull()?.findings?.firstOrNull()
+        return FixProgress(
+            total = all.size,
+            resolved = resolved,
+            ignored = ignored,
+            remaining = active.size,
+            nextId = nextInDisplayOrder?.id,
+            fixing = state.fixInProgressId != null && active.any { it.id == state.fixInProgressId },
+        )
+    }
 
     /** Findings the user acknowledged and chose to leave for now — still real, just not counted. */
     fun ignoredThreats(state: AppUiState): List<Finding> =

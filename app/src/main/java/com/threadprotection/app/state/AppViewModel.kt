@@ -18,6 +18,7 @@ import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.DemoData
+import com.threadprotection.app.data.FindingIdentity
 import com.threadprotection.app.data.SettingsRepository
 import com.threadprotection.app.data.StoredChatHistoryEntry
 import com.threadprotection.app.data.StoredChatMessage
@@ -187,6 +188,17 @@ class AppViewModel(
                         val viewing = st.viewingSession?.let { v -> sessions.firstOrNull { it.sessionId == v.sessionId } }
                         st.copy(chatSessions = sessions, viewingSession = viewing ?: st.viewingSession)
                     }
+                }
+            }
+        }
+        settingsRepository?.let { repo ->
+            safeLaunch {
+                // Resolved threats live on disk, so they survive a restart. Re-applying them
+                // against the *current* findings on every emission is what makes "don't show it
+                // again unless it comes back" true rather than just "hide it forever".
+                repo.resolvedFindingsFlow.distinctUntilChanged().collect { records ->
+                    val map = records.associate { it.id to it.fingerprint }
+                    _state.update { st -> st.copy(resolvedRecords = map).withResolvedApplied() }
                 }
             }
         }
@@ -570,7 +582,15 @@ class AppViewModel(
     fun signOut() {
         releaseChatRadioIfLeaving(Screen.SIGNIN)
         _state.update {
-            it.copy(screen = Screen.SIGNIN, account = null, hasScanned = false, fixed = emptySet(), scanData = ScanData())
+            it.copy(
+                screen = Screen.SIGNIN,
+                account = null,
+                hasScanned = false,
+                fixed = emptySet(),
+                resolvedRecords = emptyMap(),
+                fixInProgressId = null,
+                scanData = ScanData(),
+            )
         }
         persistAccount(null)
     }
@@ -667,7 +687,18 @@ class AppViewModel(
         scanJob?.cancel()
         var feedSeq = 0L
         _state.update {
-            it.copy(screen = Screen.SCANNING, progress = 0f, scannedCount = 0, fixed = emptySet(), ignoredFindings = emptySet(), scanPhase = ScanPhaseState(), scanFeed = emptyList())
+            // Resolutions deliberately survive a rescan — they are re-validated against the new
+            // findings below. "Ignore for now" does not: it was always session-scoped, and the
+            // whole point of a rescan is to raise ignored items again.
+            it.copy(
+                screen = Screen.SCANNING,
+                progress = 0f,
+                scannedCount = 0,
+                ignoredFindings = emptySet(),
+                fixInProgressId = null,
+                scanPhase = ScanPhaseState(),
+                scanFeed = emptyList(),
+            )
         }
         scanJob = safeLaunch {
             val result = scanner.scan(_state.value.apiKeys) { update ->
@@ -703,12 +734,33 @@ class AppViewModel(
                     ),
                     liveHwDevices = result.hwDevices,
                     scannedCount = result.appsScanned,
-                )
+                ).withResolvedApplied()
+            }
+            // A record whose fingerprint no longer matches means the problem came back, or got
+            // worse. Drop it from disk so it can be resolved again on its current terms rather
+            // than silently suppressing a threat the user never actually saw in this shape.
+            val superseded = FindingIdentity.supersededRecords(result.findings, _state.value.resolvedRecords)
+            if (superseded.isNotEmpty()) {
+                Log.i(TAG, "scan: ${superseded.size} resolved finding(s) reappeared or changed — clearing their records")
+                settingsRepository?.clearResolvedFindings(superseded)
             }
             delay(400)
             _state.update { it.copy(screen = Screen.RESULTS, hasScanned = true) }
         }
     }
+
+    /**
+     * Recomputes [AppUiState.fixed] from the on-disk records against whatever findings the state
+     * currently holds.
+     *
+     * This is the one place the two are reconciled, and it runs both when the records change and
+     * when the findings change (after a scan). A record only counts while its fingerprint still
+     * matches the finding, so a threat that reappeared — or got worse — is active again even
+     * though the user resolved it once. Findings this scan didn't produce at all simply aren't in
+     * the set; their records stay on disk in case a later scan can reach that source again.
+     */
+    private fun AppUiState.withResolvedApplied(): AppUiState =
+        copy(fixed = FindingIdentity.stillResolved(scanData.findings, resolvedRecords))
 
     fun cancelScan() {
         scanJob?.cancel()
@@ -730,9 +782,54 @@ class AppViewModel(
         _state.update { it.copy(ignoredFindings = it.ignoredFindings - id) }
     }
 
+    /**
+     * The user applied the fix for the selected finding. Recorded on disk against the finding's
+     * current fingerprint, so it stays resolved across scans and restarts — and comes back if the
+     * underlying problem does.
+     */
     fun fixSelected() {
         val sel = Derived.selectedFinding(_state.value) ?: return
-        _state.update { it.copy(fixed = it.fixed + sel.id) }
+        val fingerprint = FindingIdentity.fingerprintOf(sel)
+        // Applied in memory first so the score, the list and the button all move on this frame —
+        // the disk write below is durability, not the source of truth for what's on screen. The
+        // record is updated alongside `fixed` so the two can't disagree while the write is in
+        // flight, and the flow's later emission is then just a confirmation of the same value.
+        _state.update {
+            it.copy(
+                fixed = it.fixed + sel.id,
+                resolvedRecords = it.resolvedRecords + (sel.id to fingerprint),
+                fixInProgressId = null,
+            )
+        }
+        settingsRepository?.let { repo ->
+            safeLaunch { repo.markFindingResolved(sel.id, fingerprint) }
+        }
+    }
+
+    /**
+     * Marks that the user has been handed off to Android Settings to apply a fix but hasn't
+     * confirmed it yet — this app cannot change a system setting itself, so "in progress" means
+     * exactly that and nothing more. Cleared by [fixSelected] on confirmation, or by [cancelFix]
+     * if they come back without doing it.
+     */
+    fun beginFix(id: String) {
+        _state.update { it.copy(fixInProgressId = id) }
+    }
+
+    fun cancelFix() {
+        _state.update { it.copy(fixInProgressId = null) }
+    }
+
+    /** Puts a resolved finding back into the active list and removes its record from disk. */
+    fun unresolveFinding(id: String) {
+        _state.update { it.copy(fixed = it.fixed - id, resolvedRecords = it.resolvedRecords - id) }
+        settingsRepository?.let { repo -> safeLaunch { repo.clearResolvedFindings(setOf(id)) } }
+    }
+
+    /** Start Fixing: opens the highest-severity finding that still needs attention. */
+    fun startFixing() {
+        val next = Derived.fixProgress(_state.value).nextId ?: return
+        openFinding(next)
     }
 
     fun openFinding(id: String) {
