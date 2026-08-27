@@ -112,6 +112,9 @@ class AppViewModel(
                 chat.discoveredDevices.collect { list -> _state.update { it.copy(btDiscoveredDevices = list) } }
             }
             viewModelScope.launch {
+                chat.canAdvertise.collect { v -> _state.update { it.copy(btCanAdvertise = v) } }
+            }
+            viewModelScope.launch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
                     if (name != null) {

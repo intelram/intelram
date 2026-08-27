@@ -106,6 +106,9 @@ data class AppUiState(
     val chatMode: ChatMode = ChatMode.BLUETOOTH,
     val btConnState: BtChatConnState = BtChatConnState.IDLE,
     val btDiscoveredDevices: List<BtDeviceInfo> = emptyList(),
+    /** null = not determined yet; false = this phone's Bluetooth hardware can't advertise over BLE,
+     *  so other devices can't find it (it can still find others) — see BluetoothChatManager. */
+    val btCanAdvertise: Boolean? = null,
     val chatHistory: List<ChatHistoryEntry> = emptyList(),
     /** Set when a conversation was opened from History for messaging (not necessarily a live
      *  connection) — this is who sendChatMessage() addresses a mesh-relayed message to when

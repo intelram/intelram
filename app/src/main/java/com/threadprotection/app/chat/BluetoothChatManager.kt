@@ -1,16 +1,19 @@
 package com.threadprotection.app.chat
 
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
-import android.content.BroadcastReceiver
+import android.bluetooth.le.AdvertiseCallback
+import android.bluetooth.le.AdvertiseData
+import android.bluetooth.le.AdvertiseSettings
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.Build
+import android.os.ParcelUuid
 import android.util.Base64
 import com.threadprotection.app.crypto.PqcChatCrypto
 import com.threadprotection.app.data.SettingsRepository
@@ -18,11 +21,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -38,20 +44,37 @@ sealed interface ChatEvent {
 }
 
 /**
- * Real Bluetooth Classic (RFCOMM) nearby chat — no internet, no server. README: "whoever has the
- * application installed only those people can chat." Discovery finds any nearby Bluetooth device
- * (that's a phone-OS-level fact Android exposes to every app), but a *connection* only succeeds
- * if the peer speaks this exact handshake: matching magic bytes on an app-specific service UUID,
- * followed by a real ML-KEM-768 key exchange (see PqcChatCrypto). Anything else — a random
- * Bluetooth headset, someone else's phone without Thread Protection — never gets past that
- * handshake, so it never becomes a usable connection.
+ * Real nearby chat — no internet, no server. README: "whoever has the application installed only
+ * those people can chat." Two separate Bluetooth technologies do two separate jobs here:
+ *
+ * - **Discovery is BLE.** While Chat is open, this device advertises a small BLE packet carrying
+ *   Thread Protection's own 128-bit service UUID ([PRESENCE_SERVICE_UUID]) plus a short
+ *   service-data payload holding the signed-in account's display name — nothing else. "Tap to
+ *   scan" then runs a BLE scan with a hardware/OS-level [ScanFilter] on that exact UUID, so the
+ *   radio itself discards every advertisement that doesn't carry it. A Bluetooth headset, a
+ *   laptop, someone else's phone without this app installed — none of them advertise this UUID,
+ *   so none of them ever reach [discoveredDevices]. This is different from (and stronger than)
+ *   the old approach of showing every nearby device and only checking identity at connect time:
+ *   here, showing up in the list *is* the proof the peer has the app running.
+ * - **The chat connection itself is Classic Bluetooth (RFCOMM)**, unchanged from before: once you
+ *   tap a discovered device, `connectTo` opens an RFCOMM socket to that same MAC address and runs
+ *   the existing handshake — magic-byte confirmation, then a real ML-KEM-768 key exchange (see
+ *   PqcChatCrypto) — before any message can flow. BLE proved "this is a Thread Protection phone";
+ *   RFCOMM carries the actual encrypted conversation, exactly as it always has.
+ *
+ * Honest limits: BLE *scanning* (central role) is essentially universal on Android hardware, but
+ * BLE *advertising* (peripheral role) needs `BluetoothAdapter.isMultipleAdvertisementSupported()`
+ * — a small minority of older/low-end devices lack it, and simply won't be discoverable by others
+ * (they can still discover everyone else). See [canAdvertise]. Both roles need this device's
+ * Bluetooth turned on and, on Android 12+, the BLUETOOTH_SCAN/BLUETOOTH_ADVERTISE runtime
+ * permissions granted.
  *
  * v1 scope, stated plainly: one active conversation at a time, and message text lives only in
  * memory for the current connection (nothing is written to disk). What *is* persisted, in
  * SettingsRepository.chatHistoryFlow, is just the lightweight contact list — address, name, last
  * chatted time — so a device you've talked to before shows up under "History" without needing to
- * be rediscovered. The listening server socket only runs while the Chat screen is open, not as a
- * background service.
+ * be rediscovered. The listening server socket and BLE advertising only run while the Chat screen
+ * is open, not as a background service.
  */
 class BluetoothChatManager(private val context: Context, private val settingsRepository: SettingsRepository) {
 
@@ -66,6 +89,11 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
 
     private val _discovered = MutableStateFlow<List<BtDeviceInfo>>(emptyList())
     val discoveredDevices: StateFlow<List<BtDeviceInfo>> = _discovered.asStateFlow()
+
+    /** null until we've tried; false means this specific phone's Bluetooth hardware can't act as a
+     *  BLE peripheral, so it can't broadcast its own presence (it can still scan for others). */
+    private val _canAdvertise = MutableStateFlow<Boolean?>(null)
+    val canAdvertise: StateFlow<Boolean?> = _canAdvertise.asStateFlow()
 
     private val _connectedDeviceName = MutableStateFlow<String?>(null)
     val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
@@ -90,12 +118,17 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     }
 
-    private var discoveryReceiver: BroadcastReceiver? = null
+    private var activeAdvertiseCallback: AdvertiseCallback? = null
+    private var activeScanCallback: ScanCallback? = null
+    private var scanTimeoutJob: Job? = null
+    private var staleSweepJob: Job? = null
 
-    /** Starts the listening server socket (accepts inbound connections) — call once when entering Chat. */
+    /** Starts the listening server socket (accepts inbound connections) and BLE presence
+     *  advertising — call once when entering Chat. */
     fun startListening() {
         val a = adapter ?: run { _connState.value = BtChatConnState.BT_UNAVAILABLE; return }
         if (!a.isEnabled) { _connState.value = BtChatConnState.BT_UNAVAILABLE; return }
+        startAdvertising(a)
         if (serverJob?.isActive == true) return
         serverJob = scope.launch {
             // "Insecure" here means classic Bluetooth's own pairing/encryption is skipped, not that
@@ -109,6 +142,57 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         }
     }
 
+    /** Broadcasts a small BLE packet — just [PRESENCE_SERVICE_UUID] plus this account's display
+     *  name as service data — so other Thread Protection phones can find *this* one by "Tap to
+     *  scan" without either device needing to be classic-Bluetooth "discoverable" (which would
+     *  need a one-off system dialog per session). Best-effort: if this hardware can't advertise,
+     *  [canAdvertise] flips to false and the rest of the app keeps working normally. */
+    private fun startAdvertising(a: BluetoothAdapter) {
+        val advertiser = a.bluetoothLeAdvertiser
+        if (advertiser == null || !a.isMultipleAdvertisementSupported) {
+            _canAdvertise.value = false
+            return
+        }
+        if (activeAdvertiseCallback != null) return
+        scope.launch {
+            val displayName = runCatching { settingsRepository.accountFlow.first()?.name }.getOrNull()
+                ?.trim()?.takeIf { it.isNotBlank() } ?: "Thread Protection user"
+            val nameBytes = truncateUtf8(displayName, MAX_ADVERTISED_NAME_BYTES)
+
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setConnectable(false)
+                .setTimeout(0)
+                .build()
+            val data = AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .setIncludeTxPowerLevel(false)
+                .addServiceUuid(ParcelUuid(PRESENCE_SERVICE_UUID))
+                .build()
+            val scanResponse = AdvertiseData.Builder()
+                .addServiceData(ParcelUuid(PRESENCE_SERVICE_UUID), nameBytes)
+                .build()
+            val callback = object : AdvertiseCallback() {
+                override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                    _canAdvertise.value = true
+                }
+                override fun onStartFailure(errorCode: Int) {
+                    _canAdvertise.value = false
+                    activeAdvertiseCallback = null
+                }
+            }
+            activeAdvertiseCallback = callback
+            runCatching { advertiser.startAdvertising(settings, data, scanResponse, callback) }
+                .onFailure { _canAdvertise.value = false; activeAdvertiseCallback = null }
+        }
+    }
+
+    private fun stopAdvertising() {
+        val callback = activeAdvertiseCallback ?: return
+        activeAdvertiseCallback = null
+        runCatching { adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback) }
+    }
+
     private suspend fun acceptLoop(serverSocket: BluetoothServerSocket) {
         while (true) {
             val socket = runCatching { serverSocket.accept() }.getOrNull() ?: continue
@@ -120,63 +204,95 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         }
     }
 
+    /** Runs a time-boxed BLE scan filtered to [PRESENCE_SERVICE_UUID] — see the class doc for why
+     *  this, not classic discovery, is what "Tap to scan" runs. The filter is enforced by the
+     *  Bluetooth radio/OS itself: [onScanResult] is only ever called for advertisements that
+     *  actually carry our UUID, so nothing else (headphones, a laptop, a phone without this app)
+     *  can appear in [discoveredDevices]. */
     fun startDiscovery() {
         val a = adapter ?: run { _connState.value = BtChatConnState.BT_UNAVAILABLE; return }
         if (!a.isEnabled) { _connState.value = BtChatConnState.BT_UNAVAILABLE; return }
-        registerDiscoveryReceiver()
+        val scanner = a.bluetoothLeScanner ?: run { _connState.value = BtChatConnState.BLE_UNSUPPORTED; return }
+        stopDiscovery()
         _discovered.value = emptyList()
-        val started = runCatching { a.startDiscovery() }.getOrDefault(false)
-        _connState.value = if (started) BtChatConnState.DISCOVERING else BtChatConnState.NO_PERMISSION
+
+        val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(PRESENCE_SERVICE_UUID)).build())
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .build()
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) = recordSighting(result)
+            override fun onBatchScanResults(results: MutableList<ScanResult>) = results.forEach(::recordSighting)
+            override fun onScanFailed(errorCode: Int) {
+                _connState.value = BtChatConnState.SCAN_FAILED
+                activeScanCallback = null
+            }
+        }
+        activeScanCallback = callback
+        val started = runCatching { scanner.startScan(filters, settings, callback); true }.getOrDefault(false)
+        if (!started) {
+            activeScanCallback = null
+            _connState.value = BtChatConnState.NO_PERMISSION
+            return
+        }
+        _connState.value = BtChatConnState.DISCOVERING
+
+        // Devices don't send an explicit "I'm gone" signal over BLE — we infer it by how long it's
+        // been since a device's last advertisement, and drop it from the list once it goes stale.
+        staleSweepJob?.cancel()
+        staleSweepJob = scope.launch {
+            while (true) {
+                delay(STALE_SWEEP_INTERVAL_MS)
+                val cutoff = System.currentTimeMillis() - STALE_AFTER_MS
+                _discovered.update { list -> list.filter { it.lastSeenMs >= cutoff } }
+            }
+        }
+        // Auto-stop after a bounded window — continuous BLE_SCAN_MODE_LOW_LATENCY scanning is one
+        // of the more battery-hungry radio states, so "Tap to scan" shouldn't run forever.
+        scanTimeoutJob?.cancel()
+        scanTimeoutJob = scope.launch {
+            delay(SCAN_WINDOW_MS)
+            if (_connState.value == BtChatConnState.DISCOVERING) stopDiscovery()
+        }
+    }
+
+    private fun recordSighting(result: ScanResult) {
+        val advertisedName = runCatching { result.scanRecord?.getServiceData(ParcelUuid(PRESENCE_SERVICE_UUID)) }
+            .getOrNull()
+            ?.let { runCatching { String(it, Charsets.UTF_8) }.getOrNull() }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val info = BtDeviceInfo(
+            address = result.device.address,
+            name = advertisedName ?: "Thread Protection user",
+            bonded = false,
+            rssi = result.rssi,
+            kind = BtDeviceKind.PHONE,
+            lastSeenMs = System.currentTimeMillis(),
+        )
+        // Update in place (not just append-if-new) so signal strength — and a name that arrives a
+        // beat later in the scan-response packet — keeps refreshing live for the same device.
+        _discovered.update { list ->
+            if (list.any { it.address == info.address }) list.map { if (it.address == info.address) info else it }
+            else list + info
+        }
     }
 
     fun stopDiscovery() {
-        runCatching { adapter?.cancelDiscovery() }
-    }
-
-    private fun registerDiscoveryReceiver() {
-        if (discoveryReceiver != null) return
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context, intent: Intent) {
-                when (intent.action) {
-                    BluetoothDevice.ACTION_FOUND -> {
-                        val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                        } ?: return
-                        val rssiRaw = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE)
-                        val info = BtDeviceInfo(
-                            address = device.address,
-                            name = device.deviceName(),
-                            bonded = false,
-                            rssi = if (rssiRaw == Short.MIN_VALUE) null else rssiRaw.toInt(),
-                            kind = device.classify(),
-                        )
-                        // Update in place (not just append-if-new) so signal strength keeps refreshing
-                        // live as the same device is re-reported during a scan.
-                        _discovered.value = if (_discovered.value.any { it.address == info.address }) {
-                            _discovered.value.map { if (it.address == info.address) info else it }
-                        } else {
-                            _discovered.value + info
-                        }
-                    }
-                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                        if (_connState.value == BtChatConnState.DISCOVERING) _connState.value = BtChatConnState.IDLE
-                    }
-                }
-            }
-        }
-        discoveryReceiver = receiver
-        val filter = IntentFilter().apply {
-            addAction(BluetoothDevice.ACTION_FOUND)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
-        }
-        context.registerReceiver(receiver, filter)
+        scanTimeoutJob?.cancel(); scanTimeoutJob = null
+        staleSweepJob?.cancel(); staleSweepJob = null
+        val callback = activeScanCallback
+        activeScanCallback = null
+        if (callback != null) runCatching { adapter?.bluetoothLeScanner?.stopScan(callback) }
+        if (_connState.value == BtChatConnState.DISCOVERING) _connState.value = BtChatConnState.IDLE
     }
 
     fun connectTo(address: String) {
         val a = adapter ?: return
+        // The BLE scan already learned this peer's real app display name — carry it forward
+        // instead of falling back to the phone's generic Bluetooth adapter name.
+        val advertisedName = _discovered.value.firstOrNull { it.address == address }?.name
         stopDiscovery()
         val device = runCatching { a.getRemoteDevice(address) }.getOrNull() ?: return
         _connState.value = BtChatConnState.CONNECTING
@@ -187,11 +303,11 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
             if (socket == null) { _connState.value = BtChatConnState.FAILED; return@launch }
             val connected = runCatching { socket.connect(); true }.getOrDefault(false)
             if (!connected) { _connState.value = BtChatConnState.FAILED; return@launch }
-            establishSession(socket, isInitiator = true)
+            establishSession(socket, isInitiator = true, fallbackName = advertisedName)
         }
     }
 
-    private suspend fun establishSession(socket: BluetoothSocket, isInitiator: Boolean) {
+    private suspend fun establishSession(socket: BluetoothSocket, isInitiator: Boolean, fallbackName: String? = null) {
         _connState.value = BtChatConnState.HANDSHAKING
         val out = DataOutputStream(socket.outputStream)
         val input = DataInputStream(socket.inputStream)
@@ -228,7 +344,7 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         activeSocket = socket
         sessionKey = ok
         _connectedDeviceAddress.value = runCatching { socket.remoteDevice.address }.getOrNull()
-        _connectedDeviceName.value = runCatching { socket.remoteDevice.deviceName() }.getOrNull()
+        _connectedDeviceName.value = fallbackName ?: runCatching { socket.remoteDevice.deviceName() }.getOrNull()
         _connectedPeerNodeId.value = peerIdentity?.nodeId
         _connectedPeerPublicKeyB64.value = peerIdentity?.let { Base64.encodeToString(it.publicKeyBytes, Base64.NO_WRAP) }
         _connState.value = BtChatConnState.CONNECTED
@@ -319,29 +435,28 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         _connState.value = BtChatConnState.IDLE
     }
 
-    /** Stops the server socket and discovery — call when leaving Chat entirely. */
+    /** Stops the server socket, BLE advertising and scanning — call when leaving Chat entirely. */
     fun shutdown() {
         disconnect()
         serverJob?.cancel()
         serverJob = null
         stopDiscovery()
-        discoveryReceiver?.let { runCatching { context.unregisterReceiver(it) } }
-        discoveryReceiver = null
+        stopAdvertising()
     }
 
     private fun BluetoothDevice.deviceName(): String =
         runCatching { name }.getOrNull()?.takeIf { it.isNotBlank() } ?: address
 
-    /** Real Bluetooth Class of Device, broadcast by the peer itself as part of standard discovery
-     *  — not inferred from its name. */
-    private fun BluetoothDevice.classify(): BtDeviceKind =
-        when (runCatching { bluetoothClass?.majorDeviceClass }.getOrNull()) {
-            BluetoothClass.Device.Major.PHONE -> BtDeviceKind.PHONE
-            BluetoothClass.Device.Major.COMPUTER -> BtDeviceKind.COMPUTER
-            BluetoothClass.Device.Major.AUDIO_VIDEO -> BtDeviceKind.AUDIO
-            BluetoothClass.Device.Major.WEARABLE -> BtDeviceKind.WEARABLE
-            else -> BtDeviceKind.GENERIC
-        }
+    /** Truncates to at most [maxBytes] UTF-8 bytes without splitting a multi-byte character in
+     *  half — BLE advertisement packets are only a few dozen bytes total, so a display name has to
+     *  fit in a handful of them alongside the service UUID. */
+    private fun truncateUtf8(s: String, maxBytes: Int): ByteArray {
+        val bytes = s.toByteArray(Charsets.UTF_8)
+        if (bytes.size <= maxBytes) return bytes
+        var end = maxBytes
+        while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+        return bytes.copyOfRange(0, end)
+    }
 
     private fun writeFrame(out: DataOutputStream, data: ByteArray) {
         out.writeInt(data.size)
@@ -363,5 +478,15 @@ class BluetoothChatManager(private val context: Context, private val settingsRep
         private const val SERVICE_NAME = "ThreadProtectionChat"
         private val MAGIC = "TPCHAT1".toByteArray()
         private const val MAX_FRAME_BYTES = 1_048_576
+
+        /** BLE presence/discovery UUID — distinct from [APP_UUID] above (that one is the classic
+         *  RFCOMM channel the actual chat runs over once connected). This one only ever appears in
+         *  a BLE advertisement, and only Thread Protection advertises it, which is what makes
+         *  "Tap to scan" show app instances instead of every nearby Bluetooth device. */
+        private val PRESENCE_SERVICE_UUID: UUID = UUID.fromString("9f9f2f9f-303f-4071-beee-32741e782946")
+        private const val MAX_ADVERTISED_NAME_BYTES = 13
+        private const val SCAN_WINDOW_MS = 20_000L
+        private const val STALE_AFTER_MS = 8_000L
+        private const val STALE_SWEEP_INTERVAL_MS = 3_000L
     }
 }

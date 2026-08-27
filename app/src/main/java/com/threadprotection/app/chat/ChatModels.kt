@@ -4,17 +4,24 @@ import java.nio.charset.StandardCharsets
 
 enum class ChatMode { BLUETOOTH, INTERNET }
 
-enum class BtChatConnState { IDLE, BT_UNAVAILABLE, NO_PERMISSION, DISCOVERING, CONNECTING, HANDSHAKING, CONNECTED, FAILED }
+enum class BtChatConnState { IDLE, BT_UNAVAILABLE, BLE_UNSUPPORTED, NO_PERMISSION, DISCOVERING, SCAN_FAILED, CONNECTING, HANDSHAKING, CONNECTED, FAILED }
 
-/** rssi is the real signal strength Android reported for this device (`EXTRA_RSSI` on
- *  `ACTION_FOUND`), null if the OS didn't include one. kind comes from the peer's real Bluetooth
- *  Class of Device — see SignalEstimate.kt for both. */
+/** A device found via BLE scanning, filtered at the OS/radio level to only devices advertising
+ *  Thread Protection's own service UUID (see BluetoothChatManager.PRESENCE_SERVICE_UUID) — a
+ *  generic Bluetooth accessory (headphones, a speaker, a laptop) never matches the scan filter, so
+ *  it never reaches this list in the first place. rssi is the real signal strength from the BLE
+ *  scan result; name is the peer's own chosen display name, read from the service-data payload
+ *  they advertise alongside that UUID — not the phone's generic Bluetooth adapter name.
+ *  lastSeenMs drives the staleness sweep that drops a device once its advertisements stop arriving
+ *  (it went out of range or closed the app), since BLE scanning has no explicit "device left"
+ *  event of its own. */
 data class BtDeviceInfo(
     val address: String,
     val name: String,
     val bonded: Boolean,
     val rssi: Int? = null,
     val kind: BtDeviceKind = BtDeviceKind.GENERIC,
+    val lastSeenMs: Long = 0L,
 )
 
 /** relayed marks a message sent/received via the store-and-forward mesh (MeshRelayManager)

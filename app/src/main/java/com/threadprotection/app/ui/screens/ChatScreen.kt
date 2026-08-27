@@ -175,6 +175,18 @@ fun ChatScreen(
                         tint = palette.warnTint06,
                         border = palette.warnBorder20,
                     )
+                    BtChatConnState.BLE_UNSUPPORTED -> InfoBanner(
+                        title = "Bluetooth Low Energy not available",
+                        body = "This device's Bluetooth hardware doesn't support the BLE scanning nearby-device discovery needs.",
+                        tint = palette.dangerTint08,
+                        border = palette.dangerBorder30,
+                    )
+                    BtChatConnState.SCAN_FAILED -> InfoBanner(
+                        title = "Scan failed",
+                        body = "The Bluetooth scan couldn't start — try again in a moment.",
+                        tint = palette.warnTint06,
+                        border = palette.warnBorder20,
+                    )
                     BtChatConnState.FAILED -> InfoBanner(
                         title = "Couldn't connect",
                         body = "That device didn't respond correctly — it may not have Thread Protection installed, or moved out of range.",
@@ -182,6 +194,13 @@ fun ChatScreen(
                         border = palette.dangerBorder30,
                     )
                     else -> Unit
+                }
+                if (state.btCanAdvertise == false) {
+                    Text(
+                        "This phone's Bluetooth hardware can't broadcast its own presence — you can still find and message other nearby devices, but they may not be able to find you.",
+                        style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                        color = palette.muted,
+                    )
                 }
 
                 val busy = state.btConnState == BtChatConnState.DISCOVERING || state.btConnState == BtChatConnState.CONNECTING || state.btConnState == BtChatConnState.HANDSHAKING

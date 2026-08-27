@@ -94,6 +94,9 @@ class MainActivity : ComponentActivity() {
 
                 val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 val bluetoothPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+                // Needed for BLE presence advertising in Chat (BluetoothChatManager) so other
+                // Thread Protection phones can find this one by "Tap to scan" — see its doc comment.
+                val bluetoothAdvertisePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
                 // Real use, not a blanket ask: the "Connected hardware"/"Operating system" audit
                 // reads the current Wi-Fi network name (WifiInfo.currentSsid) so you can see which
                 // network you're on — Android ties that specific reading to location permission,
@@ -107,6 +110,7 @@ class MainActivity : ComponentActivity() {
                     }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        bluetoothAdvertisePermission.launch(Manifest.permission.BLUETOOTH_ADVERTISE)
                     }
                     locationPermission.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
