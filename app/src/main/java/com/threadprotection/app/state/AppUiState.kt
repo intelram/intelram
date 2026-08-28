@@ -18,6 +18,7 @@ import com.threadprotection.app.data.HwSim
 import com.threadprotection.app.data.PermApp
 import com.threadprotection.app.network.BreachCheckResult
 import com.threadprotection.app.network.UrlVerdict
+import com.threadprotection.app.qr.QrAnalysis
 import com.threadprotection.app.scan.PortFinding
 import com.threadprotection.app.ui.theme.TpThemeMode
 
@@ -119,6 +120,10 @@ data class AppUiState(
     val qrIndex: Int = 0,
     val qrProgress: Int = 0,
     val qrVerdict: UrlVerdict? = null,
+    /** On-device classification of the decoded payload — what it is, its parsed fields, and
+     *  whether anything was sent off the phone. Null until something is scanned. */
+    val qrAnalysis: QrAnalysis? = null,
+    val qrTorchOn: Boolean = false,
     val gsiError: String? = null,
     val theme: TpThemeMode = TpThemeMode.NIGHT,
     val learned: Int = 148_392,

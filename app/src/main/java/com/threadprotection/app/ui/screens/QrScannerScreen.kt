@@ -52,6 +52,13 @@ import com.threadprotection.app.ui.components.SectionHeading
 import com.threadprotection.app.ui.components.TechnicalDetailsCard
 import com.threadprotection.app.ui.components.sweepLineFraction
 import com.threadprotection.app.ui.theme.LocalTpPalette
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.font.FontWeight
+import com.threadprotection.app.qr.QrAnalysis
+import com.threadprotection.app.qr.QrRiskLevel
 import com.threadprotection.app.ui.theme.TpType
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -62,6 +69,7 @@ fun QrScannerScreen(
     onPick: (Int) -> Unit,
     onDecoded: (String) -> Unit,
     onRescan: () -> Unit,
+    onToggleTorch: () -> Unit,
     onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
@@ -93,7 +101,31 @@ fun QrScannerScreen(
                 when (state.qrPhase) {
                     QrPhase.IDLE -> {
                         if (cameraPermission.status.isGranted) {
-                            QrCameraPreview(modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(20.dp)), onDecoded = onDecoded)
+                            QrCameraPreview(
+                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(20.dp)),
+                                torchEnabled = state.qrTorchOn,
+                                onDecoded = onDecoded,
+                            )
+                            // Torch and tap-to-focus are the two controls that rescue the two most
+                            // common failures: a dark code and a soft one. The hint says so rather
+                            // than leaving the user to guess why a code won't read.
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(12.dp)
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(if (state.qrTorchOn) palette.accentTint15 else palette.alertScrim)
+                                    .border(BorderStroke(1.dp, if (state.qrTorchOn) palette.accent else palette.line3), CircleShape)
+                                    .clickable(onClick = onToggleTorch),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    if (state.qrTorchOn) "🔦" else "💡",
+                                    style = TpType.caption.copy(fontSize = 18.sp),
+                                    color = if (state.qrTorchOn) palette.accent else palette.fg2,
+                                )
+                            }
                             ViewfinderCorners(palette.accent)
                             Column(
                                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp),
@@ -166,7 +198,34 @@ fun QrScannerScreen(
                         }
                     }
 
-                    QrPhase.RESULT -> if (verdict != null) {
+                    QrPhase.RESULT -> if (verdict == null && state.qrAnalysis != null) {
+                        // A non-URL payload: analysed fully on-device, so there is no reputation
+                        // verdict to show — the content type is the result.
+                        val analysis = state.qrAnalysis
+                        val rc = riskColors(analysis.risk)
+                        Column(
+                            modifier = Modifier.padding(horizontal = 26.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier.size(62.dp).clip(CircleShape).background(rc.second)
+                                    .border(BorderStroke(1.dp, rc.first), CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text("⌗", style = TpType.cardTitleBold.copy(fontSize = 30.sp), color = rc.first)
+                            }
+                            Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(rc.second).padding(horizontal = 12.dp, vertical = 5.dp)) {
+                                Text(analysis.typeLabel.uppercase(), style = TpType.badge.copy(letterSpacing = 1.35.sp), color = rc.first)
+                            }
+                            Text(
+                                analysis.explanation,
+                                style = TpType.body.copy(fontSize = 15.sp, lineHeight = 22.sp),
+                                color = palette.fg,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    } else if (verdict != null) {
                         val vc = verdictColors(verdict.overall)
                         Column(
                             modifier = Modifier.padding(horizontal = 26.dp),
@@ -195,6 +254,11 @@ fun QrScannerScreen(
                 }
             }
 
+            // What the code actually is, always shown — including for payloads that are not links
+            // and therefore never left the phone.
+            if (state.qrPhase == QrPhase.RESULT) {
+                state.qrAnalysis?.let { QrContentDetails(it) }
+            }
             if (state.qrPhase == QrPhase.RESULT && verdict != null) {
                 QrResultDetails(verdict)
             }
@@ -371,5 +435,99 @@ private fun QrCheckStep(name: String, done: Boolean) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
         Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(if (done) palette.accent else palette.line3))
         Text(name, style = TpType.caption.copy(fontSize = 14.sp), color = if (done) palette.fg2 else palette.muted3)
+    }
+}
+
+/** Risk colour pair (foreground, tint) for an on-device content risk level. */
+@Composable
+private fun riskColors(risk: QrRiskLevel): Pair<Color, Color> {
+    val palette = LocalTpPalette.current
+    return when (risk) {
+        QrRiskLevel.SAFE -> palette.accent to palette.accentTint08
+        QrRiskLevel.INFO -> palette.fg2 to palette.card
+        QrRiskLevel.CAUTION -> palette.warn to palette.warnTint06
+        QrRiskLevel.DANGER -> palette.danger to palette.dangerTint08
+    }
+}
+
+/**
+ * What the scanned code actually contains, parsed on-device.
+ *
+ * Shown for every payload type, not just links — a Wi-Fi code, a contact card or a 2FA secret
+ * gets a real explanation instead of being mislabelled as a website. Sensitive fields are masked
+ * by default: a password or an authenticator seed should not sit on screen in a room where the
+ * code was just scanned in public.
+ */
+@Composable
+private fun QrContentDetails(analysis: QrAnalysis) {
+    val palette = LocalTpPalette.current
+    val (riskColor, riskTint) = riskColors(analysis.risk)
+    var revealSensitive by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(palette.card)
+            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(18.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(13.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(riskTint).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                Text(analysis.typeLabel.uppercase(), style = TpType.badge.copy(fontSize = 10.5.sp, letterSpacing = 0.9.sp), color = riskColor)
+            }
+        }
+        Text(analysis.explanation, style = TpType.body.copy(fontSize = 15.sp, lineHeight = 22.sp), color = palette.fg)
+
+        if (analysis.parsedFields.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                analysis.parsedFields.forEach { field ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            field.label,
+                            style = TpType.caption.copy(fontSize = 13.sp),
+                            color = palette.muted,
+                            modifier = Modifier.weight(0.38f),
+                        )
+                        Text(
+                            if (field.sensitive && !revealSensitive) "•".repeat(field.value.length.coerceIn(4, 12)) else field.value,
+                            style = TpType.caption.copy(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+                            color = palette.fg2,
+                            modifier = Modifier.weight(0.62f),
+                        )
+                    }
+                }
+            }
+            if (analysis.parsedFields.any { it.sensitive }) {
+                Text(
+                    if (revealSensitive) "Hide sensitive values" else "Show sensitive values",
+                    style = TpType.caption.copy(fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold),
+                    color = palette.accent,
+                    modifier = Modifier.clickable { revealSensitive = !revealSensitive },
+                )
+            }
+        }
+
+        analysis.riskNotes.forEach { note ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("•", style = TpType.caption.copy(fontSize = 13.sp), color = riskColor)
+                Text(note, style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp), color = palette.fg2)
+            }
+        }
+
+        Text(analysis.recommendedAction, style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp), color = palette.muted)
+
+        // States plainly whether anything left the device. For every non-link payload the answer
+        // is "nothing", and that is worth saying rather than leaving the user to assume.
+        Text(
+            if (analysis.urlToCheck == null) {
+                "Analysed entirely on your phone — nothing about this code was sent anywhere."
+            } else {
+                "Only the web address was sent for a reputation check, using the sources you configured in Settings."
+            },
+            style = TpType.caption.copy(fontSize = 12.sp, lineHeight = 17.sp),
+            color = palette.muted2,
+        )
     }
 }

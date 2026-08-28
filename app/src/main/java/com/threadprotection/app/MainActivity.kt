@@ -309,6 +309,7 @@ class MainActivity : ComponentActivity() {
                                 onPick = viewModel::startQr,
                                 onDecoded = viewModel::analyzeScannedPayload,
                                 onRescan = viewModel::rescanQr,
+                                onToggleTorch = viewModel::toggleQrTorch,
                                 onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,

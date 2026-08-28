@@ -20,6 +20,7 @@ import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.hardware.ExternalDeviceMonitor
+import com.threadprotection.app.qr.QrContentClassifier
 import com.threadprotection.app.data.FindingIdentity
 import com.threadprotection.app.data.SettingsRepository
 import com.threadprotection.app.data.StoredChatHistoryEntry
@@ -946,9 +947,40 @@ class AppViewModel(
         runQrCheck(rawPayload, -1)
     }
 
+    /**
+     * Analyses one decoded QR payload.
+     *
+     * Classification happens first and entirely on-device, and it is what decides whether anything
+     * is sent to a reputation service at all.
+     *
+     * Root-cause fix: this used to hand *every* payload straight to `checkUrl()`. A Wi-Fi join
+     * string, a contact card, a two-factor secret or a shopping list was normalised into a URL and
+     * posted to third-party threat-intel APIs — which is both a wrong answer (a verdict about a
+     * "site" that never existed) and a real privacy leak: the user's home Wi-Fi password and 2FA
+     * seeds left the device. Only [QrAnalysis.urlToCheck] is ever transmitted, and it is null for
+     * every non-web payload.
+     */
     private fun runQrCheck(payload: String, index: Int) {
         qrJob?.cancel()
-        _state.update { it.copy(qrPhase = QrPhase.SCANNING, qrIndex = index, qrProgress = 0, qrVerdict = null) }
+        val analysis = QrContentClassifier.classify(payload)
+        _state.update {
+            it.copy(
+                qrPhase = QrPhase.SCANNING,
+                qrIndex = index,
+                qrProgress = 0,
+                qrVerdict = null,
+                qrAnalysis = analysis,
+            )
+        }
+        val url = analysis.urlToCheck
+        if (url == null) {
+            // Nothing web-facing: the on-device analysis is the complete answer, and no network
+            // call is made. Shown immediately rather than running a fake progress bar over a
+            // lookup that isn't happening.
+            Log.d(TAG, "runQrCheck: ${analysis.type} payload analysed on-device, nothing transmitted")
+            _state.update { it.copy(qrProgress = 100, qrPhase = QrPhase.RESULT) }
+            return
+        }
         qrJob = safeLaunch {
             val progressJob = launch {
                 while (_state.value.qrProgress < 92) {
@@ -956,7 +988,7 @@ class AppViewModel(
                     _state.update { it.copy(qrProgress = (it.qrProgress + 8).coerceAtMost(92)) }
                 }
             }
-            val verdict = threatIntel.checkUrl(payload, _state.value.apiKeys)
+            val verdict = threatIntel.checkUrl(url, _state.value.apiKeys)
             progressJob.cancel()
             _state.update { it.copy(qrProgress = 100, qrPhase = QrPhase.RESULT, qrVerdict = verdict) }
         }
@@ -964,8 +996,11 @@ class AppViewModel(
 
     fun rescanQr() {
         qrJob?.cancel()
-        _state.update { it.copy(qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null) }
+        _state.update { it.copy(qrPhase = QrPhase.IDLE, qrProgress = 0, qrVerdict = null, qrAnalysis = null) }
     }
+
+    /** Torch toggle for the scanner — real camera flash, driven by CameraX. */
+    fun toggleQrTorch() = _state.update { it.copy(qrTorchOn = !it.qrTorchOn) }
 
     // ───────────────────────── data breach security (free, keyless, live) ─────────────────────────
 
