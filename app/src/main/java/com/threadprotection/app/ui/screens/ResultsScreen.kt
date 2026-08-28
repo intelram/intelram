@@ -22,6 +22,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -130,18 +133,47 @@ fun ResultsScreen(
                 }
             }
 
-            // Resolved items stay visible rather than vanishing: seeing the work done is the point,
-            // and tapping one is how the user un-resolves it if they were wrong.
+            // Resolved threats are collapsed out of the way, not listed. Once something is dealt
+            // with the user shouldn't have to scroll past it on every rescan — but it can't vanish
+            // entirely either, because a resolution the user can't reverse would hide a real threat
+            // for good. So: a one-line summary they can open when they want it.
             if (resolved.isNotEmpty()) {
+                var showResolved by rememberSaveable { mutableStateOf(false) }
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SeverityGroupHeading("Resolved", resolved.size, palette.accent)
-                    Text(
-                        "Kept resolved across scans and restarts. If the problem comes back — or gets worse — it reappears above automatically.",
-                        style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 18.5.sp),
-                        color = palette.muted2,
-                    )
-                    resolved.forEach { finding ->
-                        ThreatRow(finding = finding, fixed = true, onClick = { onOpen(finding.id) })
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(palette.accentTint08)
+                            .border(BorderStroke(1.dp, palette.accentBorder30), RoundedCornerShape(14.dp))
+                            .clickable { showResolved = !showResolved }
+                            .padding(horizontal = 15.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text("✓", style = TpType.cardTitle.copy(fontSize = 15.sp), color = palette.accent)
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "${resolved.size} resolved and hidden",
+                                style = TpType.cardTitle.copy(fontSize = 15.sp),
+                                color = palette.accent,
+                            )
+                            Text(
+                                "Kept out of your way across scans. They come back on their own if the problem returns.",
+                                style = TpType.caption.copy(fontSize = 12.5.sp, lineHeight = 17.5.sp),
+                                color = palette.muted,
+                            )
+                        }
+                        Text(
+                            if (showResolved) "Hide" else "Show",
+                            style = TpType.caption.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+                            color = palette.accent,
+                        )
+                    }
+                    if (showResolved) {
+                        resolved.forEach { finding ->
+                            ThreatRow(finding = finding, fixed = true, onClick = { onOpen(finding.id) })
+                        }
                     }
                 }
             }

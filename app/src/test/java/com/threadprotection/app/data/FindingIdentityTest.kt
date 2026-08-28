@@ -3,6 +3,7 @@ package com.threadprotection.app.data
 import com.threadprotection.app.ui.theme.Severity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,11 +55,41 @@ class FindingIdentityTest {
         assertEquals(FindingIdentity.fingerprintOf(a), FindingIdentity.fingerprintOf(b))
     }
 
+    /**
+     * The regression this pins is the reported "I resolved it and it keeps coming back".
+     *
+     * Risk scores drift for reasons that are not security changes: a sideloaded app's risk counts
+     * permissions unused for 90+ days, so simply *opening* the app drops the count and moves the
+     * score. Fingerprinting on the raw score meant an unchanged phone produced a changed
+     * fingerprint, and every resolved threat resurfaced on the next scan.
+     */
     @Test
-    fun `a worse risk score is a different fingerprint`() {
-        assertTrue(
-            FindingIdentity.fingerprintOf(finding("os-patch", risk = 40)) !=
-                FindingIdentity.fingerprintOf(finding("os-patch", risk = 70)),
+    fun `a drifting risk score within the same severity band is the same problem`() {
+        assertEquals(
+            FindingIdentity.fingerprintOf(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 58)),
+            FindingIdentity.fingerprintOf(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 67)),
+        )
+    }
+
+    @Test
+    fun `a resolved threat stays resolved when only its risk score drifted`() {
+        val whenResolved = finding("sideload:com.x", sev = Severity.MEDIUM, risk = 58)
+        val nextScan = finding("sideload:com.x", sev = Severity.MEDIUM, risk = 67)
+        assertEquals(
+            setOf("sideload:com.x"),
+            FindingIdentity.stillResolved(listOf(nextScan), resolved(whenResolved)),
+        )
+        assertTrue(FindingIdentity.active(listOf(nextScan), setOf("sideload:com.x"), emptySet()).isEmpty())
+    }
+
+    /** The patch finding renames and re-scores itself every month while describing the same phone. */
+    @Test
+    fun `an ageing security patch does not resurface every month on its own`() {
+        val atResolution = finding("os-patch", sev = Severity.HIGH, risk = 60, name = "Security patch 6 months old")
+        val aMonthLater = finding("os-patch", sev = Severity.HIGH, risk = 65, name = "Security patch 7 months old")
+        assertEquals(
+            setOf("os-patch"),
+            FindingIdentity.stillResolved(listOf(aMonthLater), resolved(atResolution)),
         )
     }
 
@@ -97,6 +128,7 @@ class FindingIdentityTest {
 
     // ── but come back when the problem does ─────────────────────────────────────────────────
 
+    /** A genuine escalation — crossing into a worse severity band — must still resurface it. */
     @Test
     fun `a threat that got worse is active again despite being resolved before`() {
         val whenResolved = finding("os-patch", risk = 40, sev = Severity.MEDIUM)
@@ -107,11 +139,30 @@ class FindingIdentityTest {
         assertEquals(listOf("os-patch"), FindingIdentity.active(listOf(nowWorse), emptySet(), emptySet()).map { it.id })
     }
 
+    /** A changed type line — a new WebView version, a phone that actually took an OS update — is a
+     *  different situation and resurfaces too. */
+    @Test
+    fun `a changed type line is a different problem`() {
+        val before = finding("os-patch", type = "Operating system · Patch level 2025-01-01")
+        val after = finding("os-patch", type = "Operating system · Patch level 2026-01-01")
+        assertNotEquals(FindingIdentity.fingerprintOf(before), FindingIdentity.fingerprintOf(after))
+    }
+
     @Test
     fun `a superseded record is reported so it can be cleared from disk`() {
-        val records = resolved(finding("os-patch", risk = 40))
-        val superseded = FindingIdentity.supersededRecords(listOf(finding("os-patch", risk = 70)), records)
+        val records = resolved(finding("os-patch", sev = Severity.MEDIUM))
+        val superseded = FindingIdentity.supersededRecords(listOf(finding("os-patch", sev = Severity.CRITICAL)), records)
         assertEquals(setOf("os-patch"), superseded)
+    }
+
+    @Test
+    fun `a record is not superseded by a risk score that merely drifted`() {
+        val records = resolved(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 58))
+        val superseded = FindingIdentity.supersededRecords(
+            listOf(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 67)),
+            records,
+        )
+        assertTrue(superseded.isEmpty())
     }
 
     @Test
@@ -233,11 +284,21 @@ class FindingIdentityTest {
     @Test
     fun `a threat that came back worse is flagged as returning`() {
         val returned = FindingIdentity.reEmerged(
-            findings = listOf(finding("os-patch", risk = 70)),
+            findings = listOf(finding("os-patch", sev = Severity.CRITICAL)),
             previouslyResolvedIds = setOf("os-patch"),
-            resolved = resolved(finding("os-patch", risk = 40)),
+            resolved = resolved(finding("os-patch", sev = Severity.MEDIUM)),
         )
         assertEquals(setOf("os-patch"), returned)
+    }
+
+    @Test
+    fun `a drifting risk score does not make a resolved threat look like a return`() {
+        val returned = FindingIdentity.reEmerged(
+            findings = listOf(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 67)),
+            previouslyResolvedIds = setOf("sideload:com.x"),
+            resolved = resolved(finding("sideload:com.x", sev = Severity.MEDIUM, risk = 58)),
+        )
+        assertTrue(returned.isEmpty())
     }
 
     @Test
@@ -287,12 +348,39 @@ class FindingIdentityTest {
 
     @Test
     fun `re-resolving a returned threat stores it against its current shape`() {
-        val old = finding("os-patch", risk = 40)
-        val worse = finding("os-patch", risk = 70)
+        val old = finding("os-patch", sev = Severity.MEDIUM)
+        val worse = finding("os-patch", sev = Severity.CRITICAL)
         // Record captured when it came back and was dealt with again.
         val reRecords = resolved(worse)
         assertEquals(setOf("os-patch"), FindingIdentity.stillResolved(listOf(worse), reRecords))
         // The stale record no longer applies to the worse finding.
         assertFalse(FindingIdentity.fingerprintOf(old) == FindingIdentity.fingerprintOf(worse))
+    }
+
+    /**
+     * The scenario the user described: scan, resolve everything, scan again on an unchanged phone.
+     * Nothing may come back as active.
+     */
+    @Test
+    fun `rescanning an unchanged phone re-reports nothing that was resolved`() {
+        val firstScan = listOf(
+            finding("sideload:com.x", sev = Severity.CRITICAL, type = "Software · Installed outside an official app store"),
+            finding("port-5555", sev = Severity.HIGH, type = "Open port · Listening"),
+            finding("os-patch", sev = Severity.MEDIUM, type = "Operating system · Patch level 2026-03-05"),
+        )
+        val records = firstScan.associate { it.id to FindingIdentity.fingerprintOf(it) }
+
+        // Second scan of the same phone: risk scores drift, names re-word, nothing real changed.
+        val secondScan = listOf(
+            finding("sideload:com.x", sev = Severity.CRITICAL, risk = 91, type = "Software · Installed outside an official app store", name = "Sideloaded app \"X\""),
+            finding("port-5555", sev = Severity.HIGH, risk = 88, type = "Open port · Listening"),
+            finding("os-patch", sev = Severity.MEDIUM, risk = 47, type = "Operating system · Patch level 2026-03-05", name = "Security patch 6 months old"),
+        )
+        assertEquals(3, FindingIdentity.stillResolved(secondScan, records).size)
+        assertTrue(
+            "nothing resolved may come back as active",
+            FindingIdentity.active(secondScan, FindingIdentity.stillResolved(secondScan, records), emptySet()).isEmpty(),
+        )
+        assertTrue(FindingIdentity.reEmerged(secondScan, records.keys, records).isEmpty())
     }
 }

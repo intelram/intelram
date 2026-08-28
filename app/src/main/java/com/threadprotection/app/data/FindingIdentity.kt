@@ -22,12 +22,31 @@ package com.threadprotection.app.data
 object FindingIdentity {
 
     /**
-     * A short digest of what makes this finding the problem it currently is. Deliberately excludes
-     * prose ([Finding.desc], [Finding.advice]) — a reworded explanation is not a new problem — and
-     * includes severity, risk score and the type line, which is where a real change shows up.
+     * A short digest of what makes this finding the problem it currently is.
+     *
+     * Covers the **severity band** and the **type line**, and nothing else.
+     *
+     * What is deliberately excluded, and why:
+     *
+     *  - **Prose** ([Finding.name], [Finding.desc], [Finding.advice]). A reworded explanation is not
+     *    a new problem. `os-patch` renames itself every month ("5 months old" → "6 months old")
+     *    while describing the same unchanged phone.
+     *
+     *  - **[Finding.risk]**, the 0–100 heuristic. This one is the important exclusion. Risk scores
+     *    drift with things that are not security changes at all: a sideloaded app's risk is
+     *    `58 + riskyCount * 9`, and `riskyCount` counts permissions that are stale — "unused for 90+
+     *    days". Simply *opening* that app resets its usage clock, drops riskyCount, and moves the
+     *    risk score. Fingerprinting on risk meant a threat the user had resolved came back as
+     *    active because they had used an app, or because a month had passed. That is precisely the
+     *    "I resolved it and it keeps coming back" failure, and it made the resolved list useless on
+     *    real phones while looking perfectly correct in a test with fixed numbers.
+     *
+     * The severity band still moves on a genuine escalation — a sideloaded app crossing from MEDIUM
+     * into HIGH, a patch ageing past the HIGH threshold — and that *should* resurface the finding.
+     * The band is the honest unit of "has this got worse", where the raw score is just noise.
      */
     fun fingerprintOf(finding: Finding): String =
-        listOf(finding.sev.name, finding.risk.toString(), finding.type).joinToString("|")
+        listOf(finding.sev.name, finding.type).joinToString("|")
 
     /**
      * The subset of [findings] that a stored [resolved] record (id → fingerprint) still covers.
