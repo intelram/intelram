@@ -103,7 +103,15 @@ fun ResultsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     SeverityGroupHeading(group.label, group.findings.size, palette.severityColor(group.severity))
                     group.findings.forEach { finding ->
-                        ThreatRow(finding = finding, fixed = false, onClick = { onOpen(finding.id) })
+                        ThreatRow(
+                            finding = finding,
+                            fixed = false,
+                            // A threat the user resolved before and that has come back is a new
+                            // active threat, not a re-listing — say so on the row rather than
+                            // letting it look like something they never dealt with.
+                            returned = finding.id in state.reEmergedIds,
+                            onClick = { onOpen(finding.id) },
+                        )
                     }
                 }
             }
@@ -239,6 +247,12 @@ private fun StickyResultsHeader(state: AppUiState, progress: FixProgress, onBack
 
 private fun headerCaption(state: AppUiState, progress: FixProgress): String {
     val scanned = "%,d".format(state.scannedCount)
+    // A threat that came back after being resolved is the single most important thing this header
+    // can say, so it outranks the ordinary progress line.
+    val returned = state.reEmergedIds.count { id -> Derived.activeThreats(state).any { it.id == id } }
+    if (returned > 0) {
+        return "$returned previously resolved threat${if (returned > 1) "s have" else " has"} come back · $scanned items checked"
+    }
     return when {
         !progress.hasThreats -> "$scanned items checked across software, services, ports, licences and OS"
         progress.remaining == 0 && progress.ignored > 0 ->
@@ -393,7 +407,13 @@ private fun InventoryTile(label: String, value: String, modifier: Modifier = Mod
 }
 
 @Composable
-private fun ThreatRow(finding: Finding, fixed: Boolean, muted: Boolean = false, onClick: () -> Unit) {
+private fun ThreatRow(
+    finding: Finding,
+    fixed: Boolean,
+    muted: Boolean = false,
+    returned: Boolean = false,
+    onClick: () -> Unit,
+) {
     val palette = LocalTpPalette.current
     val sev = if (fixed) Severity.FIXED else finding.sev
     val sevColor = palette.severityColor(sev)
@@ -417,6 +437,13 @@ private fun ThreatRow(finding: Finding, fixed: Boolean, muted: Boolean = false, 
                     color = palette.fg,
                 )
                 Text(finding.type, style = TpType.caption, color = palette.muted)
+                if (returned) {
+                    Text(
+                        "⟳ Came back — you resolved this before",
+                        style = TpType.caption.copy(fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold),
+                        color = palette.warn,
+                    )
+                }
             }
             SeverityBadgeFor(sev)
         }

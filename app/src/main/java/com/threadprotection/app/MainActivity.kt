@@ -42,6 +42,9 @@ import com.threadprotection.app.ui.screens.ChatScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
 import com.threadprotection.app.ui.screens.DataBreachScreen
+import com.threadprotection.app.hardware.DeviceTransport
+import com.threadprotection.app.hardware.DeviceTrust
+import com.threadprotection.app.ui.screens.ExternalDeviceAlertOverlay
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
 import com.threadprotection.app.ui.screens.HardwareDetailScreen
 import com.threadprotection.app.ui.screens.IncomingChatRequestOverlay
@@ -506,6 +509,33 @@ class MainActivity : ComponentActivity() {
                             displayName = request.displayName,
                             onAccept = viewModel::acceptIncomingChatRequest,
                             onDeny = viewModel::denyIncomingChatRequest,
+                        )
+                    }
+
+                    // Real device connections outrank the demo hardware alert, so this comes first.
+                    state.deviceAlert?.let { device ->
+                        ExternalDeviceAlertOverlay(
+                            device = device,
+                            decision = state.deviceTrust[device.id] ?: DeviceTrust.UNKNOWN,
+                            onBlock = { viewModel.blockExternalDevice(device.id) },
+                            onAllowOnce = { viewModel.allowExternalDeviceOnce(device.id) },
+                            onDone = viewModel::dismissDeviceAlert,
+                            onOpenSettings = { transport ->
+                                // Only Bluetooth has a settings screen worth opening — a USB device
+                                // is unplugged by hand, and pretending otherwise would be a dead end.
+                                if (transport == DeviceTransport.BLUETOOTH) {
+                                    runCatching {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    }.recoverCatching {
+                                        context.startActivity(
+                                            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    }
+                                }
+                            },
                         )
                     }
 

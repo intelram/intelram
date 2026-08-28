@@ -8,6 +8,9 @@ import com.threadprotection.app.chat.ChatSession
 import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.chat.IncomingChatRequest
 import com.threadprotection.app.data.Account
+import com.threadprotection.app.data.Category
+import com.threadprotection.app.hardware.DeviceTrust
+import com.threadprotection.app.hardware.ExternalDevice
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.Finding
 import com.threadprotection.app.data.HwDevice
@@ -83,9 +86,20 @@ data class AppUiState(
      *  this scan found. Seeded from disk at startup and after every scan, so a resolved threat
      *  stays resolved across scans and app restarts — see FindingIdentity. */
     val fixed: Set<String> = emptySet(),
-    /** The raw id → fingerprint records on disk, kept so a scan can tell "resolved and unchanged"
-     *  from "resolved earlier but the problem is back". */
+    /** The live (non-retired) id → fingerprint records on disk, kept so a scan can tell "resolved
+     *  and unchanged" from "resolved earlier but the problem is back". A record retired by
+     *  [everResolvedIds] is absent here, so it no longer suppresses anything. */
     val resolvedRecords: Map<String, String> = emptyMap(),
+    /** Category of each stored record, so a scan can tell whether it was in a position to conclude
+     *  the problem is gone — see FindingIdentity.clearedRecords. */
+    val resolvedCategories: Map<String, Category> = emptyMap(),
+    /** Every finding id that has ever been resolved, including retired records. This is the memory
+     *  behind "this threat is back": a re-emergence is reported as a new active threat, but the app
+     *  can still say the user has dealt with it before. */
+    val everResolvedIds: Set<String> = emptySet(),
+    /** Findings active right now that the user had resolved previously — flagged in the UI so a
+     *  return is visibly distinct from a first-time discovery. */
+    val reEmergedIds: Set<String> = emptySet(),
     /** True while a fix is being applied (the user has been sent to the relevant Settings screen
      *  and hasn't come back yet) — drives the "fixing in progress" state of the Start Fixing
      *  button rather than a timer or a guess. */
@@ -110,6 +124,16 @@ data class AppUiState(
     val learned: Int = 148_392,
     val votes: Map<String, Vote> = emptyMap(),
     val hwAlert: HwSim? = null,
+    /** Every external device seen connecting this session, newest first — real USB/Bluetooth
+     *  events from the OS, not a canned list. See hardware/ExternalDeviceMonitor. */
+    val externalDevices: List<ExternalDevice> = emptyList(),
+    /** The device currently awaiting the user's Block / Allow-once decision, or null. */
+    val deviceAlert: ExternalDevice? = null,
+    /** Per-device decisions for this session, keyed by the device's stable id. */
+    val deviceTrust: Map<String, DeviceTrust> = emptyMap(),
+    /** True when Bluetooth connections can be seen but not identified because BLUETOOTH_CONNECT
+     *  isn't granted — surfaced so the UI can say so rather than imply all-clear. */
+    val bluetoothWatchBlind: Boolean = false,
     val hwIdx: Int = 0,
     val hwHandled: HwHandled? = null,
     val hwOpen: Boolean = false,

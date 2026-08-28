@@ -22,6 +22,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.threadprotection.app.hardware.DeviceRiskAssessor
+import com.threadprotection.app.hardware.DeviceRiskLevel
+import com.threadprotection.app.hardware.DeviceTrust
+import com.threadprotection.app.hardware.ExternalDevice
 import com.threadprotection.app.state.AppUiState
 import com.threadprotection.app.ui.components.BackCircleButton
 import com.threadprotection.app.ui.components.BottomNavBar
@@ -60,6 +64,32 @@ fun HardwareDetailScreen(
                 style = TpType.body.copy(fontSize = 15.5.sp, lineHeight = 24.5.sp),
                 color = palette.muted,
             )
+
+            // Live connection log, separate from the scan snapshot above: these are devices that
+            // actually connected while the app was watching, with the decision the user made about
+            // each. Updated by broadcast, so it reflects reconnections as they happen.
+            if (state.externalDevices.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Seen connecting",
+                        style = TpType.cardTitle.copy(fontSize = 16.5.sp),
+                        color = palette.fg,
+                    )
+                    state.externalDevices.forEach { device ->
+                        ExternalDeviceRow(device = device, trust = state.deviceTrust[device.id] ?: DeviceTrust.UNKNOWN)
+                    }
+                }
+            }
+
+            if (state.bluetoothWatchBlind) {
+                Text(
+                    "Bluetooth connections can be detected but not identified: the \"Nearby devices\" permission " +
+                        "isn't granted, so Android won't share a connecting device's name or type with this app. " +
+                        "Grant it in Settings → Apps → Thread Protection → Permissions.",
+                    style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp),
+                    color = palette.warn,
+                )
+            }
 
             if (devices.isEmpty()) {
                 Text(
@@ -103,5 +133,60 @@ fun HardwareDetailScreen(
             OutlinedPillButton(text = "Open Bluetooth settings", onClick = onOpenBluetoothSettings, borderColor = palette.line3)
         }
         BottomNavBar(active = NavTab.HOME, onHome = onBack, onQr = onGoQr, onChat = onGoChat, onBrain = onGoBrain, onSettings = onGoSettings)
+    }
+}
+
+/**
+ * One device from the live connection log, with what the user decided about it.
+ *
+ * "Blocked" is worded as a record of the user's decision, not as an enforced state — Android does
+ * not let an app sever a USB or Bluetooth connection, and this row must not imply otherwise. See
+ * ExternalDeviceMonitor.
+ */
+@Composable
+private fun ExternalDeviceRow(device: ExternalDevice, trust: DeviceTrust) {
+    val palette = LocalTpPalette.current
+    val risk = DeviceRiskAssessor.assess(device)
+    val statusColor = when {
+        trust == DeviceTrust.BLOCKED -> palette.danger
+        trust == DeviceTrust.ALLOWED_ONCE -> palette.accent
+        risk.level == DeviceRiskLevel.HIGH -> palette.danger
+        risk.level == DeviceRiskLevel.MEDIUM -> palette.warn
+        else -> palette.muted
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(palette.card)
+            .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(16.dp))
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(statusColor))
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(device.displayName, style = TpType.cardTitleBold.copy(fontSize = 16.sp), color = palette.fg)
+            Text(
+                "${device.transportLabel} · ${device.kindLabel} · ${device.hardwareId}",
+                style = TpType.caption.copy(fontSize = 13.sp),
+                color = palette.muted,
+            )
+            Text(
+                when (trust) {
+                    DeviceTrust.BLOCKED ->
+                        if (device.connected) "You blocked this — still physically connected" else "You blocked this"
+                    DeviceTrust.ALLOWED_ONCE -> "Allowed for this session"
+                    DeviceTrust.UNKNOWN -> if (device.connected) "Connected · no decision yet" else "Disconnected"
+                },
+                style = TpType.caption.copy(fontSize = 12.5.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
+                color = statusColor,
+            )
+        }
+        Text(
+            if (device.connected) "LIVE" else "GONE",
+            style = TpType.caption.copy(fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+            color = if (device.connected) palette.accent else palette.muted2,
+        )
     }
 }

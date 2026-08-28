@@ -104,6 +104,17 @@ data class StoredResolvedFinding(
     val id: String,
     val fingerprint: String,
     val resolvedAtMs: Long,
+    /** The finding's category, so a later scan can tell whether it was even in a position to
+     *  conclude the problem is gone. Defaulted for records written before this field existed. */
+    val category: String = "",
+    /**
+     * True once a scan that could actually see this category confirmed the problem was gone.
+     *
+     * A retired record stops suppressing the finding, but is deliberately kept: it is the memory
+     * that lets the app say "this one is back" if the same problem returns, instead of presenting
+     * a re-emergence as a first-time discovery.
+     */
+    val cleared: Boolean = false,
 )
 
 /** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
@@ -264,13 +275,28 @@ class SettingsRepository(private val context: Context) {
 
     /** Records one finding as resolved. Re-resolving the same id replaces its record, so a finding
      *  that came back and was dealt with again is stored against its *current* fingerprint. */
-    suspend fun markFindingResolved(id: String, fingerprint: String) {
+    suspend fun markFindingResolved(id: String, fingerprint: String, category: String) {
         context.dataStore.edit { prefs ->
             val current = readResolved(prefs)
-            val updated = (listOf(StoredResolvedFinding(id, fingerprint, System.currentTimeMillis())) +
-                current.filter { it.id != id })
+            val record = StoredResolvedFinding(id, fingerprint, System.currentTimeMillis(), category, cleared = false)
+            val updated = (listOf(record) + current.filter { it.id != id })
                 .sortedByDescending { it.resolvedAtMs }
                 .take(MAX_RESOLVED_FINDINGS)
+            prefs[Keys.RESOLVED_FINDINGS] = Json.encodeToString(updated)
+        }
+    }
+
+    /**
+     * Retires records whose problem a scan has confirmed gone. They stop suppressing the finding but
+     * stay on disk, so if the same problem returns the app can report it as a re-emergence rather
+     * than a brand-new discovery the user has never seen.
+     */
+    suspend fun markFindingsCleared(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val updated = readResolved(prefs).map {
+                if (it.id in ids) it.copy(cleared = true) else it
+            }
             prefs[Keys.RESOLVED_FINDINGS] = Json.encodeToString(updated)
         }
     }

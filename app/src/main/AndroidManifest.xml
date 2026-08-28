@@ -22,6 +22,10 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- USB host mode: needed to enumerate and be told about attached USB devices. required=false
+         so the app still installs on phones whose port is charge-only — external-device watching
+         simply reports nothing there rather than the app being unavailable. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
         android:name=".ThreadProtectionApp"

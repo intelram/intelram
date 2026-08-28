@@ -17,7 +17,9 @@ import com.threadprotection.app.chat.MeshRelayManager
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
+import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.DemoData
+import com.threadprotection.app.hardware.ExternalDeviceMonitor
 import com.threadprotection.app.data.FindingIdentity
 import com.threadprotection.app.data.SettingsRepository
 import com.threadprotection.app.data.StoredChatHistoryEntry
@@ -93,6 +95,7 @@ class AppViewModel(
     private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
     private val permissionAudit by lazy { appContext?.let { PermissionAudit(it) } }
     private val hardwareWatcher by lazy { appContext?.let { HardwareWatcher(it) } }
+    private val externalDeviceMonitor by lazy { appContext?.let { ExternalDeviceMonitor.getInstance(it) } }
     private val bluetoothChatManager by lazy {
         val ctx = appContext; val repo = settingsRepository
         if (ctx != null && repo != null) BluetoothChatManager.getInstance(ctx, repo) else null
@@ -191,14 +194,43 @@ class AppViewModel(
                 }
             }
         }
+        externalDeviceMonitor?.let { monitor ->
+            // Watching starts as soon as the app has a context: a malicious cable plugged in while
+            // the user is on the dashboard is exactly the case that matters, so this isn't gated
+            // behind opening some particular screen.
+            monitor.start()
+            safeLaunch {
+                monitor.devices.collect { list -> _state.update { it.copy(externalDevices = list) } }
+            }
+            safeLaunch {
+                monitor.pendingAlert.collect { device -> _state.update { it.copy(deviceAlert = device) } }
+            }
+            safeLaunch {
+                monitor.trust.collect { map -> _state.update { it.copy(deviceTrust = map) } }
+            }
+            safeLaunch {
+                monitor.bluetoothBlind.collect { blind -> _state.update { it.copy(bluetoothWatchBlind = blind) } }
+            }
+        }
         settingsRepository?.let { repo ->
             safeLaunch {
                 // Resolved threats live on disk, so they survive a restart. Re-applying them
                 // against the *current* findings on every emission is what makes "don't show it
                 // again unless it comes back" true rather than just "hide it forever".
                 repo.resolvedFindingsFlow.distinctUntilChanged().collect { records ->
-                    val map = records.associate { it.id to it.fingerprint }
-                    _state.update { st -> st.copy(resolvedRecords = map).withResolvedApplied() }
+                    // A retired ("cleared") record stops suppressing its finding but stays in
+                    // everResolvedIds, so a return of the same problem is reported as a re-emergence
+                    // rather than a first-time discovery.
+                    val live = records.filterNot { it.cleared }
+                    _state.update { st ->
+                        st.copy(
+                            resolvedRecords = live.associate { it.id to it.fingerprint },
+                            resolvedCategories = records.mapNotNull { rec ->
+                                runCatching { Category.valueOf(rec.category) }.getOrNull()?.let { rec.id to it }
+                            }.toMap(),
+                            everResolvedIds = records.map { it.id }.toSet(),
+                        ).withResolvedApplied()
+                    }
                 }
             }
         }
@@ -581,6 +613,8 @@ class AppViewModel(
 
     fun signOut() {
         releaseChatRadioIfLeaving(Screen.SIGNIN)
+        // "Allowed once" is a statement about this session. Signing out ends it.
+        externalDeviceMonitor?.clearSessionTrust()
         _state.update {
             it.copy(
                 screen = Screen.SIGNIN,
@@ -589,6 +623,8 @@ class AppViewModel(
                 fixed = emptySet(),
                 resolvedRecords = emptyMap(),
                 fixInProgressId = null,
+                deviceTrust = emptyMap(),
+                deviceAlert = null,
                 scanData = ScanData(),
             )
         }
@@ -739,10 +775,28 @@ class AppViewModel(
             // A record whose fingerprint no longer matches means the problem came back, or got
             // worse. Drop it from disk so it can be resolved again on its current terms rather
             // than silently suppressing a threat the user never actually saw in this shape.
-            val superseded = FindingIdentity.supersededRecords(result.findings, _state.value.resolvedRecords)
+            val snapshot = _state.value
+            val superseded = FindingIdentity.supersededRecords(result.findings, snapshot.resolvedRecords)
             if (superseded.isNotEmpty()) {
-                Log.i(TAG, "scan: ${superseded.size} resolved finding(s) reappeared or changed — clearing their records")
+                Log.i(TAG, "scan: ${superseded.size} resolved finding(s) came back in a different shape — clearing their records")
                 settingsRepository?.clearResolvedFindings(superseded)
+            }
+            // Retire records whose problem this scan could see was gone. This is what lets a later
+            // return of the same issue register as a genuine re-emergence instead of being
+            // suppressed forever by the user's original resolution.
+            val cleared = FindingIdentity.clearedRecords(
+                findings = result.findings,
+                resolved = snapshot.resolvedRecords,
+                resolvedCategories = snapshot.resolvedCategories,
+                coveredCategories = result.coveredCategories,
+            )
+            if (cleared.isNotEmpty()) {
+                Log.i(TAG, "scan: ${cleared.size} resolved finding(s) confirmed gone — retiring their records")
+                settingsRepository?.markFindingsCleared(cleared)
+            }
+            val returned = _state.value.reEmergedIds
+            if (returned.isNotEmpty()) {
+                Log.w(TAG, "scan: ${returned.size} previously resolved threat(s) have re-emerged: $returned")
             }
             delay(400)
             _state.update { it.copy(screen = Screen.RESULTS, hasScanned = true) }
@@ -759,8 +813,10 @@ class AppViewModel(
      * though the user resolved it once. Findings this scan didn't produce at all simply aren't in
      * the set; their records stay on disk in case a later scan can reach that source again.
      */
-    private fun AppUiState.withResolvedApplied(): AppUiState =
-        copy(fixed = FindingIdentity.stillResolved(scanData.findings, resolvedRecords))
+    private fun AppUiState.withResolvedApplied(): AppUiState = copy(
+        fixed = FindingIdentity.stillResolved(scanData.findings, resolvedRecords),
+        reEmergedIds = FindingIdentity.reEmerged(scanData.findings, everResolvedIds, resolvedRecords),
+    )
 
     fun cancelScan() {
         scanJob?.cancel()
@@ -802,7 +858,7 @@ class AppViewModel(
             )
         }
         settingsRepository?.let { repo ->
-            safeLaunch { repo.markFindingResolved(sel.id, fingerprint) }
+            safeLaunch { repo.markFindingResolved(sel.id, fingerprint, sel.cat.name) }
         }
     }
 
@@ -958,6 +1014,27 @@ class AppViewModel(
             val sim = DemoData.hwSim[it.hwIdx % DemoData.hwSim.size]
             it.copy(hwAlert = sim, hwIdx = it.hwIdx + 1, hwHandled = null)
         }
+    }
+
+    // ───────────────────────── external devices (real USB / Bluetooth connections) ─────────────────────────
+
+    /**
+     * The user chose to block a connected device.
+     *
+     * Records the decision and keeps the device flagged. It deliberately does *not* claim the
+     * connection was severed — no Android app can do that — and the alert says so; see
+     * ExternalDeviceMonitor.
+     */
+    fun blockExternalDevice(id: String) = externalDeviceMonitor?.block(id)
+
+    /** Session-only trust for a device the user recognises. Cleared on sign-out. */
+    fun allowExternalDeviceOnce(id: String) = externalDeviceMonitor?.allowOnce(id)
+
+    fun dismissDeviceAlert() = externalDeviceMonitor?.dismissAlert()
+
+    override fun onCleared() {
+        super.onCleared()
+        externalDeviceMonitor?.stop()
     }
 
     fun hwBlock() = _state.update { it.copy(hwHandled = HwHandled.BLOCK) }

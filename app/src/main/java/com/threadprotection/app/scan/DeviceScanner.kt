@@ -1,6 +1,7 @@
 package com.threadprotection.app.scan
 
 import android.content.Context
+import android.util.Log
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
 import com.threadprotection.app.data.Category
@@ -28,6 +29,15 @@ data class ScanResult(
     val osPatchLabel: String,
     val feedsConfigured: Int,
     val feedsTotal: Int,
+    /**
+     * Which categories this scan could actually examine.
+     *
+     * Needed to tell "this problem is gone" from "this scan couldn't look". Only a category listed
+     * here may be used to conclude that a previously resolved finding has genuinely been cleared —
+     * see FindingIdentity.clearedRecords. A scan that couldn't read /proc/net must not be allowed
+     * to decide that an open port has closed.
+     */
+    val coveredCategories: Set<Category>,
 )
 
 /**
@@ -120,7 +130,15 @@ class DeviceScanner(
 
         val configuredFeeds = ApiKeyId.entries.count { apiKeys.has(it) }
         onPhase(ScanPhaseUpdate(6, total, "Checking live threat-intelligence feeds…", "Querying NVD for browser/WebView CVEs"))
-        webViewCveFinding(apiKeys)?.let { findings += it }
+        // Distinguish "the lookup ran and found nothing" from "the lookup couldn't run" — only the
+        // former is evidence that a previously reported CVE finding is genuinely gone.
+        var cveLookupSucceeded = false
+        runCatching { webViewCveFinding(apiKeys) }
+            .onSuccess { cve ->
+                cveLookupSucceeded = true
+                cve?.let { findings += it }
+            }
+            .onFailure { Log.w(TAG, "scan: WebView CVE lookup failed — not treating its absence as 'cleared'", it) }
         onPhase(ScanPhaseUpdate(6, total, "Checking live threat-intelligence feeds…", "$configuredFeeds/${ApiKeyId.entries.size} sources configured"))
         delay(350)
 
@@ -134,6 +152,20 @@ class DeviceScanner(
             osPatchLabel = patchInfo.raw.ifBlank { "Unknown" },
             feedsConfigured = configuredFeeds,
             feedsTotal = ApiKeyId.entries.size,
+            coveredCategories = buildSet {
+                // Package inspection always works, so a sideloaded-app finding that has gone really
+                // has gone. The permission and hardware passes ride on the same enumeration.
+                add(Category.SOFTWARE)
+                add(Category.ACTIVITY)
+                add(Category.HARDWARE)
+                // Build.VERSION.SECURITY_PATCH is always readable.
+                add(Category.OS)
+                // Only claim port coverage when /proc/net was actually readable — on newer Android
+                // it isn't, and an unreadable table is not evidence that nothing is listening.
+                if (PortScanner.readable()) add(Category.PORTS)
+                // A CVE lookup that failed (offline, rate-limited) is not evidence of no CVE.
+                if (cveLookupSucceeded) add(Category.EMAIL)
+            },
         )
     }
 
@@ -179,6 +211,8 @@ class DeviceScanner(
     }
 
     companion object {
+        private const val TAG = "TPScan"
+
         /** Low system UIDs are shared kernel/framework identities, not tied to any installed package. */
         private val WELL_KNOWN_UIDS = mapOf(
             0 to "root (kernel)",

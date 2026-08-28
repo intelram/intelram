@@ -132,6 +132,134 @@ class FindingIdentityTest {
         assertTrue(FindingIdentity.supersededRecords(listOf(finding("other")), records).isEmpty())
     }
 
+    // ── confirmed-gone vs couldn't-look ─────────────────────────────────────────────────────
+
+    @Test
+    fun `a record is retired when a scan that could see the category found nothing`() {
+        val records = resolved(finding("port-5555"))
+        val cleared = FindingIdentity.clearedRecords(
+            findings = emptyList(),
+            resolved = records,
+            resolvedCategories = mapOf("port-5555" to Category.PORTS),
+            coveredCategories = setOf(Category.PORTS, Category.SOFTWARE),
+        )
+        assertEquals(setOf("port-5555"), cleared)
+    }
+
+    /** The safeguard: a scan that couldn't probe ports doesn't get to declare the port closed. */
+    @Test
+    fun `a record is not retired when the scan could not examine that category`() {
+        val cleared = FindingIdentity.clearedRecords(
+            findings = emptyList(),
+            resolved = resolved(finding("port-5555")),
+            resolvedCategories = mapOf("port-5555" to Category.PORTS),
+            coveredCategories = setOf(Category.SOFTWARE),
+        )
+        assertTrue(cleared.isEmpty())
+    }
+
+    @Test
+    fun `a record for a finding still present is never retired`() {
+        val f = finding("port-5555")
+        val cleared = FindingIdentity.clearedRecords(
+            findings = listOf(f),
+            resolved = resolved(f),
+            resolvedCategories = mapOf("port-5555" to Category.PORTS),
+            coveredCategories = setOf(Category.PORTS),
+        )
+        assertTrue(cleared.isEmpty())
+    }
+
+    @Test
+    fun `a record with no recorded category is left alone`() {
+        // Records written before the category was stored must not be retired on a guess.
+        val cleared = FindingIdentity.clearedRecords(
+            findings = emptyList(),
+            resolved = resolved(finding("legacy")),
+            resolvedCategories = emptyMap(),
+            coveredCategories = Category.entries.toSet(),
+        )
+        assertTrue(cleared.isEmpty())
+    }
+
+    // ── re-emergence is reported as a new threat ────────────────────────────────────────────
+
+    /**
+     * The scenario the whole retirement mechanism exists for: resolve a threat, a scan confirms it
+     * gone, then months later the identical problem returns. Without retiring the record it would
+     * still match by fingerprint and be silently suppressed — hiding a real, current threat.
+     */
+    @Test
+    fun `an identical problem returning after being confirmed gone is active again`() {
+        val f = finding("port-5555")
+        // Retired: the record no longer suppresses anything, so `resolved` no longer contains it.
+        val afterRetirement = emptyMap<String, String>()
+        assertTrue(FindingIdentity.stillResolved(listOf(f), afterRetirement).isEmpty())
+        assertEquals(listOf("port-5555"), FindingIdentity.active(listOf(f), emptySet(), emptySet()).map { it.id })
+    }
+
+    @Test
+    fun `a returning threat is flagged as one the user dealt with before`() {
+        val f = finding("port-5555")
+        val returned = FindingIdentity.reEmerged(
+            findings = listOf(f),
+            previouslyResolvedIds = setOf("port-5555"),
+            resolved = emptyMap(),
+        )
+        assertEquals(setOf("port-5555"), returned)
+    }
+
+    @Test
+    fun `a threat the user never resolved is not flagged as returning`() {
+        val returned = FindingIdentity.reEmerged(
+            findings = listOf(finding("brand-new")),
+            previouslyResolvedIds = setOf("something-else"),
+            resolved = emptyMap(),
+        )
+        assertTrue(returned.isEmpty())
+    }
+
+    @Test
+    fun `a still-suppressed threat is not flagged as returning`() {
+        val f = finding("port-5555")
+        val returned = FindingIdentity.reEmerged(
+            findings = listOf(f),
+            previouslyResolvedIds = setOf("port-5555"),
+            resolved = resolved(f),
+        )
+        assertTrue("it is still resolved, so it has not come back", returned.isEmpty())
+    }
+
+    @Test
+    fun `a threat that came back worse is flagged as returning`() {
+        val returned = FindingIdentity.reEmerged(
+            findings = listOf(finding("os-patch", risk = 70)),
+            previouslyResolvedIds = setOf("os-patch"),
+            resolved = resolved(finding("os-patch", risk = 40)),
+        )
+        assertEquals(setOf("os-patch"), returned)
+    }
+
+    @Test
+    fun `the full lifecycle - resolve, confirmed gone, returns as new`() {
+        val f = finding("port-5555")
+        // 1. Resolved.
+        var records = resolved(f)
+        assertEquals(setOf("port-5555"), FindingIdentity.stillResolved(listOf(f), records))
+        // 2. A scan that could see ports finds nothing — the record is retired.
+        val retire = FindingIdentity.clearedRecords(
+            findings = emptyList(),
+            resolved = records,
+            resolvedCategories = mapOf("port-5555" to Category.PORTS),
+            coveredCategories = setOf(Category.PORTS),
+        )
+        assertEquals(setOf("port-5555"), retire)
+        records = records - retire
+        // 3. It comes back. Active again, and known to be a return rather than a first sighting.
+        assertTrue(FindingIdentity.stillResolved(listOf(f), records).isEmpty())
+        assertEquals(setOf("port-5555"), FindingIdentity.reEmerged(listOf(f), setOf("port-5555"), records))
+    }
+
     @Test
     fun `a finding this scan did not produce simply is not in the resolved set`() {
         val records = resolved(finding("port-5555"))
