@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import dagger.hilt.android.AndroidEntryPoint
 import androidx.activity.compose.BackHandler
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -64,6 +65,7 @@ import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.ThreadProtectionTheme
 import com.threadprotection.app.ui.theme.TpThemeMode
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private val viewModel: AppViewModel by viewModels {
@@ -211,6 +213,13 @@ class MainActivity : ComponentActivity() {
                         .background(palette.bg)
                         .windowInsetsPadding(WindowInsets.safeDrawing),
                 ) {
+                    // Shared across the two Analyst Mode screens so opening a CVE's detail from the
+                    // search list and navigating there are backed by the same CveViewModel
+                    // instance — the search results stay intact underneath, and the detail
+                    // screen sees the id that was just tapped. See CveViewModel's split
+                    // search/detail state for why one shared instance needs two state slices.
+                    val cveDetailViewModel: com.threadprotection.app.analyst.presentation.cve.CveViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+
                     when (state.screen) {
                         Screen.SPLASH -> {
                             BackHandler(enabled = true) { /* no-op: can't back out of the splash */ }
@@ -497,6 +506,32 @@ class MainActivity : ComponentActivity() {
                                 onAddQuickSettingsTile = { requestAddQuickSettingsTile(context) },
                                 onSetScheduledScanTime = viewModel::setScheduledScanTime,
                                 onSetScheduledScanFrequency = viewModel::setScheduledScanFrequency,
+                                onGoAnalystTools = viewModel::goAnalystCveSearch,
+                            )
+                        }
+
+                        // Analyst Mode (CVE/EPSS/KEV). Screens are backed by their own Hilt
+                        // CveViewModel, not this Activity's AppViewModel — see
+                        // analyst/presentation/cve/CveViewModel.kt. Only screen navigation
+                        // (the shared Screen enum / back-stack) runs through AppViewModel, same
+                        // as every other screen.
+                        Screen.ANALYST_CVE_SEARCH -> {
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goSettings() }
+                            com.threadprotection.app.analyst.presentation.cve.ui.CveSearchScreen(
+                                onBack = { if (!viewModel.navigateBack()) viewModel.goSettings() },
+                                onOpenDetail = { cveId ->
+                                    cveDetailViewModel.openDetail(cveId)
+                                    viewModel.goAnalystCveDetail()
+                                },
+                                viewModel = cveDetailViewModel,
+                            )
+                        }
+
+                        Screen.ANALYST_CVE_DETAIL -> {
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goAnalystCveSearch() }
+                            com.threadprotection.app.analyst.presentation.cve.ui.CveDetailScreen(
+                                onBack = { if (!viewModel.navigateBack()) viewModel.goAnalystCveSearch() },
+                                viewModel = cveDetailViewModel,
                             )
                         }
                     }
@@ -581,6 +616,7 @@ class MainActivity : ComponentActivity() {
             TARGET_DASHBOARD -> viewModel.goDashboard()
             TARGET_SETTINGS -> viewModel.goSettings()
             TARGET_CHAT -> viewModel.goChat()
+            TARGET_ANALYST_CVE -> viewModel.goAnalystCveSearch()
         }
     }
 
@@ -591,5 +627,6 @@ class MainActivity : ComponentActivity() {
         const val TARGET_DASHBOARD = "dashboard"
         const val TARGET_SETTINGS = "settings"
         const val TARGET_CHAT = "chat"
+        const val TARGET_ANALYST_CVE = "analyst_cve"
     }
 }

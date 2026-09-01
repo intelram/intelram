@@ -3,6 +3,11 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    // Both scoped to the new Analyst Mode module (Hilt DI + Room cache) — the rest of the app
+    // keeps its existing manual-DI pattern (SettingsRepository, BluetoothChatManager.getInstance,
+    // etc.) untouched. See analyst/di/AnalystModule.kt.
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
 }
 
 android {
@@ -48,6 +53,11 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // bouncycastle and jspecify (a new transitive dependency via Dagger/Hilt) both
+            // package an identical, unused OSGi manifest at this path — a routine merge
+            // conflict, not a real collision (neither app code nor either library reads it
+            // at runtime).
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
     }
 }
@@ -92,7 +102,21 @@ dependencies {
 
     implementation(libs.bouncycastle)
 
+    // Analyst Mode only (CVE/EPSS/KEV intelligence — see analyst/). Hilt for DI, Room for the
+    // local CVE watchlist cache. Reuses the existing Retrofit/OkHttp stack (network/NetworkModule)
+    // rather than standing up a second HTTP client.
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
     // JVM unit tests for the pure chat/navigation rules — see app/src/test. These run with
     // `./gradlew :app:testDebugUnitTest`, on a plain JVM, with no device or emulator involved.
     testImplementation(libs.junit)
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }

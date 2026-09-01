@@ -25,7 +25,13 @@ import com.threadprotection.app.ui.theme.TpThemeMode
 enum class Screen {
     SPLASH, SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD, SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS,
     OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION,
-    CHAT_HISTORY, CHAT_SESSION, APP_PERMISSION_DETAIL;
+    CHAT_HISTORY, CHAT_SESSION, APP_PERMISSION_DETAIL,
+    /** Analyst Mode (CVE/EPSS/KEV vulnerability intelligence) — reached from Settings → "Analyst
+     *  Tools". Routed the same way as every other screen so the existing back-stack keeps working
+     *  for free, but the screens themselves are backed by their own Hilt `CveViewModel`, not this
+     *  `AppViewModel` — see analyst/presentation/cve/CveViewModel.kt and
+     *  GRAPH_ENGINEERING_MAP.md §10. */
+    ANALYST_CVE_SEARCH, ANALYST_CVE_DETAIL;
 
     /** Screens that make up the Chat feature — while on any of them the BLE advertiser and the
      *  RFCOMM listener should be running; leaving all of them must tear them down. */

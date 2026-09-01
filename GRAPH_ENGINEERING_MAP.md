@@ -4,13 +4,23 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** commit `1a65413` (2026-08-28). 88 Kotlin files, ~17,000 lines, 124 JVM
-unit tests (all passing, all offline — no device/emulator/`adb` exists in this environment; nothing
-in this app has ever been run on real hardware).
+**Last verified against:** commit `<pending>` (2026-09-01), adding Analyst Mode. ~100 Kotlin files,
+136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in this environment;
+nothing in this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
-compileSdk 35`. No backend server — every feature is on-device or talks directly to a third-party
-API from the client. `applicationId com.threadprotection.app`.
+compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
+talks directly to a third-party API from the client. `applicationId com.threadprotection.app`.
+
+**Two architectures coexist on purpose.** The 22 original screens (§3) use one hand-wired
+`AppViewModel`/`AppUiState` with manual DI (`by lazy`, `getInstance()` singletons) and DataStore
+persistence — untouched, and the intended pattern for anything that's a personal
+device-security feature. **Analyst Mode** (`analyst/` package, §2) is a separate SOC-analyst
+vulnerability-intelligence add-on with its own Hilt DI graph and Room database, reached only via
+Settings → "Analyst Tools", added because a request to build a full IOC/ATT&CK/dark-web/case-
+management platform was scoped down to "add it as a separate mode, keep everything else
+untouched" rather than replacing the app. Do not blur these two: a change to a §3 screen never
+needs Hilt; a change inside `analyst/` never touches `AppUiState`.
 
 ---
 
@@ -63,6 +73,7 @@ disagree about e.g. what counts as an "active threat".
 | `service/` | Background components | `ProtectionForegroundService.kt`, `ChatRequestActionReceiver.kt`, `BootReceiver.kt`, `NotificationHelper.kt`, `ScheduledScanWorker.kt` / `TwoFactorReminderWorker.kt` (WorkManager) |
 | `tile/` | `AppPermissionsTileService.kt` — Quick Settings tile |
 | `auth/` | `GoogleAuthClient.kt` — Credential Manager sign-in (demo mode if no web client ID) |
+| `analyst/` | **Analyst Mode** — SOC-analyst CVE/EPSS/KEV lookup, own Hilt graph + Room DB. `di/AnalystModule.kt` (DI), `data/remote/EpssApi.kt` (new client), `data/local/` (Room: `AnalystDatabase`, `CveDao`, `WatchedCveEntity`), `data/repository/CveRepository.kt`, `data/CveWatchlistSyncWorker.kt` (daily KEV re-check, plain `CoroutineWorker` like the rest of `service/`), `domain/PriorityScoring.kt` (pure composite-risk formula, unit-tested), `domain/model/CveModels.kt`, `domain/usecase/CveUseCases.kt`, `presentation/cve/CveViewModel.kt` (`@HiltViewModel`) + `presentation/cve/ui/` (2 Compose screens). Reuses the existing `network/NvdApi.kt` (extended additively — see §7.10) and `network/NetworkModule`'s shared OkHttp client; does **not** duplicate them. |
 
 ---
 
@@ -109,6 +120,23 @@ Navigation is **not** Jetpack Navigation — it's a `when(state.screen)` in `Mai
 **Global overlays** (rendered above the current screen in `MainActivity`, not part of the `when`):
 `IncomingChatRequestOverlay.kt` (state.incomingChatRequest), `ExternalDeviceAlertOverlay.kt`
 (state.deviceAlert), `HardwareAlertOverlay.kt` (state.hwAlert — demo-only canned data).
+
+**Analyst Mode screens** (added on top of the 22 above, reached only from Settings → "Analyst
+Tools" — see §2). Routed through the same `Screen` enum/`when` in `MainActivity` so the existing
+back-stack (`BackStackRules`) works for them for free, but each Composable takes its own Hilt
+`CveViewModel` instead of the outer `AppViewModel`:
+
+| Screen | Composable file | Backed by |
+|---|---|---|
+| ANALYST_CVE_SEARCH | `analyst/presentation/cve/ui/CveSearchScreen.kt` | `CveViewModel.searchState` |
+| ANALYST_CVE_DETAIL | `analyst/presentation/cve/ui/CveDetailScreen.kt` | `CveViewModel.detailState` |
+
+Both screens share one `CveViewModel` instance, obtained once in `MainActivity` (`val
+cveDetailViewModel = hiltViewModel()`, declared right above the screen `when`) and passed to both
+— **not** two independent `hiltViewModel()` calls. Search results and the open CVE's detail are
+deliberately two separate `StateFlow`s inside that one ViewModel (`searchState`/`detailState`, not
+one shared `uiState`) specifically so opening a CVE's detail can't blank out the search results
+still sitting behind it when the analyst navigates back — see §7.11.
 
 ---
 
@@ -228,6 +256,31 @@ Persistence: SettingsRepository.chatSessionsFlow / chatHistoryFlow (DataStore, J
 
 ---
 
+### 5f. CVE / EPSS / KEV lookup (Analyst Mode)
+```
+CveViewModel.search(keyword) / .openDetail(cveId)
+  → CveRepository.search()/getDetail()           [analyst/data/repository/CveRepository.kt]
+      ├─ NvdApi.searchCves()/getCveById()          — full record: description, CVSS vector+score,
+      │                                              CWE (weaknesses[].description[].value),
+      │                                              references, affected-product CPE criteria,
+      │                                              AND cisaExploitAdd/cisaActionDue/
+      │                                              cisaRequiredAction/cisaVulnerabilityName
+      │                                              (KEV status — NVD ingests this from CISA
+      │                                              directly, so there is no separate CISA feed
+      │                                              client; see §7.10)
+      ├─ EpssApi.getScore()                        — exploitation probability, best-effort
+      │                                              (failure/absence → epssScore = null, does
+      │                                              NOT fail the whole lookup)
+      └─ CveDao (Room)                             — is this CVE already watched?
+  → PriorityScoring.calculate(cvssScore, epssScore, isKev)   [pure, domain/PriorityScoring.kt]
+  → CveDetail { …, priority: CvePriority }
+```
+Watching a CVE (`CveRepository.setWatched(id, true)`) writes to Room and calls
+`CveWatchlistSyncWorker.ensureScheduled()` (idempotent — `KEEP` policy). That worker runs daily,
+re-fetches NVD+EPSS for every watched CVE, and fires a real notification (`NotificationHelper.
+postAlert`, target `MainActivity.TARGET_ANALYST_CVE`) only on the KEV-added transition (not on
+every day it's still in KEV) — see `WatchedCveEntity.kevNotifiedAtMs`.
+
 ## 6. State management ↔ persistence map
 
 `SettingsRepository` (data/SettingsRepository.kt, DataStore Preferences, JSON-encoded blobs for
@@ -250,6 +303,18 @@ structured data) is the only persistence layer — no SQL database anywhere in t
 `prefs: Flow<Preferences>` (line 191) wraps `context.dataStore.data` in a `.catch {}` that recovers
 from `IOException` to `emptyPreferences()` — a deliberate crash-guard (a corrupt prefs file used to
 kill the process on every launch).
+
+**Analyst Mode has its own, separate persistence layer**: a Room database (`analyst.db`, table
+`cve_watchlist`, entity `WatchedCveEntity`) rather than another DataStore blob — a relational store
+fits indexed per-CVE lookups better, and it's what the rest of the master spec's schema (future
+`attack_techniques`/`threat_actors`/`cases` tables) will extend. It does **not** replace or migrate
+anything in the table above. `AnalystDatabase.getInstance(context)` is a manual singleton (same
+pattern as `BluetoothChatManager.getInstance`), shared between the Hilt-provided path and
+`CveWatchlistSyncWorker` (a plain, non-Hilt `CoroutineWorker`, matching `ScheduledScanWorker`).
+Analyst Mode's NVD API key is read from the *same* `apiKeysFlow`/`ApiKeyId.NVD` as the rest of the
+app (a second `SettingsRepository` instance provided via Hilt, backed by the same on-disk
+`preferencesDataStore` delegate — see `analyst/di/AnalystModule.kt`), so it's entered once in
+Settings and used by both the consumer scan pipeline and Analyst Mode.
 
 ---
 
@@ -288,6 +353,30 @@ kill the process on every launch).
    default; building an installable release APK requires temporarily adding
    `signingConfig = signingConfigs.getByName("debug")`, building, then reverting the file before
    commit (never commit that line).
+10. **`network/NvdApi.kt` is shared** between the original app's WebView-CVE scan finding and
+    Analyst Mode's full CVE detail — it was extended additively (new DTO fields with defaults, new
+    `getCveById` function) rather than duplicated. Verified against a **live** NVD API 2.0 response
+    (not assumed from docs) before writing the DTOs: `weaknesses[].description[].value` for CWE,
+    `references[].url`, `configurations[].nodes[].cpeMatch[].criteria` for affected products,
+    `cvssMetricV31[].cvssData.vectorString`, and `cisaExploitAdd`/`cisaActionDue`/
+    `cisaRequiredAction`/`cisaVulnerabilityName` directly on the CVE object for KEV status (NVD
+    ingests this from CISA, so there's no separate CISA KEV feed client). If NVD ever changes this
+    schema, re-verify with a live `curl` before trusting a doc/blog example — the "affected"
+    CNA-format block seen alongside "configurations" in a real response was not documented
+    anywhere found during this work.
+11. **Hilt is pinned to 2.55, not the latest.** The Hilt Gradle plugin requires AGP 9.0+ starting
+    at Hilt 2.59 (this project is on AGP 8.7.2, deliberately not bumped — see below), and separately,
+    `hilt-android:2.58`'s own POM declares a `kotlin-stdlib` dependency (2.2.20) newer than this
+    project's Kotlin plugin (2.0.21) can read, which fails at `kspDebugKotlin` with a metadata
+    version mismatch. `2.55` is the version whose declared kotlin-stdlib (2.0.21) exactly matches.
+    Before bumping Hilt, Kotlin, or AGP here, check each candidate version's actual POM/plugin
+    requirements rather than assuming latest-is-safe.
+12. **CveViewModel keeps search and detail state in two separate `StateFlow`s**
+    (`searchState`/`detailState`), not one shared `uiState`. An earlier draft shared one state
+    object between the two screens; opening a CVE's detail overwrote it, so pressing back from
+    detail to search rendered a blank screen (the search screen's `when` had no case for `Detail`).
+    Any new Analyst Mode screen that can be reached both directly and from another screen in the
+    same feature needs this same separation, not a single combined state.
 
 ---
 
@@ -302,6 +391,7 @@ kill the process on every launch).
 | `qr/QrContentClassifierTest.kt` (29) | All 13 payload formats, the `urlToCheck` privacy invariant |
 | `state/BackStackRulesTest.kt` | Navigation stack push/pop/cap/no-loop-back |
 | `state/ResultsSyncTest.kt` | Severity grouping, `FixProgress`/score/button agreement |
+| `analyst/domain/PriorityScoringTest.kt` | Composite CVE priority formula — KEV/EPSS/CVSS precedence, boundary values, missing-score handling |
 
 All are pure-JVM (`org.junit.Test`), no Robolectric/instrumentation — they test extracted rule
 objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassifier`,
@@ -349,7 +439,9 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | Sign-in / account | Auth | `auth/GoogleAuthClient.kt`, `ui/screens/SignInScreen.kt`/`CreateAccountScreen.kt` | `data/SettingsRepository.kt` (account/credential keys) |
 | App permissions audit | Permission scanning | `scan/PermissionAudit.kt`, `scan/PermissionCatalog.kt`, `scan/PermissionState.kt` | `ui/screens/AppPermissionsScreen.kt`/`AppPermissionDetailScreen.kt` |
 | Theming / dark-light | Palette | `ui/theme/TpPalette.kt`, `ui/theme/Theme.kt` | Any screen using `LocalTpPalette.current` |
-| Build/dependency changes | Gradle | `app/build.gradle.kts`, `gradle/libs.versions.toml` | §9, §7.9 (release signing caveat) |
+| Build/dependency changes | Gradle | `app/build.gradle.kts`, `gradle/libs.versions.toml` | §9, §7.9 (release signing caveat), §7.11 (Hilt/AGP/Kotlin version coupling) |
+| CVE/EPSS/KEV lookup or the watchlist | Analyst Mode's own layer | `analyst/data/repository/CveRepository.kt`, `analyst/domain/PriorityScoring.kt` | §5f, §7.10 (NvdApi is shared — verify schema live before extending), `PriorityScoringTest.kt` |
+| A genuinely new SOC-analyst feature (ATT&CK, dark web, cases, AI) | New Analyst Mode module | Follow the `analyst/` package's di/data/domain/presentation layering (§2); do **not** touch `AppUiState`/`AppViewModel` or any of the 22 original screens | Needs a backend for anything requiring a hidden API key or OPSEC-proxied lookups (VirusTotal, Shodan, dark-web monitoring, AI) — flag this to the user before building rather than assuming one exists |
 
 **Procedure for any change:** find the row above (or the nearest package in §2) → open only the
 listed files → check the relevant §7 pitfall → make the change → run

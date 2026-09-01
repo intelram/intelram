@@ -1,0 +1,64 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "7b50c0a488594cd3b40707825b63d408",
+    "entities": [
+      {
+        "tableName": "cve_watchlist",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cveId` TEXT NOT NULL, `addedAtMs` INTEGER NOT NULL, `lastCheckedAtMs` INTEGER NOT NULL, `lastKnownCvssScore` REAL, `lastKnownEpssScore` REAL, `lastKnownIsKev` INTEGER NOT NULL, `kevNotifiedAtMs` INTEGER, PRIMARY KEY(`cveId`))",
+        "fields": [
+          {
+            "fieldPath": "cveId",
+            "columnName": "cveId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedAtMs",
+            "columnName": "addedAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCheckedAtMs",
+            "columnName": "lastCheckedAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastKnownCvssScore",
+            "columnName": "lastKnownCvssScore",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastKnownEpssScore",
+            "columnName": "lastKnownEpssScore",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "lastKnownIsKev",
+            "columnName": "lastKnownIsKev",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kevNotifiedAtMs",
+            "columnName": "kevNotifiedAtMs",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cveId"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7b50c0a488594cd3b40707825b63d408')"
+    ]
+  }
+}

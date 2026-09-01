@@ -519,6 +519,12 @@ class AppViewModel(
 
     fun goOsDetail() = setScreen(Screen.OS_DETAIL)
 
+    // Analyst Mode (CVE/EPSS/KEV) — the screens themselves run on their own Hilt CveViewModel
+    // (analyst/presentation/cve/CveViewModel.kt); these two just move the shared Screen enum
+    // the same way every other nav function here does, so back-stack handling comes for free.
+    fun goAnalystCveSearch() = setScreen(Screen.ANALYST_CVE_SEARCH)
+    fun goAnalystCveDetail() = setScreen(Screen.ANALYST_CVE_DETAIL)
+
     fun goQr() {
         qrJob?.cancel()
         releaseChatRadioIfLeaving(Screen.QR)

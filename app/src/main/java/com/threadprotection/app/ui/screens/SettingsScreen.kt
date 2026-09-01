@@ -113,6 +113,7 @@ fun SettingsScreen(
     onAddQuickSettingsTile: () -> Unit,
     onSetScheduledScanTime: (hour: Int, minute: Int) -> Unit,
     onSetScheduledScanFrequency: (frequency: ScanFrequency, dayOfWeek: Int) -> Unit,
+    onGoAnalystTools: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -275,6 +276,25 @@ fun SettingsScreen(
                     color = palette.muted,
                 )
                 OutlinedPillButton(text = "Add Quick Settings tile", onClick = onAddQuickSettingsTile, borderColor = palette.accentBorder40, textColor = palette.accent)
+            }
+
+            SectionHeading("Analyst Tools")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(palette.card)
+                    .border(BorderStroke(1.dp, palette.line), RoundedCornerShape(18.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("CVE / vulnerability intelligence", style = TpType.cardTitle.copy(fontSize = 16.5.sp), color = palette.fg)
+                Text(
+                    "Search any CVE against the live NVD database, see its EPSS exploitation score and CISA KEV status, and watch it for updates. A separate mode built for security analysts — the rest of the app is unaffected.",
+                    style = TpType.caption.copy(fontSize = 13.sp, lineHeight = 19.sp),
+                    color = palette.muted,
+                )
+                OutlinedPillButton(text = "Open Analyst Tools", onClick = onGoAnalystTools, borderColor = palette.accentBorder40, textColor = palette.accent)
             }
 
             SectionHeading("About")

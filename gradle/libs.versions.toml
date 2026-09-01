@@ -20,9 +20,27 @@ accompanistPermissions = "0.34.0"
 workManager = "2.10.0"
 junit = "4.13.2"
 bouncyCastle = "1.79"
+ksp = "2.0.21-1.0.28"
+# Pinned to 2.55, not the newest Hilt, for two independently-verified reasons (checked against
+# each version's own Maven POM rather than assumed):
+#  - The Hilt Gradle plugin requires AGP 9.0+ starting at Hilt 2.59 — this project is on AGP
+#    8.7.2, and bumping AGP to 9 to chase the latest Hilt would be exactly the kind of large,
+#    unrelated change the existing app was told to stay untouched by.
+#  - hilt-android:2.58's own POM directly depends on kotlin-stdlib 2.2.20, which is a newer
+#    metadata format than this project's Kotlin plugin (2.0.21) can read — hilt-android:2.55 is
+#    the version whose declared kotlin-stdlib dependency (2.0.21) exactly matches it.
+hilt = "2.55"
+hiltNavigationCompose = "1.2.0"
+room = "2.7.2"
 
 [libraries]
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+androidx-hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycle" }
@@ -60,3 +78,5 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
