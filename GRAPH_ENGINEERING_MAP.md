@@ -4,7 +4,7 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** commit `<pending>` (2026-09-01), adding Analyst Mode. ~100 Kotlin files,
+**Last verified against:** commit `fb94c94` (2026-09-01), adding Analyst Mode. ~100 Kotlin files,
 136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in this environment;
 nothing in this app has ever been run on real hardware).
 
