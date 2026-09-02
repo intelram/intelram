@@ -150,8 +150,10 @@ every writer):
 - **Scan pipeline:** `progress`, `scannedCount`, `scanData` (ScanData: findings/permApps/hwDevices/
   ports/osPatchLabel/feeds), `scanPhase`, `scanFeed`, `hasScanned`, `liveHwDevices`
 - **Threat resolution (persisted):** `fixed`, `resolvedRecords`, `resolvedCategories`,
-  `everResolvedIds`, `reEmergedIds`, `fixInProgressId`, `ignoredFindings` (session-only, NOT
-  persisted — cleared every rescan by design)
+  `everResolvedIds`, `reEmergedIds`, `fixInProgressId`, `ignoredFindings`, `ignoredRecords`,
+  `ignoredCategories`, `everIgnoredIds` — "Ignore for now" mirrors "Fixed" exactly (persisted via
+  `SettingsRepository.ignoredFindingsFlow`/`tp_ignored_findings`, fingerprint-matched by
+  `FindingIdentity`, reactivates only if the underlying finding actually changes). See §7.5.
 - **Settings:** `realtime`, `settings: ProtectionSettings`, `theme`, `apiKeys` (`ApiKeys`/`ApiKeyId`
   defined in `data/SettingsRepository.kt`, not `Models.kt`)
 - **QR:** `qrPhase`, `qrIndex`, `qrProgress`, `qrVerdict` (network reputation result, URL-only),
@@ -336,8 +338,23 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
    cut a live USB or Bluetooth ACL connection. `ExternalDeviceMonitor.block()` only records the
    decision and flags the device; the UI (`ExternalDeviceAlertOverlay.kt`) states this limitation
    explicitly. Do not "fix" this by claiming stronger enforcement than exists.
-5. **`ignoredFindings` is intentionally session-only** (cleared by every `startScan()`), unlike
-   `fixed` which is persisted. Don't conflate the two — ignoring is not resolving.
+5. **`ignoredFindings` is persisted, exactly like `fixed`** (reversed from the original design,
+   which cleared it every `startScan()` — users reported previously-ignored threats reappearing on
+   every rescan and wanted the same durability "Fixed" already had). "Ignore for now" and "Fixed"
+   remain different user intents with separate on-disk records (`tp_ignored_findings` vs.
+   `tp_resolved_findings`, `ignoredRecords` vs. `resolvedRecords`) and separate UI treatment — don't
+   conflate the two — but both now survive rescans and app restarts, and both reactivate only via
+   `FindingIdentity`'s fingerprint mismatch (the situation genuinely changed/worsened), never on a
+   timer or a plain rescan. `AppViewModel.ignoreSelectedFinding`/`unignoreFinding` mirror
+   `fixSelected`/`unresolveFinding` structurally.
+5a. **Cold-start scan race on persisted records.** `resolvedRecords`/`ignoredRecords` start empty in
+    `AppUiState`'s default constructor; real values only land once the DataStore flows collected in
+    `AppViewModel.init` emit for the first time (a suspending disk read). A scan launched
+    immediately after process start could otherwise race that first emission and briefly show every
+    previously fixed/ignored threat as active again. Fixed by `resolvedRecordsReady`/
+    `ignoredRecordsReady` (`CompletableDeferred`, completed on each flow's first emission);
+    `startScan()` awaits both before scanning when `settingsRepository != null`. Don't remove this
+    await when touching `startScan()`.
 6. **`HardwareAlertOverlay` / `state.hwAlert` is demo-only canned data** (`DemoData.hwSim`),
    separate from the real `ExternalDeviceMonitor` pipeline. Don't assume `hwAlert` reflects real
    hardware — check `externalDevices`/`deviceAlert` for that.
@@ -426,6 +443,8 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | A specific screen's layout/copy | That one screen | `ui/screens/<Screen>Screen.kt` | Its ViewModel entry points (§3 table) |
 | The security score / threat list | Scoring & grouping logic | `state/Derived.kt` | `ResultsScreen.kt`, `ResultsSyncTest.kt` |
 | "Resolved threat reappeared/didn't reappear" | Fingerprinting & persistence | `data/FindingIdentity.kt` | §7.1, `FindingIdentityTest.kt`, `AppViewModel.withResolvedApplied()` |
+| "Ignored threat reappeared/didn't reappear", "ignore doesn't stick after rescan/restart" | Fingerprinting & persistence (mirrors Fixed) | `data/SettingsRepository.kt` (`ignoredFindingsFlow`/`tp_ignored_findings`), `state/AppViewModel.kt` (`ignoreSelectedFinding`/`unignoreFinding`) | §7.5, §7.5a (cold-start race), `data/FindingIdentity.kt` |
+| QR "Open link" doesn't open a browser | `MainActivity`'s `openUrlInBrowser` wiring | `MainActivity.kt` (`openUrlInBrowser`, `Intent.ACTION_VIEW`), `ui/screens/QrScannerScreen.kt` (`onOpenLink` param) | The button previously called `onRescan` by mistake — verify it's still wired to `onOpenLink`, not `onRescan` |
 | Scan pipeline (new check, new finding type) | `DeviceScanner` orchestration | `scan/DeviceScanner.kt` | `ScanResult.coveredCategories` (§5b gate), `data/Models.kt` (Finding/Category) |
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |

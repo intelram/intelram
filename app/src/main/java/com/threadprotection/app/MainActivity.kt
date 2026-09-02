@@ -207,6 +207,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                // QR "Open link": this app has already done its on-device + reputation analysis of
+                // the URL — opening it is the phone's own default browser's job, not this app's, so
+                // it hands off via ACTION_VIEW exactly like the PlayStore remedy above rather than
+                // rendering any web content itself.
+                val openUrlInBrowser: (String) -> Unit = { url ->
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -319,6 +329,7 @@ class MainActivity : ComponentActivity() {
                                 onDecoded = viewModel::analyzeScannedPayload,
                                 onRescan = viewModel::rescanQr,
                                 onToggleTorch = viewModel::toggleQrTorch,
+                                onOpenLink = openUrlInBrowser,
                                 onGoChat = viewModel::goChat,
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,

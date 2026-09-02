@@ -117,6 +117,24 @@ data class StoredResolvedFinding(
     val cleared: Boolean = false,
 )
 
+/**
+ * One threat the user chose "Ignore for now" on.
+ *
+ * Mirrors [StoredResolvedFinding] exactly — same fingerprint-matching rules, same [cleared]
+ * retirement once a scan confirms the underlying problem is gone. "Ignore for now" and "Fixed"
+ * are different user intents (the UI still labels them differently), but they make the same
+ * promise once made: the finding stays out of the way until the situation it describes actually
+ * changes, across scans and app restarts alike.
+ */
+@Serializable
+data class StoredIgnoredFinding(
+    val id: String,
+    val fingerprint: String,
+    val ignoredAtMs: Long,
+    val category: String = "",
+    val cleared: Boolean = false,
+)
+
 /** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
  *  independent of the Bluetooth MAC (used for mesh routing); the keypair is ML-KEM-768, generated
  *  once and kept for the life of the install so contacts can address a message to this device
@@ -173,6 +191,7 @@ class SettingsRepository(private val context: Context) {
         val IDENTITY = stringPreferencesKey("tp_mesh_identity")
         val MESH_OUTBOX = stringPreferencesKey("tp_mesh_outbox")
         val RESOLVED_FINDINGS = stringPreferencesKey("tp_resolved_findings")
+        val IGNORED_FINDINGS = stringPreferencesKey("tp_ignored_findings")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -318,6 +337,59 @@ class SettingsRepository(private val context: Context) {
     private fun readResolved(prefs: Preferences): List<StoredResolvedFinding> =
         prefs[Keys.RESOLVED_FINDINGS]?.let { raw ->
             runCatching { Json.decodeFromString<List<StoredResolvedFinding>>(raw) }.getOrNull()
+        } ?: emptyList()
+
+    // ───────────────────────── ignored findings ─────────────────────────
+
+    /**
+     * Threats the user chose "Ignore for now" on, kept across scans and app restarts.
+     *
+     * Mirrors [resolvedFindingsFlow] exactly — see [StoredIgnoredFinding] for why "Ignore for now"
+     * makes the same durability promise as "Fixed" despite being a different user intent.
+     */
+    val ignoredFindingsFlow: Flow<List<StoredIgnoredFinding>> = prefs.map { prefs ->
+        prefs[Keys.IGNORED_FINDINGS]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredIgnoredFinding>>(raw) }.getOrNull()
+        } ?: emptyList()
+    }
+
+    /** Records one finding as ignored. Re-ignoring the same id (e.g. after it re-emerged in a
+     *  different shape) replaces its record against the current fingerprint. */
+    suspend fun markFindingIgnored(id: String, fingerprint: String, category: String) {
+        context.dataStore.edit { prefs ->
+            val current = readIgnored(prefs)
+            val record = StoredIgnoredFinding(id, fingerprint, System.currentTimeMillis(), category, cleared = false)
+            val updated = (listOf(record) + current.filter { it.id != id })
+                .sortedByDescending { it.ignoredAtMs }
+                .take(MAX_IGNORED_FINDINGS)
+            prefs[Keys.IGNORED_FINDINGS] = Json.encodeToString(updated)
+        }
+    }
+
+    /** Retires ignored records whose problem a scan has confirmed gone — mirrors [markFindingsCleared]. */
+    suspend fun markIgnoredCleared(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val updated = readIgnored(prefs).map {
+                if (it.id in ids) it.copy(cleared = true) else it
+            }
+            prefs[Keys.IGNORED_FINDINGS] = Json.encodeToString(updated)
+        }
+    }
+
+    /** Drops ignore records — used when a finding reappears with a different fingerprint, and when
+     *  the user deliberately un-ignores one. */
+    suspend fun clearIgnoredFindings(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        context.dataStore.edit { prefs ->
+            val remaining = readIgnored(prefs).filter { it.id !in ids }
+            prefs[Keys.IGNORED_FINDINGS] = Json.encodeToString(remaining)
+        }
+    }
+
+    private fun readIgnored(prefs: Preferences): List<StoredIgnoredFinding> =
+        prefs[Keys.IGNORED_FINDINGS]?.let { raw ->
+            runCatching { Json.decodeFromString<List<StoredIgnoredFinding>>(raw) }.getOrNull()
         } ?: emptyList()
 
     suspend fun deleteChatSession(sessionId: String) {
@@ -468,5 +540,8 @@ class SettingsRepository(private val context: Context) {
         /** Plenty for a phone's worth of findings, and bounded so the record can't grow forever
          *  as apps come and go over months of scans. */
         const val MAX_RESOLVED_FINDINGS = 300
+
+        /** Mirrors [MAX_RESOLVED_FINDINGS] for the ignored-findings list. */
+        const val MAX_IGNORED_FINDINGS = 300
     }
 }

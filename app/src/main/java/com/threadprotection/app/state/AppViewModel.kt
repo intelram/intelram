@@ -36,6 +36,7 @@ import com.threadprotection.app.ui.theme.TpThemeMode
 import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -91,6 +92,23 @@ class AppViewModel(
         is IllegalArgumentException -> "That contact's stored security key is unusable, so the message couldn't be sealed. Reconnect to them directly once to refresh it."
         else -> "Something went wrong (${this::class.java.simpleName}). The app is still usable — the details are in the logs."
     }
+
+    /**
+     * Completed the moment each on-disk record set has been read at least once since process
+     * start. [startScan] awaits both before letting a scan conclude anything about resolved or
+     * ignored findings.
+     *
+     * Root cause this exists to fix: `resolvedRecords`/`ignoredRecords` start out empty in
+     * [AppUiState]'s default constructor, and the real values only arrive once the DataStore flows
+     * collected in `init` emit for the first time — a suspending disk read that has not
+     * necessarily completed yet. A scan launched immediately after cold start (the exact "turn the
+     * phone on and scan" case) could race that first emission and run `withResolvedApplied()`
+     * against a still-empty map, showing every previously fixed or ignored threat as active again
+     * for that one scan. Awaiting these first closes the window; a DataStore read is milliseconds
+     * against a scan that takes seconds, so this never adds a perceptible delay.
+     */
+    private val resolvedRecordsReady = CompletableDeferred<Unit>()
+    private val ignoredRecordsReady = CompletableDeferred<Unit>()
 
     private val threatIntel = ThreatIntelRepository()
     private val deviceScanner by lazy { appContext?.let { DeviceScanner(it, threatIntel) } }
@@ -232,6 +250,25 @@ class AppViewModel(
                             everResolvedIds = records.map { it.id }.toSet(),
                         ).withResolvedApplied()
                     }
+                    resolvedRecordsReady.complete(Unit)
+                }
+            }
+            safeLaunch {
+                // "Ignore for now" mirrors resolved threats exactly — persisted on disk so it
+                // survives a rescan and an app restart, and re-applied against current findings on
+                // every emission so a genuinely changed/worse ignored issue reactivates.
+                repo.ignoredFindingsFlow.distinctUntilChanged().collect { records ->
+                    val live = records.filterNot { it.cleared }
+                    _state.update { st ->
+                        st.copy(
+                            ignoredRecords = live.associate { it.id to it.fingerprint },
+                            ignoredCategories = records.mapNotNull { rec ->
+                                runCatching { Category.valueOf(rec.category) }.getOrNull()?.let { rec.id to it }
+                            }.toMap(),
+                            everIgnoredIds = records.map { it.id }.toSet(),
+                        ).withResolvedApplied()
+                    }
+                    ignoredRecordsReady.complete(Unit)
                 }
             }
         }
@@ -629,6 +666,8 @@ class AppViewModel(
                 hasScanned = false,
                 fixed = emptySet(),
                 resolvedRecords = emptyMap(),
+                ignoredFindings = emptySet(),
+                ignoredRecords = emptyMap(),
                 fixInProgressId = null,
                 deviceTrust = emptyMap(),
                 deviceAlert = null,
@@ -730,20 +769,27 @@ class AppViewModel(
         scanJob?.cancel()
         var feedSeq = 0L
         _state.update {
-            // Resolutions deliberately survive a rescan — they are re-validated against the new
-            // findings below. "Ignore for now" does not: it was always session-scoped, and the
-            // whole point of a rescan is to raise ignored items again.
+            // Both resolutions and "Ignore for now" deliberately survive a rescan — they are
+            // re-validated below against whatever this scan actually finds, so a genuinely
+            // changed or worsened item reactivates on its own rather than the rescan blindly
+            // wiping either list.
             it.copy(
                 screen = Screen.SCANNING,
                 progress = 0f,
                 scannedCount = 0,
-                ignoredFindings = emptySet(),
                 fixInProgressId = null,
                 scanPhase = ScanPhaseState(),
                 scanFeed = emptyList(),
             )
         }
         scanJob = safeLaunch {
+            // See resolvedRecordsReady's doc: closes the cold-start race where a scan launched
+            // before the first disk read lands would otherwise treat every previously fixed or
+            // ignored threat as active again.
+            if (settingsRepository != null) {
+                resolvedRecordsReady.await()
+                ignoredRecordsReady.await()
+            }
             val result = scanner.scan(_state.value.apiKeys) { update ->
                 _state.update {
                     val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
@@ -801,6 +847,23 @@ class AppViewModel(
                 Log.i(TAG, "scan: ${cleared.size} resolved finding(s) confirmed gone — retiring their records")
                 settingsRepository?.markFindingsCleared(cleared)
             }
+            // Same reconciliation as above, mirrored for "Ignore for now" so it carries the same
+            // durability and the same honesty about a changed or worsened issue reactivating.
+            val supersededIgnored = FindingIdentity.supersededRecords(result.findings, snapshot.ignoredRecords)
+            if (supersededIgnored.isNotEmpty()) {
+                Log.i(TAG, "scan: ${supersededIgnored.size} ignored finding(s) came back in a different shape — clearing their records")
+                settingsRepository?.clearIgnoredFindings(supersededIgnored)
+            }
+            val clearedIgnored = FindingIdentity.clearedRecords(
+                findings = result.findings,
+                resolved = snapshot.ignoredRecords,
+                resolvedCategories = snapshot.ignoredCategories,
+                coveredCategories = result.coveredCategories,
+            )
+            if (clearedIgnored.isNotEmpty()) {
+                Log.i(TAG, "scan: ${clearedIgnored.size} ignored finding(s) confirmed gone — retiring their records")
+                settingsRepository?.markIgnoredCleared(clearedIgnored)
+            }
             val returned = _state.value.reEmergedIds
             if (returned.isNotEmpty()) {
                 Log.w(TAG, "scan: ${returned.size} previously resolved threat(s) have re-emerged: $returned")
@@ -811,18 +874,22 @@ class AppViewModel(
     }
 
     /**
-     * Recomputes [AppUiState.fixed] from the on-disk records against whatever findings the state
-     * currently holds.
+     * Recomputes [AppUiState.fixed] and [AppUiState.ignoredFindings] from their on-disk records
+     * against whatever findings the state currently holds.
      *
-     * This is the one place the two are reconciled, and it runs both when the records change and
-     * when the findings change (after a scan). A record only counts while its fingerprint still
-     * matches the finding, so a threat that reappeared — or got worse — is active again even
-     * though the user resolved it once. Findings this scan didn't produce at all simply aren't in
-     * the set; their records stay on disk in case a later scan can reach that source again.
+     * This is the one place either is reconciled, and it runs both when either record set changes
+     * and when the findings change (after a scan). A record only counts while its fingerprint
+     * still matches the finding, so a threat that reappeared — or got worse — is active again even
+     * though the user resolved or ignored it once. Findings this scan didn't produce at all simply
+     * aren't in the set; their records stay on disk in case a later scan can reach that source
+     * again. [reEmergedIds] covers both: a threat the user dismissed either way and that has since
+     * changed is reported as a genuine return, not silently re-suppressed.
      */
     private fun AppUiState.withResolvedApplied(): AppUiState = copy(
         fixed = FindingIdentity.stillResolved(scanData.findings, resolvedRecords),
-        reEmergedIds = FindingIdentity.reEmerged(scanData.findings, everResolvedIds, resolvedRecords),
+        ignoredFindings = FindingIdentity.stillResolved(scanData.findings, ignoredRecords),
+        reEmergedIds = FindingIdentity.reEmerged(scanData.findings, everResolvedIds, resolvedRecords) +
+            FindingIdentity.reEmerged(scanData.findings, everIgnoredIds, ignoredRecords),
     )
 
     fun cancelScan() {
@@ -832,17 +899,31 @@ class AppViewModel(
 
     /**
      * "Ignore for now" — the user has seen this finding and decided to leave it. It stops counting
-     * against the security score for this session and disappears from the active list, but it is
-     * deliberately not marked fixed and not written to disk: the next scan surfaces it again.
+     * against the security score and disappears from the active list, and — like [fixSelected] —
+     * is recorded on disk against the finding's current fingerprint so it stays out of the way
+     * across scans and app restarts. It is deliberately not marked [fixed]: the UI still shows it
+     * as ignored rather than resolved, but the durability guarantee is identical. It reappears the
+     * moment the underlying problem actually changes or worsens — see FindingIdentity.
      */
     fun ignoreSelectedFinding() {
         val sel = Derived.selectedFinding(_state.value) ?: return
-        _state.update { it.copy(ignoredFindings = it.ignoredFindings + sel.id) }
+        val fingerprint = FindingIdentity.fingerprintOf(sel)
+        _state.update {
+            it.copy(
+                ignoredRecords = it.ignoredRecords + (sel.id to fingerprint),
+                everIgnoredIds = it.everIgnoredIds + sel.id,
+            ).withResolvedApplied()
+        }
+        settingsRepository?.let { repo ->
+            safeLaunch { repo.markFindingIgnored(sel.id, fingerprint, sel.cat.name) }
+        }
     }
 
-    /** Undo an "Ignore for now" — puts the finding back into the active list and the score. */
+    /** Undo an "Ignore for now" — puts the finding back into the active list and the score, and
+     *  removes its record from disk, mirroring [unresolveFinding]. */
     fun unignoreFinding(id: String) {
-        _state.update { it.copy(ignoredFindings = it.ignoredFindings - id) }
+        _state.update { it.copy(ignoredRecords = it.ignoredRecords - id).withResolvedApplied() }
+        settingsRepository?.let { repo -> safeLaunch { repo.clearIgnoredFindings(setOf(id)) } }
     }
 
     /**

@@ -111,11 +111,19 @@ data class AppUiState(
      *  and hasn't come back yet) — drives the "fixing in progress" state of the Start Fixing
      *  button rather than a timer or a guess. */
     val fixInProgressId: String? = null,
-    /** Findings the user chose to "Ignore for now". Session-scoped on purpose: it is held in
-     *  memory only and cleared by the next scan, so ignoring something quiets it for now without
-     *  ever permanently hiding a real problem. Kept separate from [fixed] because ignoring a
-     *  finding is not the same as resolving it, and the UI says so. */
+    /** Findings the user chose "Ignore for now" *and* whose stored fingerprint still matches what
+     *  this scan found. Seeded from disk at startup and after every scan, so an ignored threat
+     *  stays out of the active list across scans and app restarts — mirrors [fixed] exactly, see
+     *  FindingIdentity. Kept separate from [fixed] because ignoring a finding is not the same user
+     *  intent as resolving it, and the UI says so; the durability guarantee is the same for both. */
     val ignoredFindings: Set<String> = emptySet(),
+    /** The live (non-retired) id → fingerprint records on disk for ignored findings — mirrors
+     *  [resolvedRecords] but for "Ignore for now". */
+    val ignoredRecords: Map<String, String> = emptyMap(),
+    /** Category of each stored ignored record — mirrors [resolvedCategories]. */
+    val ignoredCategories: Map<String, Category> = emptyMap(),
+    /** Every finding id that has ever been ignored, including retired records — mirrors [everResolvedIds]. */
+    val everIgnoredIds: Set<String> = emptySet(),
     val realtime: Boolean = true,
     val settings: ProtectionSettings = ProtectionSettings(),
     val selectedId: String? = null,

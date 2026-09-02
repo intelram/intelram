@@ -70,6 +70,7 @@ fun QrScannerScreen(
     onDecoded: (String) -> Unit,
     onRescan: () -> Unit,
     onToggleTorch: () -> Unit,
+    onOpenLink: (String) -> Unit,
     onGoChat: () -> Unit,
     onGoBrain: () -> Unit,
     onGoSettings: () -> Unit,
@@ -297,7 +298,10 @@ fun QrScannerScreen(
                 QrPhase.RESULT -> {
                     val vc = verdict?.let { verdictColors(it.overall) }
                     if (vc != null && verdict?.overall == Verdict.SAFE) {
-                        PrimaryPillButton(text = "Open link", onClick = onRescan)
+                        // Opens the scanned URL in the phone's own default browser — this app's job
+                        // ends at the reputation verdict shown above, per README's on-device-first
+                        // design (see QrContentClassifier / GRAPH_ENGINEERING_MAP.md §10).
+                        PrimaryPillButton(text = "Open link", onClick = { verdict?.url?.let(onOpenLink) })
                     } else if (vc != null) {
                         OutlinedPillButton(text = "Don't open — go back", onClick = onRescan, borderColor = vc.border, textColor = vc.color)
                     }
