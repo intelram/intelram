@@ -148,7 +148,9 @@ every writer):
 - **Navigation:** `screen`, `backStack`
 - **Auth:** `account`, `gsiError`, `createAccountError`
 - **Scan pipeline:** `progress`, `scannedCount`, `scanData` (ScanData: findings/permApps/hwDevices/
-  ports/osPatchLabel/feeds), `scanPhase`, `scanFeed`, `hasScanned`, `liveHwDevices`
+  ports/osPatchLabel/feeds), `scanPhase`, `scanFeed`, `hasScanned`, `liveHwDevices`. `scanData`
+  (minus `permApps`) + `hasScanned` are seeded from disk at cold start — see §7.5b — so the
+  Dashboard's score/status is the user's real last scan, not "scan needed", on every launch.
 - **Threat resolution (persisted):** `fixed`, `resolvedRecords`, `resolvedCategories`,
   `everResolvedIds`, `reEmergedIds`, `fixInProgressId`, `ignoredFindings`, `ignoredRecords`,
   `ignoredCategories`, `everIgnoredIds` — "Ignore for now" mirrors "Fixed" exactly (persisted via
@@ -355,6 +357,19 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     `ignoredRecordsReady` (`CompletableDeferred`, completed on each flow's first emission);
     `startScan()` awaits both before scanning when `settingsRepository != null`. Don't remove this
     await when touching `startScan()`.
+5b. **The last-scan snapshot (`SettingsRepository.lastScanFlow`/`tp_last_scan`,
+    `StoredScanData`/`StoredFinding`/`StoredHwDevice`/`StoredPortFinding`/`StoredBreach`/
+    `StoredRemedy`) deliberately excludes `permApps` and never touches `liveHwDevices`.** Both of
+    those are re-read live from the OS on their own schedule
+    (`AppViewModel.ensurePermissionsLoaded`/`refreshPermissions` re-reads PackageManager on every
+    Permissions-screen visit; `refreshHardwareStatus` re-reads hardware once from `init` on every
+    launch) specifically because a permission or a plugged-in device can change without this app
+    knowing, and "no cached state, OS is the only source of truth" is the whole point. Restoring
+    either from yesterday's scan would show a possibly-stale grant/device as if current — don't add
+    them to `StoredScanData` to "complete" the snapshot. If you need last-scan `Finding`s to survive
+    a restart faithfully, extend `StoredFinding`/`toStored()`/`toDomain()` in
+    `AppViewModel.kt` (mirrors `ProtectionSettings.toStored()`/`toState()`'s pattern) — not the
+    domain `Finding`/`Remedy`/`Breach` classes themselves, which stay persistence-agnostic.
 6. **`HardwareAlertOverlay` / `state.hwAlert` is demo-only canned data** (`DemoData.hwSim`),
    separate from the real `ExternalDeviceMonitor` pipeline. Don't assume `hwAlert` reflects real
    hardware — check `externalDevices`/`deviceAlert` for that.
@@ -445,6 +460,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | "Resolved threat reappeared/didn't reappear" | Fingerprinting & persistence | `data/FindingIdentity.kt` | §7.1, `FindingIdentityTest.kt`, `AppViewModel.withResolvedApplied()` |
 | "Ignored threat reappeared/didn't reappear", "ignore doesn't stick after rescan/restart" | Fingerprinting & persistence (mirrors Fixed) | `data/SettingsRepository.kt` (`ignoredFindingsFlow`/`tp_ignored_findings`), `state/AppViewModel.kt` (`ignoreSelectedFinding`/`unignoreFinding`) | §7.5, §7.5a (cold-start race), `data/FindingIdentity.kt` |
 | QR "Open link" doesn't open a browser | `MainActivity`'s `openUrlInBrowser` wiring | `MainActivity.kt` (`openUrlInBrowser`, `Intent.ACTION_VIEW`), `ui/screens/QrScannerScreen.kt` (`onOpenLink` param) | The button previously called `onRescan` by mistake — verify it's still wired to `onOpenLink`, not `onRescan` |
+| "Score/status resets after restart", "Dashboard shows scan needed even though I already scanned" | Last-scan snapshot persistence | `data/SettingsRepository.kt` (`lastScanFlow`/`tp_last_scan`, `StoredScanData`), `state/AppViewModel.kt` (`toStored()`/`toDomain()` mapping, the `lastScanFlow` collector in `init`, the `saveLastScan` call at the end of `startScan()`) | §7.5b (why `permApps`/`liveHwDevices` are excluded), `state/Derived.kt` (`securityScore`/`scanStatus` — both gated on `hasScanned`) |
 | Scan pipeline (new check, new finding type) | `DeviceScanner` orchestration | `scan/DeviceScanner.kt` | `ScanResult.coveredCategories` (§5b gate), `data/Models.kt` (Finding/Category) |
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |

@@ -135,6 +135,87 @@ data class StoredIgnoredFinding(
     val cleared: Boolean = false,
 )
 
+/** Plain-data mirror of `data.Breach` — this layer doesn't depend on the state package. */
+@Serializable
+data class StoredBreach(val site: String, val date: String, val data: String)
+
+/** Plain-data mirror of `data.Remedy` — a sealed hierarchy, so kotlinx.serialization needs each
+ *  case marked `@Serializable` too; it then serializes/deserializes polymorphically through this
+ *  interface without any extra module registration. */
+@Serializable
+sealed interface StoredRemedy {
+    @Serializable
+    data class AppSettings(val packageName: String) : StoredRemedy
+
+    @Serializable
+    data object DeveloperOptions : StoredRemedy
+
+    @Serializable
+    data object SystemUpdate : StoredRemedy
+
+    @Serializable
+    data class PlayStore(val packageName: String) : StoredRemedy
+
+    @Serializable
+    data object None : StoredRemedy
+}
+
+/** Plain-data mirror of `data.Finding`. [cat]/[sev] are stored as enum names (strings) rather than
+ *  the real `Category`/`Severity` types so this layer doesn't depend on the state/theme packages —
+ *  same convention as [StoredResolvedFinding.category]. */
+@Serializable
+data class StoredFinding(
+    val id: String,
+    val name: String,
+    val type: String,
+    val cat: String,
+    val sev: String,
+    val risk: Int,
+    val desc: String,
+    val advice: String,
+    val fix: String,
+    val pros: List<String>,
+    val cons: List<String>,
+    val source: String,
+    val breaches: List<StoredBreach>? = null,
+    val remedy: StoredRemedy = StoredRemedy.None,
+)
+
+/** Plain-data mirror of `data.HwDevice`. */
+@Serializable
+data class StoredHwDevice(val name: String, val detail: String, val ok: Boolean)
+
+/** Plain-data mirror of `scan.PortFinding`. */
+@Serializable
+data class StoredPortFinding(val port: Int, val ownerLabel: String)
+
+/**
+ * A snapshot of the last completed real device scan (`state.ScanData`), so the Dashboard shows the
+ * user's actual last-known security score and status immediately on app launch instead of "scan
+ * needed" until they run a brand new scan.
+ *
+ * Deliberately excludes `permApps`: [com.threadprotection.app.scan.PermissionAudit]'s per-app
+ * permission grant states are re-read live from PackageManager every time the Permissions screen
+ * is opened (there is no cached "we think it's off" state anywhere — see
+ * `AppViewModel.ensurePermissionsLoaded`/`refreshPermissions`), and that function's own "already
+ * loaded this session" check treats a non-empty list as fresh. Restoring a stale list here would
+ * make it skip that live re-read and could show a permission grant that changed since this scan as
+ * if it were still current — exactly the dishonesty the live re-read exists to prevent. Also
+ * excludes `liveHwDevices`/`state.liveHwDevices`, which is likewise re-read live on every app
+ * launch (`AppViewModel.refreshHardwareStatus`, called from `init`), never restored from disk.
+ */
+@Serializable
+data class StoredScanData(
+    val findings: List<StoredFinding> = emptyList(),
+    val hwDevices: List<StoredHwDevice> = emptyList(),
+    val appsScanned: Int = 0,
+    val ports: List<StoredPortFinding> = emptyList(),
+    val portsProbed: Boolean = false,
+    val osPatchLabel: String = "",
+    val feedsConfigured: Int = 0,
+    val feedsTotal: Int = 0,
+)
+
 /** This device's own long-term mesh identity — see `chat/MeshIdentity.kt`. nodeId is a random ID
  *  independent of the Bluetooth MAC (used for mesh routing); the keypair is ML-KEM-768, generated
  *  once and kept for the life of the install so contacts can address a message to this device
@@ -192,6 +273,7 @@ class SettingsRepository(private val context: Context) {
         val MESH_OUTBOX = stringPreferencesKey("tp_mesh_outbox")
         val RESOLVED_FINDINGS = stringPreferencesKey("tp_resolved_findings")
         val IGNORED_FINDINGS = stringPreferencesKey("tp_ignored_findings")
+        val LAST_SCAN = stringPreferencesKey("tp_last_scan")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -391,6 +473,20 @@ class SettingsRepository(private val context: Context) {
         prefs[Keys.IGNORED_FINDINGS]?.let { raw ->
             runCatching { Json.decodeFromString<List<StoredIgnoredFinding>>(raw) }.getOrNull()
         } ?: emptyList()
+
+    // ───────────────────────── last scan snapshot ─────────────────────────
+
+    /** The last completed real scan, so the Dashboard can show it immediately on launch — see
+     *  [StoredScanData]. Null before the very first scan this install has ever completed. */
+    val lastScanFlow: Flow<StoredScanData?> = prefs.map { prefs ->
+        prefs[Keys.LAST_SCAN]?.let { raw ->
+            runCatching { Json.decodeFromString<StoredScanData>(raw) }.getOrNull()
+        }
+    }
+
+    suspend fun saveLastScan(data: StoredScanData) {
+        context.dataStore.edit { prefs -> prefs[Keys.LAST_SCAN] = Json.encodeToString(data) }
+    }
 
     suspend fun deleteChatSession(sessionId: String) {
         context.dataStore.edit { prefs ->

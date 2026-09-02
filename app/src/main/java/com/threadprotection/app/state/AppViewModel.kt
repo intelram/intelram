@@ -17,21 +17,33 @@ import com.threadprotection.app.chat.MeshRelayManager
 import com.threadprotection.app.data.Account
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
+import com.threadprotection.app.data.Breach
 import com.threadprotection.app.data.Category
 import com.threadprotection.app.data.DemoData
+import com.threadprotection.app.data.Finding
+import com.threadprotection.app.data.HwDevice
+import com.threadprotection.app.data.Remedy
 import com.threadprotection.app.hardware.ExternalDeviceMonitor
 import com.threadprotection.app.qr.QrContentClassifier
 import com.threadprotection.app.data.FindingIdentity
 import com.threadprotection.app.data.SettingsRepository
+import com.threadprotection.app.data.StoredBreach
 import com.threadprotection.app.data.StoredChatHistoryEntry
 import com.threadprotection.app.data.StoredChatMessage
 import com.threadprotection.app.data.StoredChatSession
+import com.threadprotection.app.data.StoredFinding
+import com.threadprotection.app.data.StoredHwDevice
+import com.threadprotection.app.data.StoredPortFinding
+import com.threadprotection.app.data.StoredRemedy
+import com.threadprotection.app.data.StoredScanData
 import com.threadprotection.app.data.StoredSessionStatus
 import com.threadprotection.app.service.NotificationHelper
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.scan.DeviceScanner
 import com.threadprotection.app.scan.HardwareWatcher
 import com.threadprotection.app.scan.PermissionAudit
+import com.threadprotection.app.scan.PortFinding
+import com.threadprotection.app.ui.theme.Severity
 import com.threadprotection.app.ui.theme.TpThemeMode
 import com.threadprotection.app.ui.theme.systemThemeMode
 import kotlin.random.Random
@@ -271,6 +283,26 @@ class AppViewModel(
                     ignoredRecordsReady.complete(Unit)
                 }
             }
+            safeLaunch {
+                // Seeds the Dashboard with the last real scan's actual result so it shows that
+                // score/status immediately on launch instead of "scan needed" until a brand new
+                // scan finishes. Guarded by `!hasScanned` so this can only ever seed a cold-started
+                // session — once a real scan runs (or this same seed already applied once), later
+                // emissions of this flow (including the one caused by this session's own write-back
+                // after its next scan) are left alone rather than replacing live, fresher state.
+                repo.lastScanFlow.distinctUntilChanged().collect { stored ->
+                    stored ?: return@collect
+                    _state.update {
+                        if (it.hasScanned) return@update it
+                        val restored = stored.toDomain()
+                        it.copy(
+                            scanData = restored,
+                            hasScanned = true,
+                            scannedCount = restored.appsScanned,
+                        ).withResolvedApplied()
+                    }
+                }
+            }
         }
         bluetoothChatManager?.let { chat ->
             safeLaunch {
@@ -479,6 +511,93 @@ class AppViewModel(
         scanFrequency = scanFrequency.name,
         scanDayOfWeek = scanDayOfWeek,
     )
+
+    // ───────────────────────── last-scan snapshot mapping ─────────────────────────
+    // See StoredScanData's doc for what's deliberately excluded (permApps, liveHwDevices) and why.
+
+    private fun Remedy.toStored(): StoredRemedy = when (this) {
+        is Remedy.AppSettings -> StoredRemedy.AppSettings(packageName)
+        Remedy.DeveloperOptions -> StoredRemedy.DeveloperOptions
+        Remedy.SystemUpdate -> StoredRemedy.SystemUpdate
+        is Remedy.PlayStore -> StoredRemedy.PlayStore(packageName)
+        Remedy.None -> StoredRemedy.None
+    }
+
+    private fun StoredRemedy.toDomain(): Remedy = when (this) {
+        is StoredRemedy.AppSettings -> Remedy.AppSettings(packageName)
+        StoredRemedy.DeveloperOptions -> Remedy.DeveloperOptions
+        StoredRemedy.SystemUpdate -> Remedy.SystemUpdate
+        is StoredRemedy.PlayStore -> Remedy.PlayStore(packageName)
+        StoredRemedy.None -> Remedy.None
+    }
+
+    private fun Finding.toStored() = StoredFinding(
+        id = id,
+        name = name,
+        type = type,
+        cat = cat.name,
+        sev = sev.name,
+        risk = risk,
+        desc = desc,
+        advice = advice,
+        fix = fix,
+        pros = pros,
+        cons = cons,
+        source = source,
+        breaches = breaches?.map { StoredBreach(it.site, it.date, it.data) },
+        remedy = remedy.toStored(),
+    )
+
+    /** Findings whose category/severity no longer resolves (a value from a future app version this
+     *  one doesn't know) are dropped rather than crashing or guessing — the next real scan replaces
+     *  this snapshot anyway. */
+    private fun StoredFinding.toDomain(): Finding? {
+        val category = runCatching { Category.valueOf(cat) }.getOrNull() ?: return null
+        val severity = runCatching { Severity.valueOf(sev) }.getOrNull() ?: return null
+        return Finding(
+            id = id,
+            name = name,
+            type = type,
+            cat = category,
+            sev = severity,
+            risk = risk,
+            desc = desc,
+            advice = advice,
+            fix = fix,
+            pros = pros,
+            cons = cons,
+            source = source,
+            breaches = breaches?.map { Breach(it.site, it.date, it.data) },
+            remedy = remedy.toDomain(),
+        )
+    }
+
+    private fun ScanData.toStored() = StoredScanData(
+        findings = findings.map { it.toStored() },
+        hwDevices = hwDevices.map { StoredHwDevice(it.name, it.detail, it.ok) },
+        appsScanned = appsScanned,
+        ports = ports.map { StoredPortFinding(it.port, it.ownerLabel) },
+        portsProbed = portsProbed,
+        osPatchLabel = osPatchLabel,
+        feedsConfigured = feedsConfigured,
+        feedsTotal = feedsTotal,
+    )
+
+    private fun StoredScanData.toDomain(): ScanData {
+        val restoredPorts = ports.map { PortFinding(it.port, it.ownerLabel) }
+        return ScanData(
+            findings = findings.mapNotNull { it.toDomain() },
+            permApps = emptyList(),
+            hwDevices = hwDevices.map { HwDevice(it.name, it.detail, it.ok) },
+            appsScanned = appsScanned,
+            ports = restoredPorts,
+            portsFound = restoredPorts.size,
+            portsProbed = portsProbed,
+            osPatchLabel = osPatchLabel,
+            feedsConfigured = feedsConfigured,
+            feedsTotal = feedsTotal,
+        )
+    }
 
     private fun persistProtectionSettings(next: ProtectionSettings) {
         syncScheduledScan(next)
@@ -825,6 +944,9 @@ class AppViewModel(
                     scannedCount = result.appsScanned,
                 ).withResolvedApplied()
             }
+            // Persisted so the Dashboard's score/status survives an app or phone restart — see
+            // StoredScanData's doc for what's deliberately left out (permApps, live hardware).
+            settingsRepository?.let { repo -> safeLaunch { repo.saveLastScan(_state.value.scanData.toStored()) } }
             // A record whose fingerprint no longer matches means the problem came back, or got
             // worse. Drop it from disk so it can be resolved again on its current terms rather
             // than silently suppressing a threat the user never actually saw in this shape.
