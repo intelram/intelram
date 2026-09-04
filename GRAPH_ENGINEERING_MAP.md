@@ -4,7 +4,7 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** commit `cad1a92` (2026-09-04), the splash-screen graphics pass. ~100
+**Last verified against:** the commit adding launch-time auto-scan (§7.19), 2026-09-04. ~100
 Kotlin files, 136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in
 this environment; nothing in this app has ever been run on real hardware).
 
@@ -465,6 +465,19 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     hand — if the real scan's phase labels change, update `SPLASH_PHASES` too, or the splash will
     preview phases that no longer match the scan that follows it. The splash's own progress/"checks"
     counter is still a simulated warm-up, not a real scan — see the file's own doc.
+19. **A real scan now runs automatically on every app launch, not just on manual "Scan Now."**
+    User-requested: opening the app should scan the real environment and show a real result every
+    time, first launch or not — not just display whatever was cached from the last scan.
+    `AppViewModel.triggerAutoScanOnce()` calls the real `startScan()` the moment the user first
+    reaches `Screen.DASHBOARD` this process — either via the `accountFlow` collector's "landing"
+    transition (returning user, persisted account) or `completeOnboarding()` (brand-new account).
+    `autoScanTriggeredThisLaunch` makes it fire exactly once per process: don't wire it into
+    `goDashboard()` or any other `setScreen(Screen.DASHBOARD)` call (`cancelScan()`, `leaveChat()`)
+    — those are ordinary in-session navigation, not "the app was just opened," and would re-trigger
+    a full scan on an unrelated screen change if hooked. This is a real, network-calling,
+    permission-auditing, port-probing scan — it takes several seconds and a small amount of
+    data/battery on every launch now, not just when the user asks for it; that trade-off was
+    explicit in the request, not an oversight.
 
 ---
 
@@ -518,6 +531,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR "Open link" doesn't open a browser | `MainActivity`'s `openUrlInBrowser` wiring | `MainActivity.kt` (`openUrlInBrowser`, `Intent.ACTION_VIEW`), `ui/screens/QrScannerScreen.kt` (`onOpenLink` param) | The button previously called `onRescan` by mistake — verify it's still wired to `onOpenLink`, not `onRescan` |
 | "Score/status resets after restart", "Dashboard shows scan needed even though I already scanned" | Last-scan snapshot persistence | `data/SettingsRepository.kt` (`lastScanFlow`/`tp_last_scan`, `StoredScanData`), `state/AppViewModel.kt` (`toStored()`/`toDomain()` mapping, the `lastScanFlow` collector in `init`, the `saveLastScan` call at the end of `startScan()`) | §7.5b (why `permApps`/`liveHwDevices` are excluded), `state/Derived.kt` (`securityScore`/`scanStatus` — both gated on `hasScanned`) |
 | Scan pipeline (new check, new finding type) | `DeviceScanner` orchestration | `scan/DeviceScanner.kt` | `ScanResult.coveredCategories` (§5b gate), `data/Models.kt` (Finding/Category) |
+| "App doesn't auto-scan on open", "auto-scan fires more than once" | Launch-time auto-scan trigger | `state/AppViewModel.kt` (`triggerAutoScanOnce`, `autoScanTriggeredThisLaunch`, its two call sites in the `accountFlow` collector and `completeOnboarding()`) | §7.19 — never wire this into `goDashboard()` or another `setScreen(Screen.DASHBOARD)` call |
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |

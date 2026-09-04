@@ -142,6 +142,9 @@ class AppViewModel(
     private var lastTypingSentAt = 0L
 
     private var scanJob: Job? = null
+    /** Guards [triggerAutoScanOnce] so the automatic on-launch scan fires exactly once per app
+     *  process, not on every later screen change that happens to touch Dashboard. */
+    private var autoScanTriggeredThisLaunch = false
     private var qrJob: Job? = null
     private var permJob: Job? = null
 
@@ -163,15 +166,23 @@ class AppViewModel(
                 // message, ignoring a finding, anything.
                 repo.accountFlow.distinctUntilChanged().collect { account ->
                     if (account == null) return@collect
+                    var landedOnDashboard = false
                     _state.update { s ->
                         // Only the sign-in transition navigates. Once the user is in the app, an
                         // account refresh must never move them off the screen they are on.
                         val landing = s.screen == Screen.SPLASH ||
                             s.screen == Screen.SIGNIN ||
                             s.screen == Screen.CREATE_ACCOUNT
-                        if (landing) s.copy(account = account, screen = Screen.DASHBOARD)
-                        else s.copy(account = account)
+                        if (landing) {
+                            landedOnDashboard = true
+                            s.copy(account = account, screen = Screen.DASHBOARD)
+                        } else {
+                            s.copy(account = account)
+                        }
                     }
+                    // A returning user (persisted account) auto-lands here straight from the
+                    // splash — this is the "opened the app" moment triggerAutoScanOnce exists for.
+                    if (landedOnDashboard) triggerAutoScanOnce()
                 }
             }
             safeLaunch {
@@ -807,7 +818,12 @@ class AppViewModel(
 
     // ───────────────────────── onboarding ─────────────────────────
 
-    fun completeOnboarding() = setScreen(Screen.DASHBOARD)
+    fun completeOnboarding() {
+        setScreen(Screen.DASHBOARD)
+        // A brand-new account reaching Dashboard for the first time is just as much "opened the
+        // app" as a returning user's auto sign-in — see triggerAutoScanOnce's doc.
+        triggerAutoScanOnce()
+    }
 
     // ───────────────────────── theme ─────────────────────────
 
@@ -882,6 +898,24 @@ class AppViewModel(
     }
 
     // ───────────────────────── scanning (real device scan) ─────────────────────────
+
+    /**
+     * Runs one real [startScan] automatically the moment the user first reaches Dashboard this
+     * app launch — whether they landed there via auto sign-in (a persisted account) or by finishing
+     * onboarding for the first time. User-requested: every time the app is opened, not only the
+     * first time, it should scan the real environment and show a real result, rather than requiring
+     * a manual "Scan Now" tap first.
+     *
+     * [autoScanTriggeredThisLaunch] makes this a true one-shot per process: without it, this would
+     * also fire on an unrelated later account-flow re-emission (any DataStore write re-emits the
+     * whole account, not just an actual sign-in — see the comment on that collector) and re-launch
+     * a full scan out of nowhere in the middle of a session.
+     */
+    private fun triggerAutoScanOnce() {
+        if (autoScanTriggeredThisLaunch) return
+        autoScanTriggeredThisLaunch = true
+        startScan()
+    }
 
     fun startScan() {
         val scanner = deviceScanner ?: return
