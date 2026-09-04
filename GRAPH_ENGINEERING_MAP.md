@@ -4,9 +4,9 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** commit `fb94c94` (2026-09-01), adding Analyst Mode. ~100 Kotlin files,
-136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in this environment;
-nothing in this app has ever been run on real hardware).
+**Last verified against:** commit `cad1a92` (2026-09-04), the splash-screen graphics pass. ~100
+Kotlin files, 136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in
+this environment; nothing in this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
