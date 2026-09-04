@@ -4,10 +4,10 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit fixing chat back-navigation and nearby-device names (§7.20,
-§7.21), 2026-09-04. ~100 Kotlin files, 136 JVM unit tests (all passing, all offline — no
-device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
-hardware).
+**Last verified against:** the commit fixing the responder-side `NoSuchMethodError` chat crash
+(§7.22) and adding Bluetooth voice calling (§5g, §7.23), 2026-09-04. ~103 Kotlin files, 136 JVM unit
+tests (all passing, all offline — no device/emulator/`adb` exists in this environment; nothing in
+this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -261,6 +261,34 @@ Persistence: SettingsRepository.chatSessionsFlow / chatHistoryFlow (DataStore, J
 
 ---
 
+### 5g. Bluetooth voice calling (same connection as 5e's chat)
+```
+No second connection, no codec. A call reuses the SAME RFCOMM socket and the SAME ML-KEM/AES-GCM
+session key that 5e's text chat already established — CallRequest/Accept/Decline/End/Audio are just
+five more ChatWireMessage frame types (ChatModels.kt, TYPE_CALL_REQUEST..TYPE_CALL_AUDIO) sharing the
+one encrypted pipe. Audio is raw 16 kHz mono 16-bit PCM, uncompressed — see CallAudioEngine.kt for
+why (bandwidth headroom on RFCOMM made a codec not worth the complexity).
+
+BluetoothChatManager owns a second state machine, BtCallState (IDLE→CALLING→IN_CALL on the caller
+side, IDLE→RINGING→IN_CALL on the receiver side, →IDLE on End/Decline/timeout/disconnect):
+  startCall() → send CallRequest → CALLING, CALL_RING_TIMEOUT_MS (30s) auto-ends if unanswered
+  (receiver) CallRequest in readLoop() → RINGING → NotificationHelper.postIncomingCall()
+    (same "singleton posts it directly" pattern as postChatRequest — see §7.17; a call can arrive
+    while the app isn't foregrounded, same as a chat request can)
+  acceptCall()/CallAccept → IN_CALL, beginAudioStreaming() starts CallAudioEngine capture+playback
+    on both ends
+  endCall()/declineCall()/CallEnd/disconnect()/onSessionEnded() → endCallState() → IDLE, tears down
+    CallAudioEngine on both ends. A live call can never outlive its chat connection: both
+    onSessionEnded() and disconnect() unconditionally end any in-progress call first.
+UI: ChatConversationScreen.kt's call button (visible only when CONNECTED && IDLE) + CallStatusBar
+  (shown for all three non-IDLE states, since the user is already looking at this exact
+  conversation); IncomingCallOverlay.kt (global, RINGING only — mirrors IncomingChatRequestOverlay,
+  since a call can arrive while the user is anywhere else in the app, same reasoning as 5e's request
+  overlay).
+```
+
+---
+
 ### 5f. CVE / EPSS / KEV lookup (Analyst Mode)
 ```
 CveViewModel.search(keyword) / .openDetail(cveId)
@@ -507,6 +535,34 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     on `setServiceData(uuid, emptyArray, emptyArray)`, not `setServiceUuid(uuid)`; and
     `startAdvertising` no longer passes a scan-response `AdvertiseData` to
     `BluetoothLeAdvertiser.startAdvertising()` at all.
+22. **`org.bouncycastle.**` must carry an explicit `-keep` in `app/proguard-rules.pro`, full stop.**
+    Root cause of the real "NoSuchMethodError — something went wrong" crash reported only on the
+    chat **responder's** phone (never the initiator's, never in debug builds): with no keep rule at
+    all, R8 (`isMinifyEnabled = true` on release) was free to strip/rename PQC crypto members it
+    judged unreachable from its own static call-graph analysis — and that analysis differs between
+    the initiator's code path (`decapsulate`/`MLKEMExtractor`) and the responder's
+    (`encapsulate`/`MLKEMGenerator`), so R8 could keep what one side needed while discarding what the
+    other needed, entirely deterministically per-build but asymmetric between the two phones. Every
+    release APK built before this fix carried this bug latent — it only manifested depending on
+    which role (initiator vs. responder) a given phone happened to play in a given chat session.
+    Crypto code is exactly the wrong place to let an optimizer guess member-reachability for, so the
+    fix keeps the whole library rather than trying to enumerate exactly which members are used.
+    Verified via R8's own `app/build/outputs/mapping/release/seeds.txt`/`usage.txt` reports (272
+    `org.bouncycastle.pqc.crypto.mlkem` entries now kept, including both `generateEncapsulated` and
+    `extractSecret`) — there is no device/emulator in this environment to reproduce the crash
+    directly. Never let this rule regress (e.g. during a proguard-rules cleanup pass) without
+    re-checking both `generateEncapsulated` and `extractSecret` still appear in `seeds.txt`.
+23. **Voice calling shares 5e's connection and session key — it has no connection state machine of
+    its own to keep in sync with `BtChatConnState`.** `BtCallState` only means anything while
+    `btConnState == CONNECTED`; a call cannot outlive its chat connection, so both
+    `BluetoothChatManager.onSessionEnded()` and `disconnect()` unconditionally call `endCallState()`
+    first — if a future change adds another path that ends the chat connection, it must do the same,
+    or a stale `IN_CALL`/`RINGING` state (and a still-open mic/speaker via `CallAudioEngine`) will
+    survive past the disconnect that should have ended it. `CallAudioEngine`'s microphone/speaker
+    permission (`RECORD_AUDIO`) is requested at the point the user actually taps the call button
+    (`ChatConversationScreen`'s `requestCall`), matching how Chat's own Bluetooth permissions are
+    requested at the point of scanning rather than up front at app launch — do not move it to a
+    startup/onboarding prompt.
 
 ---
 
@@ -572,6 +628,9 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | Chat/mesh battery drain | Radio duty-cycle tuning | `chat/BluetoothChatManager.kt` (`startAdvertising`'s `AdvertiseSettings`), `chat/MeshRelayManager.kt` (`tick()`'s Battery Saver check) | §7.14, §7.15 — don't revert either without re-deriving the tradeoff |
 | Chat message/history persistence | Repository + models | `data/SettingsRepository.kt` (chat keys), `chat/ChatModels.kt` | `ui/screens/ChatHistoryScreen.kt`/`ChatSessionScreen.kt` |
 | Mesh relay (offline messaging) | `MeshRelayManager` | `chat/MeshRelayManager.kt`, `chat/MeshEnvelope.kt`, `chat/MeshIdentity.kt` | `service/ProtectionForegroundService.kt` (who owns the singleton) |
+| "NoSuchMethodError"/"something went wrong" crash in chat (usually only on one phone) | Missing R8 keep rule on crypto | `app/proguard-rules.pro` (`org.bouncycastle.**`) | §7.22 — verify via a fresh `assembleRelease`'s `seeds.txt`, not by guessing; never ship a release with this rule removed |
+| Voice calling bugs (can't call, call doesn't ring, audio one-way/silent, call survives a disconnect) | Call state machine + audio engine | `chat/BluetoothChatManager.kt` (`startCall`/`acceptCall`/`declineCall`/`endCall`/`beginAudioStreaming`/`endCallState`), `chat/CallAudioEngine.kt` | §5g, §7.23 — a call must never outlive its chat connection; `chat/ChatModels.kt` for the wire frames if the protocol itself is suspect |
+| Incoming call doesn't pop up / doesn't notify when app is closed | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postIncomingCall`/`cancelIncomingCall` call sites), `service/NotificationHelper.kt`, `service/CallActionReceiver.kt` | §7.17 (same pattern as the chat-request notification) applied to calling; `MainActivity.kt`'s `IncomingCallOverlay` for the in-app side |
 | App doesn't show the splash/loading screen on launch | Cold-start ordering | `MainActivity.kt` (`onCreate`'s `LaunchedEffect(Unit)` gating `handleTargetScreenIntent`) | §7.16 — a deep-link intent (Quick Settings Tile) must never navigate before the first move off `Screen.SPLASH` |
 | USB/Bluetooth device alerts | `ExternalDeviceMonitor` | `hardware/ExternalDeviceMonitor.kt`, `hardware/ExternalDevice.kt` | §7.4 (Block limitation), `DeviceRiskTest.kt`, `ui/screens/ExternalDeviceAlertOverlay.kt` |
 | Navigation / back button behavior | `BackStackRules` | `state/BackStackRules.kt` | `AppViewModel.setScreen/navigateBack`, `BackStackRulesTest.kt` |

@@ -341,6 +341,12 @@ class AppViewModel(
                 chat.sessionSafetyCode.collect { code -> _state.update { it.copy(chatSafetyCode = code) } }
             }
             safeLaunch {
+                chat.callState.collect { st -> _state.update { it.copy(callState = st) } }
+            }
+            safeLaunch {
+                chat.callMuted.collect { muted -> _state.update { it.copy(callMuted = muted) } }
+            }
+            safeLaunch {
                 chat.connectedDeviceName.collect { name ->
                     _state.update { it.copy(chatPeerName = name) }
                     if (name != null) {
@@ -437,6 +443,21 @@ class AppViewModel(
                                 btConnectingAddress = null,
                                 screen = Screen.CHAT,
                             )
+                            }
+                        }
+                        is ChatEvent.CallRequested -> {
+                            // The in-app ringing UI reacts to callState directly (RINGING); this
+                            // event exists only to clear any stale "call ended" banner so a brand
+                            // new ring doesn't sit under yesterday's reason text.
+                            _state.update { it.copy(callEndedReason = null) }
+                        }
+                        is ChatEvent.CallEnded -> {
+                            _state.update { it.copy(callEndedReason = event.reason) }
+                            if (event.reason != null) {
+                                safeLaunch {
+                                    delay(4000)
+                                    _state.update { if (it.callEndedReason == event.reason) it.copy(callEndedReason = null) else it }
+                                }
                             }
                         }
                     }
@@ -1522,6 +1543,38 @@ class AppViewModel(
         appContext?.let { NotificationHelper.cancelChatRequest(it) }
         _state.update { it.copy(incomingChatRequest = null) }
         bluetoothChatManager?.denyChatRequest()
+    }
+
+    // ───────────────────────── voice call ─────────────────────────
+
+    /** Rings the current chat partner. A no-op if there's no live, accepted chat to call over —
+     *  see BluetoothChatManager.startCall's doc. */
+    fun startCall() {
+        _state.update { it.copy(callEndedReason = null) }
+        bluetoothChatManager?.startCall()
+    }
+
+    fun acceptCall() {
+        appContext?.let { NotificationHelper.cancelIncomingCall(it) }
+        bluetoothChatManager?.acceptCall()
+    }
+
+    fun declineCall() {
+        appContext?.let { NotificationHelper.cancelIncomingCall(it) }
+        bluetoothChatManager?.declineCall()
+    }
+
+    fun endCall() {
+        bluetoothChatManager?.endCall()
+    }
+
+    fun toggleCallMute() {
+        bluetoothChatManager?.toggleMute()
+    }
+
+    /** Clears the "Call ended"/"They declined the call." banner once the user has seen it. */
+    fun dismissCallEndedReason() {
+        _state.update { it.copy(callEndedReason = null) }
     }
 
     // ───────────────────────── chat sessions (real transcripts, persisted) ─────────────────────────

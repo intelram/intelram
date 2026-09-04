@@ -64,6 +64,13 @@ sealed interface ChatEvent {
 
     /** The peer declined our request. */
     data object ChatDenied : ChatEvent
+
+    /** The peer wants to start a voice call and is waiting on this user's Accept/Decline. */
+    data class CallRequested(val callId: String) : ChatEvent
+
+    /** A call ended — hung up (by either side), declined, or an unanswered ring timed out.
+     *  [reason] is null for an ordinary hangup once a call was actually connected. */
+    data class CallEnded(val reason: String?) : ChatEvent
 }
 
 /**
@@ -112,6 +119,23 @@ class BluetoothChatManager private constructor(
 
     private val _connState = MutableStateFlow(BtChatConnState.IDLE)
     val connState: StateFlow<BtChatConnState> = _connState.asStateFlow()
+
+    // ───────────────────────── voice call (layered on top of an already-CONNECTED chat) ─────────────────────────
+
+    private val callAudio = CallAudioEngine(context)
+    private val _callState = MutableStateFlow(BtCallState.IDLE)
+    val callState: StateFlow<BtCallState> = _callState.asStateFlow()
+
+    private val _callMuted = MutableStateFlow(false)
+    val callMuted: StateFlow<Boolean> = _callMuted.asStateFlow()
+
+    /** Identifies the call currently ringing or live — set the moment either side originates a
+     *  call, cleared the moment it ends. Unlike chat's separate `incomingRequestId`/
+     *  `outgoingRequestId`, one id covers the whole call lifecycle since (unlike chat, which stays
+     *  live indefinitely after acceptance) a call has a single clear end. */
+    @Volatile private var currentCallId: String? = null
+    private var callRingTimeoutJob: Job? = null
+    private var callAudioSendSeq = 0
 
     /**
      * Whether the BLE radio is scanning right now, published *separately* from [connState].
@@ -980,6 +1004,103 @@ class BluetoothChatManager private constructor(
         }
     }
 
+    // ───────────────────────── voice call ─────────────────────────
+
+    /** Starts a call on the current chat session — a no-op (logged) if there is no live, accepted
+     *  chat to call over, or a call is already in some phase. */
+    fun startCall() {
+        if (_connState.value != BtChatConnState.CONNECTED) {
+            Log.w(TAG, "startCall: no live chat connection to call over")
+            return
+        }
+        if (_callState.value != BtCallState.IDLE) {
+            Log.d(TAG, "startCall: a call is already ${_callState.value}")
+            return
+        }
+        val id = UUID.randomUUID().toString()
+        currentCallId = id
+        _callState.value = BtCallState.CALLING
+        Log.i(TAG, "startCall: ringing $id")
+        sendWire(ChatWireMessage.CallRequest(id))
+        callRingTimeoutJob?.cancel()
+        callRingTimeoutJob = scope.launch {
+            delay(CALL_RING_TIMEOUT_MS)
+            if (currentCallId == id && _callState.value == BtCallState.CALLING) {
+                Log.w(TAG, "startCall: ring $id timed out unanswered")
+                endCallState("They didn't answer.")
+            }
+        }
+    }
+
+    /** Called when this user taps Accept on an incoming call. Starts capture/playback immediately
+     *  so audio flows the instant both sides agree, with no separate "connecting" step — the
+     *  RFCOMM socket and session key already exist from the chat that's already live. */
+    fun acceptCall(): Boolean {
+        val id = currentCallId
+        if (id == null || _callState.value != BtCallState.RINGING) {
+            Log.w(TAG, "acceptCall: nothing to accept (id=$id, state=${_callState.value})")
+            return false
+        }
+        Log.i(TAG, "acceptCall: accepting $id")
+        callRingTimeoutJob?.cancel(); callRingTimeoutJob = null
+        NotificationHelper.cancelIncomingCall(context)
+        sendWire(ChatWireMessage.CallAccept(id))
+        beginAudioStreaming()
+        _callState.value = BtCallState.IN_CALL
+        return true
+    }
+
+    /** Called when this user taps Decline on an incoming call. */
+    fun declineCall() {
+        val id = currentCallId
+        if (id == null || _callState.value != BtCallState.RINGING) {
+            Log.d(TAG, "declineCall: nothing pending to decline")
+            return
+        }
+        Log.i(TAG, "declineCall: declining $id")
+        sendWire(ChatWireMessage.CallDecline(id))
+        endCallState(null)
+    }
+
+    /** Hangs up — from either side, in any call phase (ringing out, ringing in, or already live). */
+    fun endCall() {
+        val id = currentCallId ?: run {
+            Log.d(TAG, "endCall: no call in progress")
+            return
+        }
+        Log.i(TAG, "endCall: ending $id")
+        sendWire(ChatWireMessage.CallEnd(id))
+        endCallState(null)
+    }
+
+    /** Mute only stops *sending* captured audio — the mic keeps running rather than being
+     *  stopped/restarted on every toggle, which on some hardware re-triggers the echo-cancellation
+     *  warm-up and produces an audible glitch right as the call resumes. */
+    fun toggleMute() {
+        _callMuted.value = !_callMuted.value
+    }
+
+    private fun beginAudioStreaming() {
+        callAudio.startPlayback()
+        callAudio.startCapture { pcm ->
+            if (_callMuted.value) return@startCapture
+            sendWire(ChatWireMessage.CallAudio(callAudioSendSeq++, pcm))
+        }
+    }
+
+    /** The single exit for any call ending, for any reason — clears the id, tears down audio, and
+     *  tells whoever is listening (the in-call screen, an incoming-call overlay) why. */
+    private fun endCallState(reason: String?) {
+        callRingTimeoutJob?.cancel(); callRingTimeoutJob = null
+        currentCallId = null
+        callAudioSendSeq = 0
+        _callMuted.value = false
+        callAudio.release()
+        NotificationHelper.cancelIncomingCall(context)
+        _callState.value = BtCallState.IDLE
+        scope.launch { _events.emit(ChatEvent.CallEnded(reason)) }
+    }
+
     /**
      * The single exit for a failed connection attempt: publish FAILED with a reason the user can
      * act on, release the connection slot, and put discovery back so the nearby list keeps working
@@ -1117,6 +1238,54 @@ class BluetoothChatManager private constructor(
                         Log.d(TAG, "readLoop: learned peer mesh identity ${info.nodeId.take(8)}…")
                     }
                 }
+                is ChatWireMessage.CallRequest -> {
+                    // A call can't exist without an accepted chat under it, and ignore a duplicate
+                    // ring the same way a duplicate chat request is ignored.
+                    if (_connState.value != BtChatConnState.CONNECTED || _callState.value != BtCallState.IDLE) {
+                        Log.d(TAG, "readLoop: ignoring call request ${wire.id} — connState=${_connState.value}, callState=${_callState.value}")
+                    } else {
+                        Log.i(TAG, "readLoop: incoming call ${wire.id}")
+                        currentCallId = wire.id
+                        _callState.value = BtCallState.RINGING
+                        // Same reasoning as the chat-request notification (§7.17): this manager
+                        // rings independent of any Activity/ViewModel being alive to notice.
+                        NotificationHelper.postIncomingCall(context, _connectedDeviceName.value ?: "Unknown", wire.id)
+                        callRingTimeoutJob?.cancel()
+                        callRingTimeoutJob = scope.launch {
+                            delay(CALL_RING_TIMEOUT_MS)
+                            if (currentCallId == wire.id && _callState.value == BtCallState.RINGING) {
+                                Log.w(TAG, "readLoop: incoming call ${wire.id} timed out unanswered")
+                                endCallState(null)
+                            }
+                        }
+                        _events.emit(ChatEvent.CallRequested(wire.id))
+                    }
+                }
+                is ChatWireMessage.CallAccept -> {
+                    if (wire.id == currentCallId && _callState.value == BtCallState.CALLING) {
+                        Log.i(TAG, "readLoop: call ${wire.id} answered")
+                        callRingTimeoutJob?.cancel(); callRingTimeoutJob = null
+                        beginAudioStreaming()
+                        _callState.value = BtCallState.IN_CALL
+                    }
+                }
+                is ChatWireMessage.CallDecline -> {
+                    if (wire.id == currentCallId && _callState.value == BtCallState.CALLING) {
+                        Log.i(TAG, "readLoop: call ${wire.id} declined")
+                        endCallState("They declined the call.")
+                    }
+                }
+                is ChatWireMessage.CallEnd -> {
+                    if (wire.id == currentCallId) {
+                        Log.i(TAG, "readLoop: call ${wire.id} ended by the other side")
+                        endCallState(null)
+                    }
+                }
+                is ChatWireMessage.CallAudio -> {
+                    // Frames from a call that has since ended (a hangup and a last in-flight frame
+                    // racing each other) are simply stale, not an error.
+                    if (_callState.value == BtCallState.IN_CALL) callAudio.playFrame(wire.pcm)
+                }
                 null -> Unit
             }
         }
@@ -1128,6 +1297,8 @@ class BluetoothChatManager private constructor(
         // Preserve a terminal state the user still needs to read (they denied us, or we timed out);
         // otherwise the socket closing is just an ordinary end-of-session.
         val terminal = ChatStateRules.isTerminalExplanation(_connState.value)
+        // A call cannot outlive the chat connection it rides on.
+        if (currentCallId != null) endCallState(null)
         _events.emit(ChatEvent.PeerDisconnected)
         activeSocket = null
         sessionKey = null
@@ -1190,6 +1361,8 @@ class BluetoothChatManager private constructor(
      * would wipe the explanation off the screen before it could be read.
      */
     fun disconnect(resetState: Boolean = true) {
+        // A call cannot outlive the chat connection it rides on.
+        if (currentCallId != null) endCallState(null)
         requestTimeoutJob?.cancel(); requestTimeoutJob = null
         outgoingRequestId = null
         if (incomingRequestId != null) NotificationHelper.cancelChatRequest(context)
@@ -1282,6 +1455,10 @@ class BluetoothChatManager private constructor(
 
         /** How long the initiator waits for Accept/Deny before giving up and cleaning up. */
         private const val REQUEST_TIMEOUT_MS = 45_000L
+
+        /** How long a call rings before giving up on an unanswered call — shorter than a chat
+         *  request's timeout since a ringing call is a much more immediate, synchronous ask. */
+        private const val CALL_RING_TIMEOUT_MS = 30_000L
 
         /** Upper bound on the ML-KEM handshake. Generous enough for a slow RFCOMM link on a busy
          *  radio, short enough that a peer that connects and says nothing doesn't wedge the accept

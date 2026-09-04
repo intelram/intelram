@@ -1,5 +1,6 @@
 package com.threadprotection.app.state
 
+import com.threadprotection.app.chat.BtCallState
 import com.threadprotection.app.chat.BtChatConnState
 import com.threadprotection.app.chat.BtDeviceInfo
 import com.threadprotection.app.chat.ChatHistoryEntry
@@ -212,4 +213,13 @@ data class AppUiState(
     val chatSafetyCode: String? = null,
     val chatPeerTyping: Boolean = false,
     val chatDraft: String = "",
+    /** Voice call layered on top of the live chat connection — see BluetoothChatManager's call
+     *  functions and BtCallState's doc. The caller/callee's name is [chatPeerName]; a call cannot
+     *  exist without an already-CONNECTED chat, so there's no separate peer-name field for it. */
+    val callState: BtCallState = BtCallState.IDLE,
+    val callMuted: Boolean = false,
+    /** A one-line reason shown briefly after a call ends ("They declined the call.", "Call
+     *  ended.") — null once dismissed. Never describes an ordinary local hangup, only something
+     *  the user didn't just do themselves. */
+    val callEndedReason: String? = null,
 )

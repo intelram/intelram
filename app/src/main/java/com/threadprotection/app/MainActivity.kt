@@ -50,6 +50,7 @@ import com.threadprotection.app.hardware.DeviceTrust
 import com.threadprotection.app.ui.screens.ExternalDeviceAlertOverlay
 import com.threadprotection.app.ui.screens.HardwareAlertOverlay
 import com.threadprotection.app.ui.screens.HardwareDetailScreen
+import com.threadprotection.app.ui.screens.IncomingCallOverlay
 import com.threadprotection.app.ui.screens.IncomingChatRequestOverlay
 import com.threadprotection.app.ui.screens.OnboardingScreen
 import com.threadprotection.app.ui.screens.OpenPortsScreen
@@ -515,6 +516,9 @@ class MainActivity : ComponentActivity() {
                                 onDraftChange = viewModel::setChatDraft,
                                 onSend = viewModel::sendChatMessage,
                                 onExitChat = viewModel::exitChat,
+                                onStartCall = viewModel::startCall,
+                                onEndCall = viewModel::endCall,
+                                onToggleMute = viewModel::toggleCallMute,
                             )
                         }
 
@@ -573,6 +577,17 @@ class MainActivity : ComponentActivity() {
                             displayName = request.displayName,
                             onAccept = viewModel::acceptIncomingChatRequest,
                             onDeny = viewModel::denyIncomingChatRequest,
+                        )
+                    }
+
+                    // Same reasoning as the chat-request overlay above: a call can arrive while the
+                    // user is anywhere in the app, not just inside ChatConversationScreen, so it has
+                    // to be rendered at this outer level too rather than only inside that screen.
+                    if (state.callState == com.threadprotection.app.chat.BtCallState.RINGING) {
+                        IncomingCallOverlay(
+                            displayName = state.chatPeerName ?: "Unknown device",
+                            onAccept = viewModel::acceptCall,
+                            onDecline = viewModel::declineCall,
                         )
                     }
 

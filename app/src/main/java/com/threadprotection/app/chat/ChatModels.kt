@@ -5,6 +5,22 @@ import java.nio.charset.StandardCharsets
 enum class ChatMode { BLUETOOTH, INTERNET }
 
 /**
+ * Voice-call state, layered on top of an already-CONNECTED chat session — a call cannot exist
+ * without one (see [BluetoothChatManager.startCall]). Audio streams over the same encrypted RFCOMM
+ * socket and session key the text chat uses, framed as [ChatWireMessage.CallAudio], so there is no
+ * second connection, no second handshake, and no weaker channel than the text chat already has.
+ */
+enum class BtCallState {
+    IDLE,
+    /** We sent [ChatWireMessage.CallRequest] and are waiting for them to answer. */
+    CALLING,
+    /** They sent us [ChatWireMessage.CallRequest] and we haven't answered yet. */
+    RINGING,
+    /** Both sides accepted; [CallAudioEngine] is capturing and playing audio in both directions. */
+    IN_CALL,
+}
+
+/**
  * The full connection state machine. The happy path is
  * `IDLE → DISCOVERING → CONNECTING → HANDSHAKING → REQUEST_SENT → CONNECTED → IDLE`,
  * with `DENIED`, `REQUEST_TIMEOUT`, `SCAN_FAILED` and `FAILED` as the terminal failure states.
@@ -165,6 +181,29 @@ sealed interface ChatWireMessage {
         override fun hashCode(): Int = body.contentHashCode()
     }
 
+    /** Asks to start a voice call on the already-connected chat session. [id] identifies this call
+     *  attempt, the same way [ChatRequest.id] identifies a chat request. */
+    data class CallRequest(val id: String) : ChatWireMessage
+
+    /** The other side tapped Accept — both ends start [CallAudioEngine] on receiving this. */
+    data class CallAccept(val id: String) : ChatWireMessage
+
+    /** The other side tapped Decline, or a ring timed out unanswered on their side. */
+    data class CallDecline(val id: String) : ChatWireMessage
+
+    /** Either side hanging up a call already in progress. */
+    data class CallEnd(val id: String) : ChatWireMessage
+
+    /** One ~20ms chunk of raw 16kHz mono PCM captured from the mic, encrypted like every other
+     *  frame on this connection — see [CallAudioEngine] for the capture/playback side. [seq] is
+     *  purely diagnostic (logging dropped/out-of-order frames); playback does not depend on it. */
+    data class CallAudio(val seq: Int, val pcm: ByteArray) : ChatWireMessage {
+        override fun equals(other: Any?): Boolean =
+            this === other || (other is CallAudio && seq == other.seq && pcm.contentEquals(other.pcm))
+
+        override fun hashCode(): Int = 31 * seq + pcm.contentHashCode()
+    }
+
     companion object {
         private const val TYPE_TEXT: Byte = 0
         private const val TYPE_ACK: Byte = 1
@@ -173,6 +212,11 @@ sealed interface ChatWireMessage {
         private const val TYPE_ACCEPT: Byte = 4
         private const val TYPE_DENY: Byte = 5
         private const val TYPE_IDENTITY: Byte = 6
+        private const val TYPE_CALL_REQUEST: Byte = 7
+        private const val TYPE_CALL_ACCEPT: Byte = 8
+        private const val TYPE_CALL_DECLINE: Byte = 9
+        private const val TYPE_CALL_END: Byte = 10
+        private const val TYPE_CALL_AUDIO: Byte = 11
 
         fun encode(message: ChatWireMessage): ByteArray = when (message) {
             is Text -> frame(TYPE_TEXT, message.id, message.body.toByteArray(StandardCharsets.UTF_8))
@@ -182,6 +226,13 @@ sealed interface ChatWireMessage {
             is ChatAccept -> frame(TYPE_ACCEPT, message.id, ByteArray(0))
             is ChatDeny -> frame(TYPE_DENY, message.id, ByteArray(0))
             is MeshIdentity -> frame(TYPE_IDENTITY, "", message.body)
+            is CallRequest -> frame(TYPE_CALL_REQUEST, message.id, ByteArray(0))
+            is CallAccept -> frame(TYPE_CALL_ACCEPT, message.id, ByteArray(0))
+            is CallDecline -> frame(TYPE_CALL_DECLINE, message.id, ByteArray(0))
+            is CallEnd -> frame(TYPE_CALL_END, message.id, ByteArray(0))
+            // seq packed as a 4-byte big-endian prefix ahead of the raw PCM — kept out of the
+            // id/UTF-8 body fields entirely so the PCM bytes never pass through a String round trip.
+            is CallAudio -> frame(TYPE_CALL_AUDIO, "", intToBytes(message.seq) + message.pcm)
         }
 
         fun decode(bytes: ByteArray): ChatWireMessage? {
@@ -191,15 +242,24 @@ sealed interface ChatWireMessage {
             val idLen = bytes[1].toInt() and 0xFF
             if (bytes.size < 2 + idLen) return null
             val id = String(bytes, 2, idLen, StandardCharsets.UTF_8)
-            val body = String(bytes, 2 + idLen, bytes.size - 2 - idLen, StandardCharsets.UTF_8)
             return when (type) {
-                TYPE_TEXT -> Text(id, body)
+                TYPE_TEXT -> Text(id, String(bytes, 2 + idLen, bytes.size - 2 - idLen, StandardCharsets.UTF_8))
                 TYPE_ACK -> Ack(id)
                 TYPE_TYPING -> Typing
-                TYPE_REQUEST -> ChatRequest(id, body)
+                TYPE_REQUEST -> ChatRequest(id, String(bytes, 2 + idLen, bytes.size - 2 - idLen, StandardCharsets.UTF_8))
                 TYPE_ACCEPT -> ChatAccept(id)
                 TYPE_DENY -> ChatDeny(id)
                 TYPE_IDENTITY -> MeshIdentity(bytes.copyOfRange(2 + idLen, bytes.size))
+                TYPE_CALL_REQUEST -> CallRequest(id)
+                TYPE_CALL_ACCEPT -> CallAccept(id)
+                TYPE_CALL_DECLINE -> CallDecline(id)
+                TYPE_CALL_END -> CallEnd(id)
+                TYPE_CALL_AUDIO -> {
+                    val payload = bytes.copyOfRange(2 + idLen, bytes.size)
+                    if (payload.size < 4) return null
+                    val seq = bytesToInt(payload)
+                    CallAudio(seq, payload.copyOfRange(4, payload.size))
+                }
                 // An unrecognised type is a peer on a newer protocol version, not a fatal error —
                 // ignore that one frame and keep the session alive.
                 else -> null
@@ -211,5 +271,13 @@ sealed interface ChatWireMessage {
             require(idBytes.size <= 255) { "id too long" }
             return byteArrayOf(type, idBytes.size.toByte()) + idBytes + body
         }
+
+        private fun intToBytes(value: Int): ByteArray = byteArrayOf(
+            (value ushr 24).toByte(), (value ushr 16).toByte(), (value ushr 8).toByte(), value.toByte(),
+        )
+
+        private fun bytesToInt(bytes: ByteArray): Int =
+            ((bytes[0].toInt() and 0xFF) shl 24) or ((bytes[1].toInt() and 0xFF) shl 16) or
+                ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
     }
 }

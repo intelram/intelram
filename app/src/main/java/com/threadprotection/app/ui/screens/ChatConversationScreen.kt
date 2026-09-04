@@ -1,5 +1,9 @@
 package com.threadprotection.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
@@ -37,8 +41,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.threadprotection.app.chat.BtCallState
 import com.threadprotection.app.chat.BtChatConnState
 import com.threadprotection.app.chat.ChatUiMessage
 import com.threadprotection.app.state.AppUiState
@@ -57,11 +64,29 @@ fun ChatConversationScreen(
     onDraftChange: (String) -> Unit,
     onSend: () -> Unit,
     onExitChat: () -> Unit,
+    onStartCall: () -> Unit,
+    onEndCall: () -> Unit,
+    onToggleMute: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     var showExitConfirm by remember { mutableStateOf(false) }
+
+    // The mic permission belongs to *starting* a call, not to the call feature existing at all —
+    // requested here, right when the user actually means to use it, same as Chat's own Bluetooth
+    // permissions are requested at the point of scanning rather than up front at app launch.
+    val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) onStartCall()
+    }
+    val requestCall: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            onStartCall()
+        } else {
+            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LaunchedEffect(state.chatMessages.size) {
         if (state.chatMessages.isNotEmpty()) listState.animateScrollToItem(state.chatMessages.size - 1)
@@ -111,6 +136,20 @@ fun ChatConversationScreen(
                     color = if (state.btConnState == BtChatConnState.CONNECTED) palette.accent else palette.muted,
                 )
             }
+            // Calling only makes sense on top of an already-connected chat, and only one call at a
+            // time — the button disappears once one is ringing or live rather than doing nothing.
+            if (state.btConnState == BtChatConnState.CONNECTED && state.callState == BtCallState.IDLE) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(palette.accentTint16)
+                        .clickable(onClick = requestCall),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("📞", fontSize = 17.sp)
+                }
+            }
             Text(
                 "Exit",
                 style = TpType.caption.copy(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
@@ -122,6 +161,17 @@ fun ChatConversationScreen(
             )
         }
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(palette.line))
+
+        if (state.callState != BtCallState.IDLE) {
+            CallStatusBar(state = state, onEndCall = onEndCall, onToggleMute = onToggleMute)
+        } else if (state.callEndedReason != null) {
+            Text(
+                state.callEndedReason,
+                style = TpType.caption.copy(fontSize = 13.sp),
+                color = palette.muted,
+                modifier = Modifier.fillMaxWidth().background(palette.card2).padding(horizontal = 20.dp, vertical = 10.dp),
+            )
+        }
 
         LazyColumn(
             state = listState,
@@ -210,6 +260,63 @@ private fun connectionStatusLine(state: AppUiState): String = when {
     state.btConnState == BtChatConnState.NO_PERMISSION -> "Bluetooth permission needed"
     state.chatMeshPeer?.meshReachable == true -> "Not connected directly — messages relay via nearby phones"
     else -> "Disconnected — go back and reconnect to keep chatting"
+}
+
+/**
+ * The in-conversation call strip — everything about an active or ringing call that isn't the
+ * full-screen incoming-call overlay (that overlay only covers the RINGING/receiving side while the
+ * user is elsewhere in the app). Here, on the conversation screen itself, all three non-idle states
+ * get one compact bar rather than a second full-screen takeover, since the person is already looking
+ * at this exact conversation.
+ */
+@Composable
+internal fun CallStatusBar(state: AppUiState, onEndCall: () -> Unit, onToggleMute: () -> Unit) {
+    val palette = LocalTpPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth().background(palette.accentTint16).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                when (state.callState) {
+                    BtCallState.CALLING -> "Calling ${state.chatPeerName ?: "device"}…"
+                    BtCallState.RINGING -> "Incoming call from ${state.chatPeerName ?: "device"}"
+                    BtCallState.IN_CALL -> if (state.callMuted) "In call · muted" else "In call"
+                    BtCallState.IDLE -> ""
+                },
+                style = TpType.cardTitleBold.copy(fontSize = 14.5.sp),
+                color = palette.fg,
+            )
+            Text(
+                "Voice call over this Bluetooth connection",
+                style = TpType.caption.copy(fontSize = 11.5.sp),
+                color = palette.muted,
+            )
+        }
+        if (state.callState == BtCallState.IN_CALL) {
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(if (state.callMuted) palette.muted3 else palette.card2)
+                    .clickable(onClick = onToggleMute),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(if (state.callMuted) "🔇" else "🎙️", fontSize = 15.sp)
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(palette.danger)
+                .clickable(onClick = onEndCall),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("📵", fontSize = 15.sp)
+        }
+    }
 }
 
 private val TIME_FORMAT = SimpleDateFormat("h:mm a", Locale.US)

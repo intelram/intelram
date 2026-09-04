@@ -18,6 +18,7 @@ object NotificationHelper {
     const val NOTIF_ID_PERSISTENT = 1001
     private const val NOTIF_ID_COMING_SOON = 9001
     private const val NOTIF_ID_CHAT_REQUEST = 9100
+    private const val NOTIF_ID_INCOMING_CALL = 9101
     private var nextAlertId = 2000
 
     fun ensureChannels(context: Context) {
@@ -138,6 +139,59 @@ object NotificationHelper {
     /** Clears the request notification once it's answered, timed out, or the peer went away. */
     fun cancelChatRequest(context: Context) {
         context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_CHAT_REQUEST)
+    }
+
+    /**
+     * A real heads-up notification with working Answer/Decline buttons for an incoming voice call
+     * — mirrors [postChatRequest] exactly, and for the same reason: `BluetoothChatManager` is a
+     * process singleton that keeps ringing even with the app fully closed (§7.17 in the engineering
+     * map), so the notification has to be posted from there directly, not from a ViewModel
+     * collector that might not be alive to see the event.
+     */
+    fun postIncomingCall(context: Context, callerName: String, callId: String) {
+        ensureChannels(context)
+
+        fun action(name: String) = PendingIntent.getBroadcast(
+            context,
+            (callId + name).hashCode(),
+            Intent(context, CallActionReceiver::class.java).apply {
+                this.action = name
+                setPackage(context.packageName)
+                putExtra(CallActionReceiver.EXTRA_CALL_ID, callId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val openChat = PendingIntent.getActivity(
+            context, callId.hashCode(),
+            Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_SCREEN
+                putExtra(MainActivity.EXTRA_TARGET_SCREEN, MainActivity.TARGET_CHAT)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_tile_permissions)
+            .setContentTitle("Incoming call from $callerName")
+            .setContentText("Encrypted Bluetooth voice call.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setAutoCancel(false)
+            .setOngoing(true)
+            .setContentIntent(openChat)
+            .addAction(0, "Answer", action(CallActionReceiver.ACTION_ANSWER))
+            .addAction(0, "Decline", action(CallActionReceiver.ACTION_DECLINE))
+            .build()
+
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(NOTIF_ID_INCOMING_CALL, notification)
+    }
+
+    /** Clears the incoming-call notification once it's answered, declined, ended, or timed out. */
+    fun cancelIncomingCall(context: Context) {
+        context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_INCOMING_CALL)
     }
 
     fun postComingSoon(context: Context, title: String, text: String, targetScreen: String) {
