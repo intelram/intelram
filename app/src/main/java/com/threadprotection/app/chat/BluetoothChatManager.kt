@@ -26,6 +26,7 @@ import android.util.Log
 import androidx.core.location.LocationManagerCompat
 import com.threadprotection.app.crypto.PqcChatCrypto
 import com.threadprotection.app.data.SettingsRepository
+import com.threadprotection.app.service.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -944,6 +945,7 @@ class BluetoothChatManager private constructor(
         }
         Log.i(TAG, "acceptChatRequest: accepting $id")
         incomingRequestId = null
+        NotificationHelper.cancelChatRequest(context)
         sendWire(ChatWireMessage.ChatAccept(id))
         promoteToConnected()
         return true
@@ -957,6 +959,7 @@ class BluetoothChatManager private constructor(
         }
         Log.i(TAG, "denyChatRequest: denying $id")
         incomingRequestId = null
+        NotificationHelper.cancelChatRequest(context)
         sendWire(ChatWireMessage.ChatDeny(id))
         // Give the frame a moment to flush before tearing the socket down.
         scope.launch {
@@ -1054,6 +1057,16 @@ class BluetoothChatManager private constructor(
                         Log.i(TAG, "readLoop: chat request from \"${wire.displayName}\"")
                         incomingRequestId = wire.id
                         _connState.value = BtChatConnState.REQUEST_RECEIVED
+                        // Posted directly here, not left to whoever collects [_events]: this
+                        // manager is a process singleton kept alive by ProtectionForegroundService
+                        // independent of any Activity/ViewModel, but [_events] has no replay buffer
+                        // — if the app had been swiped from recents (Activity and ViewModel
+                        // destroyed, only the foreground service still running), nothing would be
+                        // collecting it and this request would arrive with no notification, no
+                        // overlay, nothing, until it happened to time out or the peer gave up. This
+                        // is the actual fix for "the request notification doesn't pop up" when the
+                        // app isn't open — see NotificationHelper.postChatRequest's doc.
+                        NotificationHelper.postChatRequest(context, wire.displayName, wire.id)
                         _events.emit(ChatEvent.ChatRequested(wire.id, wire.displayName))
                     }
                 }
@@ -1108,6 +1121,10 @@ class BluetoothChatManager private constructor(
         sessionKey = null
         requestTimeoutJob?.cancel(); requestTimeoutJob = null
         outgoingRequestId = null
+        // A pending incoming request notification is stale the moment the peer that sent it
+        // disconnects — cancel it here rather than leaving it up describing a request that no
+        // longer exists (a no-op if nothing was pending).
+        if (incomingRequestId != null) NotificationHelper.cancelChatRequest(context)
         incomingRequestId = null
         _pendingPeerIdentity = null
         _pendingPeerName.value = null
@@ -1163,6 +1180,7 @@ class BluetoothChatManager private constructor(
     fun disconnect(resetState: Boolean = true) {
         requestTimeoutJob?.cancel(); requestTimeoutJob = null
         outgoingRequestId = null
+        if (incomingRequestId != null) NotificationHelper.cancelChatRequest(context)
         incomingRequestId = null
         _pendingPeerIdentity = null
         _pendingPeerName.value = null

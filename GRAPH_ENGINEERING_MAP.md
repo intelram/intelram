@@ -441,6 +441,24 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     splash animation entirely. It now runs from a one-shot `LaunchedEffect(Unit)` that awaits
     `state.screen != Screen.SPLASH` via `snapshotFlow` first. `onNewIntent()` (already-running app)
     still calls it directly — there's no splash to skip in that case.
+17. **The incoming-chat-request notification/overlay must never depend on `AppViewModel` being
+    alive.** `BluetoothChatManager._events` is a `MutableSharedFlow` with no replay buffer — if
+    nothing is actively collecting it when `ChatEvent.ChatRequested` is emitted, that event is
+    dropped, gone forever, no error. `AppViewModel`'s collector of it lives in `viewModelScope`,
+    which is cancelled the moment the Activity is destroyed (e.g. the user swipes the app from
+    Recents) — but `ProtectionForegroundService` keeps the `BluetoothChatManager` singleton itself
+    alive and listening independent of any Activity. Root cause this fixes: a request arriving
+    while the app was fully closed (not just backgrounded) produced no notification and no overlay
+    at all, silently, even though the RFCOMM handshake completed correctly at the protocol level.
+    `NotificationHelper.postChatRequest`/`cancelChatRequest` are now called directly from inside
+    `BluetoothChatManager` itself (at the point it receives `ChatWireMessage.ChatRequest`, and at
+    every place `incomingRequestId` is cleared — `acceptChatRequest`, `denyChatRequest`,
+    `onSessionEnded`, `disconnect`) rather than only from `AppViewModel`'s event collector, since
+    `BluetoothChatManager` holds `applicationContext` and needs no ViewModel to do this reliably.
+    `AppViewModel`'s own (now-redundant-but-harmless) calls are left in place — both hit the same
+    fixed notification ID, so calling twice just re-posts/re-cancels the same notification, not two.
+    Any other event that must reach the user **regardless of whether the app is open** needs this
+    same "the singleton posts it directly" treatment, not a ViewModel-side collector as the only path.
 
 ---
 
@@ -498,6 +516,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
+| "Chat request doesn't notify/pop up (especially when the app is closed)" | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postChatRequest`/`cancelChatRequest` call sites), `service/NotificationHelper.kt` | §7.17 — must not depend on `AppViewModel`/`viewModelScope` being alive; `MainActivity.kt`'s `IncomingChatRequestOverlay` for the in-app side |
 | "One phone can't find any nearby device (but others can find it)" | BLE scan blindness | `chat/BluetoothChatManager.kt` (`isLocationEnabled()`, `startDiscovery()`) | §7.13, `BtChatConnState.LOCATION_DISABLED`, `ui/screens/ChatScreen.kt`'s banner for it |
 | Chat/mesh battery drain | Radio duty-cycle tuning | `chat/BluetoothChatManager.kt` (`startAdvertising`'s `AdvertiseSettings`), `chat/MeshRelayManager.kt` (`tick()`'s Battery Saver check) | §7.14, §7.15 — don't revert either without re-deriving the tradeoff |
 | Chat message/history persistence | Repository + models | `data/SettingsRepository.kt` (chat keys), `chat/ChatModels.kt` | `ui/screens/ChatHistoryScreen.kt`/`ChatSessionScreen.kt` |
