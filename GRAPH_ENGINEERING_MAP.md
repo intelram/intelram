@@ -4,9 +4,10 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit adding launch-time auto-scan (§7.19), 2026-09-04. ~100
-Kotlin files, 136 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists in
-this environment; nothing in this app has ever been run on real hardware).
+**Last verified against:** the commit fixing chat back-navigation and nearby-device names (§7.20,
+§7.21), 2026-09-04. ~100 Kotlin files, 136 JVM unit tests (all passing, all offline — no
+device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
+hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -478,6 +479,34 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     permission-auditing, port-probing scan — it takes several seconds and a small amount of
     data/battery on every launch now, not just when the user asks for it; that trade-off was
     explicit in the request, not an oversight.
+20. **Leaving the chat conversation screen (Back) must never disconnect the call** —
+    `AppViewModel.leaveChatConversation()` is pure navigation to `Screen.CHAT`; the live socket,
+    `chatPeerName`, `chatMeshPeer` and `chatMessages` are left exactly as they are.
+    `resumeChatConversation()` (a no-op if the connection has since ended) is how the user gets back
+    into it, surfaced as a "Still connected to X — Resume chat" banner on the Chat list screen
+    whenever `state.chatPeerName != null`. Root cause this fixed: Back used to call the same
+    function as the explicit "Exit Chat" button (`exitChat()`, which does disconnect and belongs
+    only on that button). A second latent bug this surfaced: `leaveChat()` (the Chat-list screen's
+    own Back, to Dashboard) used to unconditionally null out `chatPeerName`/`chatMessages`/
+    `chatMeshPeer` — harmless under the old design (you could never reach that screen with a live
+    call), but would have silently orphaned a real background connection under this one, so it's
+    now pure navigation too. Never reintroduce state-clearing on a screen-leave function without
+    checking whether a live connection can legitimately still be up.
+21. **Nearby-device names arrive via Service Data, not a separate Service UUID + scan response.**
+    Root cause of "every nearby device shows the placeholder name": the identifying UUID and the
+    display name used to travel in two different BLE packets (a Service UUID declaration in the
+    main advertisement, the name in a separate scan-response packet), which required the scanning
+    radio to complete an active-scan round trip and Android to merge the two before
+    `recordSighting()` ever saw a name — a step several chipsets don't reliably deliver for a
+    non-connectable advertiser. Both now live in one Service Data AD structure
+    (`BluetoothChatManager.startAdvertising`'s `data` builder), so every `onScanResult()` already
+    carries the name — nothing to merge, nothing that can fail to arrive. Consequences to respect
+    if this code is touched again: `MAX_ADVERTISED_NAME_BYTES` is 10, not 13 (see the byte-budget
+    comment on `startAdvertising`) — the 31-byte legacy BLE budget is now spent by one Service Data
+    structure instead of splitting it across two packets; `ScanFilter` in `startDiscovery()` matches
+    on `setServiceData(uuid, emptyArray, emptyArray)`, not `setServiceUuid(uuid)`; and
+    `startAdvertising` no longer passes a scan-response `AdvertiseData` to
+    `BluetoothLeAdvertiser.startAdvertising()` at all.
 
 ---
 
@@ -537,6 +566,8 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
 | "Chat request doesn't notify/pop up (especially when the app is closed)" | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postChatRequest`/`cancelChatRequest` call sites), `service/NotificationHelper.kt` | §7.17 — must not depend on `AppViewModel`/`viewModelScope` being alive; `MainActivity.kt`'s `IncomingChatRequestOverlay` for the in-app side |
+| "Going back during a chat disconnects it" | Screen-leave vs. connection lifecycle | `state/AppViewModel.kt` (`leaveChatConversation`, `resumeChatConversation`, `leaveChat`) | §7.20 — `exitChat()` is the only function that should ever disconnect; `ui/screens/ChatScreen.kt`'s "Resume chat" banner |
+| "Nearby device shows the placeholder/fake name instead of their real name" | BLE advertisement packet layout | `chat/BluetoothChatManager.kt` (`startAdvertising`'s `data`/`MAX_ADVERTISED_NAME_BYTES`, `startDiscovery`'s `ScanFilter`, `recordSighting`) | §7.21 — name and identifying UUID must stay in one Service Data structure, not split across a UUID declaration + scan response |
 | "One phone can't find any nearby device (but others can find it)" | BLE scan blindness | `chat/BluetoothChatManager.kt` (`isLocationEnabled()`, `startDiscovery()`) | §7.13, `BtChatConnState.LOCATION_DISABLED`, `ui/screens/ChatScreen.kt`'s banner for it |
 | Chat/mesh battery drain | Radio duty-cycle tuning | `chat/BluetoothChatManager.kt` (`startAdvertising`'s `AdvertiseSettings`), `chat/MeshRelayManager.kt` (`tick()`'s Battery Saver check) | §7.14, §7.15 — don't revert either without re-deriving the tradeoff |
 | Chat message/history persistence | Repository + models | `data/SettingsRepository.kt` (chat keys), `chat/ChatModels.kt` | `ui/screens/ChatHistoryScreen.kt`/`ChatSessionScreen.kt` |

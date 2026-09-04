@@ -1333,10 +1333,17 @@ class AppViewModel(
 
     fun leaveChatHistory() = setScreen(Screen.CHAT)
 
-    /** Leaves the Chat feature entirely — clears the session; setScreen() below does the radio
-     *  teardown, since every other exit route (bottom nav, back) goes through it too. */
+    /**
+     * Leaves the Chat feature's nearby-list screen for Dashboard — pure navigation. `setScreen()`
+     * stops the BLE *scan* (see `releaseChatRadioIfLeaving`'s doc), but must never clear
+     * `chatMessages`/`chatPeerName`/`chatMeshPeer`: since `leaveChatConversation()` lets the user
+     * back out of a live conversation without disconnecting, a real connection (and its message
+     * history) can legitimately still be alive right here, and `resumeChatConversation()` depends
+     * on `chatPeerName` staying accurate. The `connectedDeviceName` collector in `init` already
+     * keeps `chatPeerName` truthful as connections actually start and end — nothing here needs to
+     * duplicate that. An explicit end of the conversation is `exitChat()`'s job, not this one's.
+     */
     fun leaveChat() {
-        _state.update { it.copy(chatMessages = emptyList(), chatPeerName = null, chatMeshPeer = null) }
         setScreen(Screen.DASHBOARD)
     }
 
@@ -1467,8 +1474,25 @@ class AppViewModel(
         persistActiveSession(ChatSessionStatus.ACTIVE)
     }
 
-    fun disconnectChatPeer() {
-        exitChat()
+    /**
+     * Leaves the conversation *screen* without touching the live connection underneath it.
+     *
+     * Root cause this fixes: Back used to call the same function as the explicit "Exit Chat"
+     * button, so simply navigating away from the conversation tore down the socket — the user
+     * couldn't glance at another screen without ending the chat. This is pure navigation: the
+     * socket, the encrypted session and [AppUiState.chatPeerName] are all left exactly as they
+     * were, so [resumeChatConversation] can return to the same live conversation, and a message
+     * arriving while the user is elsewhere still comes through (see the `connectedDeviceName`/
+     * message collectors in `init`, which don't depend on which screen is showing).
+     */
+    fun leaveChatConversation() {
+        setScreen(Screen.CHAT)
+    }
+
+    /** Returns to a conversation that's still live in the background after [leaveChatConversation] —
+     *  a no-op if the connection has since ended, so this can't jump into a dead screen. */
+    fun resumeChatConversation() {
+        if (_state.value.chatPeerName != null) setScreen(Screen.CHAT_CONVERSATION)
     }
 
     /** This user tapped Accept on an incoming request — tells the peer and opens the chat. */

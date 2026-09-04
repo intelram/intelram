@@ -444,18 +444,24 @@ class BluetoothChatManager private constructor(
                 .setConnectable(false)
                 .setTimeout(0)
                 .build()
+            // Root-cause fix for peers always showing the placeholder name: the name used to ride
+            // in a *separate scan-response* packet (the main packet only declared the service
+            // UUID). That requires the scanning side's radio to complete an active-scan round trip
+            // (send a SCAN_REQ, receive the SCAN_RSP) and for Android to merge the two into one
+            // ScanRecord before recordSighting() ever sees the name — a step several chipsets/OEM
+            // stacks don't reliably deliver for a non-connectable advertiser, so the name never
+            // arrived and the device sat on the placeholder forever. Putting the identifying UUID
+            // and the name in the *same* AD structure (Service Data, not a separate Service UUID
+            // declaration) means every single onScanResult() callback already carries the name —
+            // nothing to merge, nothing that can fail to arrive. Costs: the UUID has to be paid for
+            // once instead of twice, and ScanFilter now matches on Service Data (see startDiscovery)
+            // instead of a Service UUID declaration.
+            //
+            // Budget: legacy BLE advertisement is a hard 31 bytes, of which Android's stack spends
+            // 3 unconditionally on the AD Flags structure it always adds to the primary packet. The
+            // Service Data structure itself costs 1 (length) + 1 (AD type) + 16 (the UUID) = 18
+            // bytes, leaving 31 − 3 − 18 = 10 bytes for the name — see MAX_ADVERTISED_NAME_BYTES.
             val data = AdvertiseData.Builder()
-                .setIncludeDeviceName(false)
-                .setIncludeTxPowerLevel(false)
-                .addServiceUuid(ParcelUuid(PRESENCE_SERVICE_UUID))
-                .build()
-            // Both packets must stay inside BLE's hard 31-byte legacy advertisement budget or the
-            // radio rejects the whole thing with ADVERTISE_FAILED_DATA_TOO_LARGE and this device
-            // silently never becomes discoverable. A 128-bit service UUID already costs 18 bytes
-            // (2 header + 16 UUID), so the name is capped at MAX_ADVERTISED_NAME_BYTES and the
-            // adapter's own device name is explicitly excluded from both — left to its default it
-            // can be appended by the stack and blow the budget on phones with a long default name.
-            val scanResponse = AdvertiseData.Builder()
                 .setIncludeDeviceName(false)
                 .setIncludeTxPowerLevel(false)
                 .addServiceData(ParcelUuid(PRESENCE_SERVICE_UUID), nameBytes)
@@ -482,7 +488,7 @@ class BluetoothChatManager private constructor(
                 }
                 activeAdvertiseCallback = callback
                 Log.d(TAG, "startAdvertising: calling BluetoothLeAdvertiser.startAdvertising, name=\"$displayName\" (${nameBytes.size}B), uuid=$PRESENCE_SERVICE_UUID")
-                runCatching { advertiser.startAdvertising(settings, data, scanResponse, callback) }
+                runCatching { advertiser.startAdvertising(settings, data, callback) }
                     .onFailure {
                         Log.e(TAG, "startAdvertising: startAdvertising() threw", it)
                         _canAdvertise.value = false
@@ -614,7 +620,13 @@ class BluetoothChatManager private constructor(
         // the nearby list on each cycle, so devices flickered in and out even while sitting still.
         // The stale sweep below is what removes a device that genuinely stopped advertising.
 
-        val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(PRESENCE_SERVICE_UUID)).build())
+        // Matches on the Service Data structure's UUID key, not a separate Service UUID
+        // declaration — the advertiser packs both the UUID and the name into that one structure
+        // now (see startAdvertising's doc). An empty pattern/mask pair matches on the UUID's
+        // presence only, without constraining the name payload that follows it.
+        val filters = listOf(
+            ScanFilter.Builder().setServiceData(ParcelUuid(PRESENCE_SERVICE_UUID), ByteArray(0), ByteArray(0)).build(),
+        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -1258,7 +1270,8 @@ class BluetoothChatManager private constructor(
          *  a BLE advertisement, and only Thread Protection advertises it, which is what makes
          *  "Tap to scan" show app instances instead of every nearby Bluetooth device. */
         private val PRESENCE_SERVICE_UUID: UUID = UUID.fromString("9f9f2f9f-303f-4071-beee-32741e782946")
-        private const val MAX_ADVERTISED_NAME_BYTES = 13
+        /** 10 bytes — see the budget breakdown on startAdvertising's `data` builder. */
+        private const val MAX_ADVERTISED_NAME_BYTES = 10
         private const val SCAN_WINDOW_MS = 20_000L
 
         /** Brief pause between continuous-scan windows — lets the radio breathe between bursts. */

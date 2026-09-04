@@ -483,6 +483,7 @@ class MainActivity : ComponentActivity() {
                                 onDenyRequest = viewModel::denyIncomingChatRequest,
                                 onDismissError = viewModel::dismissChatError,
                                 onRetryConnect = viewModel::retryBtConnect,
+                                onResumeConversation = viewModel::resumeChatConversation,
                             )
                         }
 
@@ -507,10 +508,10 @@ class MainActivity : ComponentActivity() {
                         }
 
                         Screen.CHAT_CONVERSATION -> {
-                            BackHandler(enabled = true) { viewModel.disconnectChatPeer() }
+                            BackHandler(enabled = true) { viewModel.leaveChatConversation() }
                             ChatConversationScreen(
                                 state = state,
-                                onBack = viewModel::disconnectChatPeer,
+                                onBack = viewModel::leaveChatConversation,
                                 onDraftChange = viewModel::setChatDraft,
                                 onSend = viewModel::sendChatMessage,
                                 onExitChat = viewModel::exitChat,

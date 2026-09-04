@@ -47,9 +47,9 @@ object ChatStateRules {
 object NearbyDeviceList {
 
     /**
-     * Folds one sighting into the list: updates the existing entry in place (so signal strength and
-     * a name that arrives a beat later in the scan response keep refreshing for a device already on
-     * screen) rather than appending a duplicate row for the same address.
+     * Folds one sighting into the list: updates the existing entry in place (so signal strength
+     * keeps refreshing for a device already on screen) rather than appending a duplicate row for
+     * the same address.
      */
     fun merge(current: List<BtDeviceInfo>, sighting: BtDeviceInfo): List<BtDeviceInfo> {
         val known = current.any { it.address == sighting.address }
@@ -58,9 +58,10 @@ object NearbyDeviceList {
                 if (existing.address != sighting.address) {
                     existing
                 } else {
-                    // Never downgrade a real advertised name back to the placeholder: a scan
-                    // response carrying the name can arrive after the bare advertisement, and on a
-                    // later cycle it may not arrive at all.
+                    // Never downgrade a real advertised name back to the placeholder. The name now
+                    // arrives with every sighting (see BluetoothChatManager.startAdvertising's
+                    // doc), so this mainly guards a sighting that failed to parse for some other
+                    // reason from blanking out a name already known to be good.
                     val keepName = if (sighting.name == PLACEHOLDER_NAME && existing.name != PLACEHOLDER_NAME) {
                         existing.name
                     } else {

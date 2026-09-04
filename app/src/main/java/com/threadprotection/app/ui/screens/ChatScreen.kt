@@ -100,6 +100,7 @@ fun ChatScreen(
     onDenyRequest: () -> Unit,
     onDismissError: () -> Unit,
     onRetryConnect: () -> Unit,
+    onResumeConversation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalTpPalette.current
@@ -166,6 +167,19 @@ fun ChatScreen(
                 style = TpType.body.copy(fontSize = 15.5.sp, lineHeight = 24.5.sp),
                 color = palette.muted,
             )
+
+            // The conversation stays connected in the background after Back — see
+            // AppViewModel.leaveChatConversation()'s doc — so this is how the user gets back into
+            // it rather than the socket being silently unreachable once they leave the screen.
+            state.chatPeerName?.let { peerName ->
+                InfoBanner(
+                    title = "Still connected to $peerName",
+                    body = "Your conversation is still live in the background. Tap to jump back in.",
+                    tint = palette.accentTint08,
+                    border = palette.accentBorder30,
+                )
+                PrimaryPillButton(text = "Resume chat", onClick = onResumeConversation)
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ModeOption("Bluetooth", Icons.Filled.Bluetooth, state.chatMode == ChatMode.BLUETOOTH, Modifier.weight(1f)) {
