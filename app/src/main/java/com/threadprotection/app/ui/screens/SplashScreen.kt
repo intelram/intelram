@@ -1,7 +1,12 @@
 package com.threadprotection.app.ui.screens
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -29,19 +34,36 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.threadprotection.app.ui.theme.LocalTpPalette
 import com.threadprotection.app.ui.theme.TpType
 import kotlinx.coroutines.delay
 
+/** Real phase labels borrowed verbatim from `scan/DeviceScanner.kt`'s actual pipeline — cycling
+ *  through them here previews the real scan about to run rather than inventing filler copy. Purely
+ *  decorative ordering (the splash's own "checks" counter is a simulated warm-up, not a live scan;
+ *  see [SplashScreen]'s doc), so if `DeviceScanner`'s phases ever change, update both. */
+private val SPLASH_PHASES = listOf(
+    "Building software inventory…",
+    "Scanning apps & sideloaded APKs…",
+    "Auditing app permissions…",
+    "Checking connected hardware…",
+    "Probing open ports & listeners…",
+    "Verifying OS build & patch level…",
+    "Checking live threat-intelligence feeds…",
+)
+
 /**
  * Branded launch splash: a faceted hexagon "gem" mark with a horizontal scan-line and glowing
- * center dot, plus a simulated readiness check so the very first thing a user sees already
- * feels like the security product warming up. Purely vector-drawn (Canvas), so it stays crisp
- * at any density — no bitmap to scale up. Background follows the same night/day palette as the
- * rest of the app (see ThreadProtectionTheme), so it's automatically dark on a dark-mode device
- * and light otherwise.
+ * center dot, a rotating radar sweep and breathing glow around it, plus a simulated readiness
+ * check (cycling through the real upcoming scan phases) so the very first thing a user sees
+ * already feels like the security product warming up. Purely vector-drawn (Canvas), so it stays
+ * crisp at any density — no bitmap to scale up. Background follows the same night/day palette as
+ * the rest of the app (see ThreadProtectionTheme), so it's automatically dark on a dark-mode
+ * device and light otherwise.
  */
 @Composable
 fun SplashScreen(onFinished: () -> Unit) {
@@ -52,6 +74,21 @@ fun SplashScreen(onFinished: () -> Unit) {
         targetValue = checks / targetChecks.toFloat(),
         animationSpec = tween(220, easing = LinearEasing),
         label = "splashProgress",
+    )
+    val phase = SPLASH_PHASES[(progress * SPLASH_PHASES.size).toInt().coerceIn(0, SPLASH_PHASES.lastIndex)]
+
+    val infiniteTransition = rememberInfiniteTransition(label = "splashMotion")
+    val sweepAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(2200, easing = LinearEasing)),
+        label = "radarSweep",
+    )
+    val haloPulse by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "haloPulse",
     )
 
     LaunchedEffect(Unit) {
@@ -74,7 +111,10 @@ fun SplashScreen(onFinished: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
-            HexagonGemIcon(size = 132.dp)
+            Box(contentAlignment = Alignment.Center) {
+                RadarSweepRing(size = 176.dp, angleDeg = sweepAngle, accent = palette.accent)
+                HexagonGemIcon(size = 132.dp, haloPulse = haloPulse)
+            }
 
             Text(
                 text = "Threat Intelligence",
@@ -85,7 +125,7 @@ fun SplashScreen(onFinished: () -> Unit) {
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
                     text = "SCANNING · ${"%,d".format(checks)} CHECKS",
@@ -93,6 +133,15 @@ fun SplashScreen(onFinished: () -> Unit) {
                     color = palette.muted,
                     textAlign = TextAlign.Center,
                 )
+
+                Crossfade(targetState = phase, label = "splashPhase") { label ->
+                    Text(
+                        text = label.uppercase(),
+                        style = TpType.splashCaption.copy(fontSize = TpType.splashCaption.fontSize * 0.8f),
+                        color = palette.accent,
+                        textAlign = TextAlign.Center,
+                    )
+                }
 
                 val barWidth = 180.dp
                 Box(
@@ -115,8 +164,36 @@ fun SplashScreen(onFinished: () -> Unit) {
     }
 }
 
+/** A faint static ring plus one brighter arc that continuously rotates around it — the classic
+ *  "radar sweep" read as scanning activity, framing the hexagon without competing with it. */
 @Composable
-private fun HexagonGemIcon(size: androidx.compose.ui.unit.Dp) {
+private fun RadarSweepRing(size: Dp, angleDeg: Float, accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.size(size)) {
+        val strokeWidth = this.size.width * 0.01f
+        val radius = this.size.minDimension / 2f - strokeWidth
+        val center = Offset(this.size.width / 2f, this.size.height / 2f)
+        drawCircle(color = accent.copy(alpha = 0.16f), radius = radius, center = center, style = Stroke(width = strokeWidth))
+        rotate(degrees = angleDeg, pivot = center) {
+            drawCircle(
+                brush = Brush.sweepGradient(
+                    colors = listOf(
+                        accent.copy(alpha = 0f),
+                        accent.copy(alpha = 0f),
+                        accent.copy(alpha = 0.85f),
+                        accent.copy(alpha = 0f),
+                    ),
+                    center = center,
+                ),
+                radius = radius,
+                center = center,
+                style = Stroke(width = strokeWidth * 1.8f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HexagonGemIcon(size: Dp, haloPulse: Float = 1f) {
     val rimLight = Color(0xFFF2F5F6)
     val rimDark = Color(0xFF4B535B)
     val underside = Color(0xFF0A1F16)
@@ -155,10 +232,10 @@ private fun HexagonGemIcon(size: androidx.compose.ui.unit.Dp) {
         }
         val outerVertices = listOf(v0, v5, v4, v3, v2, v1)
 
-        // ambient halo behind everything
+        // ambient halo behind everything — breathes with haloPulse rather than sitting static
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(accent.copy(alpha = 0.30f), accent.copy(alpha = 0f)),
+                colors = listOf(accent.copy(alpha = 0.30f * haloPulse), accent.copy(alpha = 0f)),
                 center = Offset(cx, cy),
                 radius = r * 1.9f,
             ),

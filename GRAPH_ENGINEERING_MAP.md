@@ -459,6 +459,12 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     fixed notification ID, so calling twice just re-posts/re-cancels the same notification, not two.
     Any other event that must reach the user **regardless of whether the app is open** needs this
     same "the singleton posts it directly" treatment, not a ViewModel-side collector as the only path.
+18. **`SplashScreen.kt`'s radar sweep / breathing halo / cycling phase text are purely decorative**
+    (user-requested "make it more graphical" polish on the existing splash, not a functional
+    change). `SPLASH_PHASES` is a **copy** of `DeviceScanner`'s real phase strings, kept in sync by
+    hand — if the real scan's phase labels change, update `SPLASH_PHASES` too, or the splash will
+    preview phases that no longer match the scan that follows it. The splash's own progress/"checks"
+    counter is still a simulated warm-up, not a real scan — see the file's own doc.
 
 ---
 
