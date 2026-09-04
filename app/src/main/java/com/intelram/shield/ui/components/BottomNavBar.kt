@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
@@ -25,7 +26,7 @@ import com.intelram.shield.ui.theme.GreenDark
 import com.intelram.shield.ui.theme.InkFaint
 import com.intelram.shield.ui.theme.Surface
 
-enum class NavTab(val label: String) { HOME("Home"), SCAN("Scan"), ALERTS("Alerts"), SETTINGS("Settings") }
+enum class NavTab(val label: String) { HOME("Home"), SCAN("Scan"), CHAT("Chat"), ALERTS("Alerts"), SETTINGS("Settings") }
 
 @Composable
 fun BottomNavBar(current: NavTab, onSelect: (NavTab) -> Unit) {
@@ -50,6 +51,7 @@ fun BottomNavBar(current: NavTab, onSelect: (NavTab) -> Unit) {
                         imageVector = when (tab) {
                             NavTab.HOME -> Icons.Filled.Home
                             NavTab.SCAN -> Icons.Filled.Search
+                            NavTab.CHAT -> Icons.Filled.Bluetooth
                             NavTab.ALERTS -> Icons.Filled.Notifications
                             NavTab.SETTINGS -> Icons.Filled.Settings
                         },

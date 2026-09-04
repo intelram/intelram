@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -75,7 +74,6 @@ fun HomeScreen(
         ScanFeature(Icons.Filled.Security, "App Malware Scan", "Checks every installed app"),
         ScanFeature(Icons.Filled.NetworkCheck, "Wi-Fi & Network", "Checks your current connection"),
         ScanFeature(Icons.Filled.PrivacyTip, "Privacy Audit", "Flags nosy app permissions"),
-        ScanFeature(Icons.Filled.Settings, "System & Software", "Finds outdated, risky settings"),
         ScanFeature(Icons.Filled.QrCodeScanner, "QR Code Scanner", "Checks a code before you open it", onOpenQrScanner),
     )
 

@@ -1,3 +1,9 @@
 <resources>
     <style name="Theme.ThreatProtection" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.ThreatProtection.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.ThreatProtection</item>
+    </style>
 </resources>

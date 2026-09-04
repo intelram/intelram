@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -11,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -18,11 +20,14 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.intelram.shield.auth.AuthViewModel
+import com.intelram.shield.bluetooth.BluetoothChatViewModel
 import com.intelram.shield.scan.ScanUiState
 import com.intelram.shield.scan.ScanViewModel
 import com.intelram.shield.ui.components.BottomNavBar
 import com.intelram.shield.ui.components.NavTab
+import com.intelram.shield.ui.screens.ChatConversationScreen
 import com.intelram.shield.ui.screens.HomeScreen
+import com.intelram.shield.ui.screens.NearbyChatScreen
 import com.intelram.shield.ui.screens.OnboardingScreen
 import com.intelram.shield.ui.screens.QrScanScreen
 import com.intelram.shield.ui.screens.ResultsScreen
@@ -31,6 +36,8 @@ import com.intelram.shield.ui.screens.SettingsScreen
 import com.intelram.shield.ui.screens.SignInScreen
 import com.intelram.shield.ui.screens.ThreatDetailScreen
 import com.intelram.shield.ui.theme.ThreatProtectionTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private object Routes {
     const val ONBOARDING = "onboarding"
@@ -40,26 +47,53 @@ private object Routes {
     const val RESULTS = "results"
     const val THREAT_DETAIL = "threat/{findingId}"
     const val QR_SCAN = "qrscan"
+    const val NEARBY_CHAT = "nearbychat"
+    const val CHAT_CONVERSATION = "chatconversation"
     const val SETTINGS = "settings"
 
     fun threatDetail(id: String) = "threat/$id"
 }
 
-private val TAB_ROUTES = setOf(Routes.HOME, Routes.RESULTS, Routes.SETTINGS)
+private val TAB_ROUTES = setOf(Routes.HOME, Routes.NEARBY_CHAT, Routes.RESULTS, Routes.SETTINGS)
+private val CHAT_FEATURE_ROUTES = setOf(Routes.NEARBY_CHAT, Routes.CHAT_CONVERSATION)
 
 class MainActivity : ComponentActivity() {
 
     private val scanViewModel: ScanViewModel by viewModels()
     private val authViewModel: AuthViewModel by viewModels()
+    private val bluetoothViewModel: BluetoothChatViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        // Keeps the launch splash screen visible briefly on every cold start
+        // (not just first run) instead of an instant, easy-to-miss flash.
+        var appReady = false
+        splashScreen.setKeepOnScreenCondition { !appReady }
+        lifecycleScope.launch {
+            delay(500)
+            appReady = true
+        }
+
         setContent {
             ThreatProtectionTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
                     val backStackEntry by navController.currentBackStackEntryAsState()
                     val currentRoute = backStackEntry?.destination?.route
+
+                    // Nearby Chat's Bluetooth resources (server socket, discovery
+                    // receiver) are only held while either chat screen is on
+                    // screen — released the moment the user leaves both, so
+                    // discovery never keeps running in the background.
+                    LaunchedEffect(currentRoute) {
+                        if (currentRoute in CHAT_FEATURE_ROUTES) {
+                            bluetoothViewModel.onScreenEntered()
+                        } else {
+                            bluetoothViewModel.onScreenLeft()
+                        }
+                    }
 
                     Column(modifier = Modifier.fillMaxSize()) {
                         Column(modifier = Modifier.weight(1f)) {
@@ -139,6 +173,18 @@ class MainActivity : ComponentActivity() {
                                 composable(Routes.QR_SCAN) {
                                     QrScanScreen()
                                 }
+                                composable(Routes.NEARBY_CHAT) {
+                                    NearbyChatScreen(
+                                        viewModel = bluetoothViewModel,
+                                        onOpenConversation = { navController.navigate(Routes.CHAT_CONVERSATION) },
+                                    )
+                                }
+                                composable(Routes.CHAT_CONVERSATION) {
+                                    ChatConversationScreen(
+                                        viewModel = bluetoothViewModel,
+                                        onBack = { navController.popBackStack() },
+                                    )
+                                }
                                 composable(Routes.SETTINGS) {
                                     SettingsScreen(
                                         scanViewModel = scanViewModel,
@@ -157,6 +203,7 @@ class MainActivity : ComponentActivity() {
                         if (currentRoute in TAB_ROUTES) {
                             val activeTab = when (currentRoute) {
                                 Routes.HOME -> NavTab.HOME
+                                Routes.NEARBY_CHAT -> NavTab.CHAT
                                 Routes.RESULTS -> NavTab.ALERTS
                                 else -> NavTab.SETTINGS
                             }
@@ -168,6 +215,9 @@ class MainActivity : ComponentActivity() {
                                     NavTab.SCAN -> {
                                         scanViewModel.startScan()
                                         navController.navigate(Routes.SCANNING)
+                                    }
+                                    NavTab.CHAT -> navController.navigate(Routes.NEARBY_CHAT) {
+                                        popUpTo(Routes.HOME) { inclusive = false }
                                     }
                                     NavTab.ALERTS -> {
                                         val done = scanViewModel.uiState.value is ScanUiState.Done

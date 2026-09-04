@@ -22,7 +22,6 @@ enum class FindingCategory(val label: String) {
     APP("App"),
     PRIVACY("Privacy"),
     NETWORK("Network"),
-    SYSTEM("System"),
 }
 
 /** What the "Fix Now" action on a finding's detail screen should actually do. */
