@@ -1,8 +1,10 @@
 package com.threadprotection.app.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
@@ -246,6 +248,19 @@ fun ChatScreen(
                         tint = palette.dangerTint08,
                         border = palette.dangerBorder30,
                     )
+                    BtChatConnState.LOCATION_DISABLED -> {
+                        InfoBanner(
+                            title = "Location is off",
+                            body = "Android requires system Location to be on for this phone to find nearby devices over Bluetooth — this phone's own permissions are already granted. Turning it on won't record or share where you are; Thread Protection only uses it to unlock Bluetooth scanning. Scanning resumes automatically once it's on.",
+                            tint = palette.warnTint06,
+                            border = palette.warnBorder20,
+                        )
+                        OutlinedPillButton(
+                            text = "Open Location settings",
+                            onClick = { runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } },
+                            borderColor = palette.line3,
+                        )
+                    }
                     BtChatConnState.SCAN_FAILED -> {
                         InfoBanner(
                             title = "Scan failed",

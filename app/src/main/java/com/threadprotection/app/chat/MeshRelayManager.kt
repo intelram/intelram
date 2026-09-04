@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.PowerManager
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -159,6 +160,18 @@ class MeshRelayManager private constructor(private val context: Context, private
     suspend fun tick() {
         val a = adapter ?: return
         if (!a.isEnabled || !hasScanPermission()) return
+        // A classic Bluetooth inquiry (discoverBriefly below) is one of the most power-hungry radio
+        // operations a phone has — comparable to an active GPS fix — and this tick already runs
+        // unconditionally every 90s, all day, whenever real-time protection is on. Android's own
+        // Battery Saver is the user's explicit "go easy on background work" signal; skipping this
+        // cycle while it's on is the same call the OS makes for its own background jobs, and mesh
+        // relay is opportunistic store-and-forward by design — a skipped cycle just means a message
+        // hops on the next one instead, not a dropped message.
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (powerManager?.isPowerSaveMode == true) {
+            Log.d(TAG, "tick: skipping gossip — Battery Saver is on")
+            return
+        }
         // A classic Bluetooth inquiry monopolises the radio and badly degrades — often entirely
         // blocks — concurrent BLE scanning and advertising on the same chip. Skipping this cycle
         // while the user is actively looking for people in Chat is the difference between

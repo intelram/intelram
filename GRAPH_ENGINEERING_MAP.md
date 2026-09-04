@@ -409,6 +409,38 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     detail to search rendered a blank screen (the search screen's `when` had no case for `Detail`).
     Any new Analyst Mode screen that can be reached both directly and from another screen in the
     same feature needs this same separation, not a single combined state.
+13. **BLE scanning can go silently blind below API 31 if system Location is off** — no exception,
+    no callback error, `BluetoothLeScanner.startScan()` just never reports a result, permission
+    grant or not. This was the root cause of "my phone can't find anyone nearby, but everyone else
+    can find me" (advertising doesn't need Location; scanning below API 31 does).
+    `BluetoothChatManager.isLocationEnabled()`/`startDiscovery()` checks this explicitly and
+    publishes `BtChatConnState.LOCATION_DISABLED`, with a `LocationManager.MODE_CHANGED_ACTION`
+    receiver (in `registerAdapterStateReceiver()`) that auto-resumes discovery once the user turns
+    it back on. Deliberately **not** gated on API 31+: this app's `BLUETOOTH_SCAN` declares
+    `neverForLocation`, which by Android's contract exempts a compliant scan stack from this on 31+
+    — flagging it there would tell a user to fix something that isn't broken. Some OEM stacks are
+    known to ignore that exemption anyway; there's no public API to detect that non-compliance, so
+    it's called out in `isLocationEnabled()`'s doc as a manual troubleshooting step instead of code.
+14. **Background BLE advertising uses `ADVERTISE_MODE_BALANCED`, not `LOW_LATENCY`, on purpose.**
+    `ProtectionForegroundService` keeps `BluetoothChatManager`'s advertiser running for as long as
+    real-time protection is on — effectively 24/7, not just while Chat is open — so a battery-optimal
+    interval there matters far more than shaving discovery latency the user isn't waiting on.
+    Scanning (`startDiscovery`) stays `SCAN_MODE_LOW_LATENCY` since it only ever runs while the
+    user is actively on the Chat screen. Don't "fix slow discovery" by bumping the advertiser back
+    to LOW_LATENCY without re-deriving this tradeoff.
+15. **`MeshRelayManager.tick()` skips its classic-Bluetooth-inquiry cycle when `PowerManager
+    .isPowerSaveMode` is true.** That inquiry is one of the most power-hungry radio operations on
+    the phone and this tick already runs unconditionally every 90s all day; respecting Battery
+    Saver here is the same call Android's own background-job scheduling makes, and mesh relay is
+    opportunistic store-and-forward by design, so a skipped cycle costs nothing but a slightly
+    later hop. Don't add other unconditional radio-heavy periodic work without the same check.
+16. **`MainActivity.handleTargetScreenIntent()` (Quick Settings Tile / notification deep links)
+    must never run before the splash screen's first transition off `Screen.SPLASH`.** It used to
+    run directly in `onCreate()`, before `setContent` — jumping the ViewModel straight to the
+    target screen before Compose ever composed a frame, so a cold start via the tile skipped the
+    splash animation entirely. It now runs from a one-shot `LaunchedEffect(Unit)` that awaits
+    `state.screen != Screen.SPLASH` via `snapshotFlow` first. `onNewIntent()` (already-running app)
+    still calls it directly — there's no splash to skip in that case.
 
 ---
 
@@ -466,8 +498,11 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
+| "One phone can't find any nearby device (but others can find it)" | BLE scan blindness | `chat/BluetoothChatManager.kt` (`isLocationEnabled()`, `startDiscovery()`) | §7.13, `BtChatConnState.LOCATION_DISABLED`, `ui/screens/ChatScreen.kt`'s banner for it |
+| Chat/mesh battery drain | Radio duty-cycle tuning | `chat/BluetoothChatManager.kt` (`startAdvertising`'s `AdvertiseSettings`), `chat/MeshRelayManager.kt` (`tick()`'s Battery Saver check) | §7.14, §7.15 — don't revert either without re-deriving the tradeoff |
 | Chat message/history persistence | Repository + models | `data/SettingsRepository.kt` (chat keys), `chat/ChatModels.kt` | `ui/screens/ChatHistoryScreen.kt`/`ChatSessionScreen.kt` |
 | Mesh relay (offline messaging) | `MeshRelayManager` | `chat/MeshRelayManager.kt`, `chat/MeshEnvelope.kt`, `chat/MeshIdentity.kt` | `service/ProtectionForegroundService.kt` (who owns the singleton) |
+| App doesn't show the splash/loading screen on launch | Cold-start ordering | `MainActivity.kt` (`onCreate`'s `LaunchedEffect(Unit)` gating `handleTargetScreenIntent`) | §7.16 — a deep-link intent (Quick Settings Tile) must never navigate before the first move off `Screen.SPLASH` |
 | USB/Bluetooth device alerts | `ExternalDeviceMonitor` | `hardware/ExternalDeviceMonitor.kt`, `hardware/ExternalDevice.kt` | §7.4 (Block limitation), `DeviceRiskTest.kt`, `ui/screens/ExternalDeviceAlertOverlay.kt` |
 | Navigation / back button behavior | `BackStackRules` | `state/BackStackRules.kt` | `AppViewModel.setScreen/navigateBack`, `BackStackRulesTest.kt` |
 | Settings / scheduled scan / notifications | Settings + WorkManager | `ui/screens/SettingsScreen.kt`, `state/AppViewModel.kt` (settings section), `service/ScheduledScanWorker.kt` | `service/NotificationHelper.kt` |

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -33,6 +34,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
+import kotlinx.coroutines.flow.first
 import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionDetailScreen
 import com.threadprotection.app.ui.screens.AppPermissionsScreen
@@ -79,13 +81,27 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleTargetScreenIntent(intent)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
 
             ThreadProtectionTheme(mode = state.theme) {
                 val palette = LocalTpPalette.current
                 val context = LocalContext.current
+
+                // A cold start must always play the splash animation, even when launched via a
+                // deep link (the App Permissions Quick Settings Tile, a notification tap). Root
+                // cause this fixes: handleTargetScreenIntent() used to run directly in onCreate,
+                // before setContent — which jumped straight to the target screen before Compose
+                // ever composed a single frame, so that launch path never showed the splash at
+                // all. Waiting for the very first move off Screen.SPLASH (whether to Sign-in or
+                // straight to Dashboard for a returning account) means the animation always plays,
+                // then the deep link is honored exactly as before. LaunchedEffect(Unit) keeps this
+                // a one-shot: it must not re-fire and yank the user back to the target screen on
+                // every later, unrelated state change.
+                LaunchedEffect(Unit) {
+                    snapshotFlow { state.screen }.first { it != Screen.SPLASH }
+                    handleTargetScreenIntent(intent)
+                }
 
                 // The app's own day/night toggle is independent of the system theme, so status/nav
                 // bar icon contrast has to follow it explicitly — otherwise light-on-light or

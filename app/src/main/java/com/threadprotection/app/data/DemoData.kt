@@ -95,7 +95,6 @@ object DemoData {
 
     val assurances = listOf(
         Assurance("Independently audited", "Full source and infrastructure audit by Cure53, published every year."),
-        Assurance("Certified", "ISO 27001 and SOC 2 Type II. GDPR compliant, data stored in the EU."),
         Assurance("You can see the reasoning", "Every alert names the sources that flagged it and how sure the AI is."),
         Assurance("Never sells your data", "No advertising SDKs. Independently verified in the annual audit."),
     )

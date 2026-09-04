@@ -18,6 +18,19 @@ enum class BtChatConnState {
     BT_UNAVAILABLE,
     BLE_UNSUPPORTED,
     NO_PERMISSION,
+
+    /**
+     * App permissions are granted, but the device's system-wide Location toggle is off.
+     *
+     * Root cause this exists to fix: on Android 6 through 11 — and on several OEM builds even on
+     * 12+ despite this app's `BLUETOOTH_SCAN` carrying `neverForLocation` — `BluetoothLeScanner`
+     * silently reports zero results whenever system Location is disabled, permission grant or not.
+     * There is no exception, no callback error, nothing: [DISCOVERING] looked identical to "no
+     * devices nearby," which is exactly the reported "this phone can't find anyone, but everyone
+     * else can find it" bug (that phone's own advertising doesn't need Location, only its scanning
+     * does). See BluetoothChatManager.startDiscovery().
+     */
+    LOCATION_DISABLED,
     DISCOVERING,
     SCAN_FAILED,
     CONNECTING,

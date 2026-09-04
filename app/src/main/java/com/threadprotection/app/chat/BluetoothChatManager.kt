@@ -18,10 +18,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Base64
 import android.util.Log
+import androidx.core.location.LocationManagerCompat
 import com.threadprotection.app.crypto.PqcChatCrypto
 import com.threadprotection.app.data.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -251,28 +253,49 @@ class BluetoothChatManager private constructor(
         if (adapterStateReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
-                if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                    BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
-                        Log.w(TAG, "adapterState: Bluetooth turned off — clearing scan/advertise state")
-                        forgetRadioState()
-                        connectionSlot.set(false)
-                        _connState.value = BtChatConnState.BT_UNAVAILABLE
+                when (intent.action) {
+                    BluetoothAdapter.ACTION_STATE_CHANGED -> when (
+                        intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    ) {
+                        BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                            Log.w(TAG, "adapterState: Bluetooth turned off — clearing scan/advertise state")
+                            forgetRadioState()
+                            connectionSlot.set(false)
+                            _connState.value = BtChatConnState.BT_UNAVAILABLE
+                        }
+                        BluetoothAdapter.STATE_ON -> {
+                            Log.i(TAG, "adapterState: Bluetooth turned back on — restarting listener and advertising")
+                            _connState.value = BtChatConnState.IDLE
+                            startListening()
+                            // Network-interruption edge case: the radio going down and back up is
+                            // the one moment the nearby list is guaranteed stale, so rebuild it
+                            // rather than leaving the user looking at devices that were visible
+                            // before the outage.
+                            resumeDiscoveryIfWanted()
+                        }
                     }
-                    BluetoothAdapter.STATE_ON -> {
-                        Log.i(TAG, "adapterState: Bluetooth turned back on — restarting listener and advertising")
+                    // Companion to isLocationEnabled(): a scan that stopped at LOCATION_DISABLED
+                    // would otherwise sit there forever even after the user goes and fixes it —
+                    // there's no other signal that would ever retry it. Root cause this closes:
+                    // without this receiver, turning Location back on required leaving and
+                    // reopening Chat to notice, exactly the silent-dead-end this whole feature
+                    // exists to avoid. A toggle to OFF while mid-scan is left to the scan's own
+                    // next attempt to notice (via isLocationEnabled()) rather than torn down here,
+                    // since — unlike Bluetooth going off — a scan already in flight isn't
+                    // invalidated by this broadcast.
+                    LocationManager.MODE_CHANGED_ACTION -> if (isLocationEnabled() && _connState.value == BtChatConnState.LOCATION_DISABLED) {
+                        Log.i(TAG, "adapterState: system Location turned back on — retrying discovery")
                         _connState.value = BtChatConnState.IDLE
-                        startListening()
-                        // Network-interruption edge case: the radio going down and back up is the
-                        // one moment the nearby list is guaranteed stale, so rebuild it rather than
-                        // leaving the user looking at devices that were visible before the outage.
                         resumeDiscoveryIfWanted()
                     }
                 }
             }
         }
         adapterStateReceiver = receiver
-        runCatching { context.registerReceiver(receiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)) }
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED).apply {
+            addAction(LocationManager.MODE_CHANGED_ACTION)
+        }
+        runCatching { context.registerReceiver(receiver, filter) }
             .onFailure { Log.w(TAG, "registerAdapterStateReceiver: failed", it); adapterStateReceiver = null }
     }
 
@@ -350,6 +373,29 @@ class BluetoothChatManager private constructor(
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
+    /**
+     * True unless the device's system-wide Location toggle is off in a way that Android's own
+     * documented contract says will silently blind [startDiscovery]'s BLE scan — see
+     * [BtChatConnState.LOCATION_DISABLED]'s doc.
+     *
+     * Only load-bearing below API 31 (Android 12): on those versions, BLE scanning requires
+     * `ACCESS_FINE_LOCATION` *and* the system Location toggle on, full stop — this app already
+     * requests that permission for exactly this reason (see [hasScanPermission]). From API 31 this
+     * app's `BLUETOOTH_SCAN` declares `neverForLocation`, which by Android's documented contract
+     * means a compliant scan stack must deliver results regardless of the Location toggle — so this
+     * check is gated to the versions where the OS contract actually requires Location, rather than
+     * guessed at more broadly: flagging it on a compliant 31+ device that doesn't need it would be
+     * telling the user to fix something that was never broken. (Some OEM Bluetooth stacks are known
+     * to still gate scan results on Location even on 31+ despite the flag; there's no public API to
+     * detect that non-compliance from here, so if discovery is still silent on such a phone with
+     * Location on, turning system Location on anyway is worth trying as a manual next step.)
+     */
+    private fun isLocationEnabled(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return true
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return true
+        return LocationManagerCompat.isLocationEnabled(lm)
+    }
+
     /** Broadcasts a small BLE packet — just [PRESENCE_SERVICE_UUID] plus this account's display
      *  name as service data — so other Thread Protection phones can find *this* one by "Tap to
      *  scan" without either device needing to be classic-Bluetooth "discoverable" (which would
@@ -384,8 +430,16 @@ class BluetoothChatManager private constructor(
             val displayName = advertisedDisplayName()
             val nameBytes = truncateUtf8(displayName, MAX_ADVERTISED_NAME_BYTES)
 
+            // BALANCED (~250ms interval), not LOW_LATENCY (~100ms): this advertisement is kept
+            // running by the always-on foreground service for as long as real-time protection is
+            // on — effectively 24/7 — not just while the user is looking at the Chat screen.
+            // LOW_LATENCY is meant for a device actively being searched for right now; running it
+            // continuously in the background trades a barely-perceptible bit of discovery speed
+            // (the scanning side already runs LOW_LATENCY while someone is actually looking, so a
+            // BALANCED advertisement is still typically found within a second or so) for a real,
+            // all-day reduction in the radio's duty cycle.
             val settings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
                 .setConnectable(false)
                 .setTimeout(0)
                 .build()
@@ -534,6 +588,15 @@ class BluetoothChatManager private constructor(
         if (!hasScanPermission()) {
             Log.w(TAG, "startDiscovery: scan permission not granted (needs BLUETOOTH_SCAN on API 31+, ACCESS_FINE_LOCATION below)")
             publishScanState(BtChatConnState.NO_PERMISSION)
+            return
+        }
+        // See isLocationEnabled()'s doc: below API 31, a BLE scan with system Location off returns
+        // zero results forever with no error at all — this is the exact "this phone can't find
+        // anyone, but everyone else can find it" bug, since advertising (what makes a phone
+        // findable) doesn't need Location, only scanning (what makes a phone able to find) does.
+        if (!isLocationEnabled()) {
+            Log.w(TAG, "startDiscovery: system Location is off — BLE scan would silently return zero results")
+            publishScanState(BtChatConnState.LOCATION_DISABLED)
             return
         }
         if (activeScanCallback != null) {
