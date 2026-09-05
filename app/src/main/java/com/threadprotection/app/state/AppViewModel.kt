@@ -1031,7 +1031,7 @@ class AppViewModel(
                 scanFeed = emptyList(),
             )
         }
-        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.RESULTS) }
+        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.RESULTS, paced = true) }
     }
 
     /**
@@ -1041,6 +1041,11 @@ class AppViewModel(
      * directly on `Screen.DASHBOARD` — never `Screen.RESULTS` — when done. User-requested,
      * explicitly and repeatedly: one continuous scanning screen per app open, then straight to the
      * homepage, not a splash followed by a second "now scanning" screen followed by a results list.
+     *
+     * Runs unpaced (`paced = false`, see [DeviceScanner.scan]'s doc): user-requested, explicitly,
+     * that opening the app "is taking some time to load… I don't need it." The scan is still the
+     * same real work — nothing here shortens what's checked — only the roughly 3 seconds of pure
+     * cosmetic pacing that used to sit on top of it is gone for this flow.
      */
     private fun runAutoScanOnSplash() {
         val scanner = deviceScanner ?: return
@@ -1054,16 +1059,16 @@ class AppViewModel(
                 scanFeed = emptyList(),
             )
         }
-        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.DASHBOARD) }
+        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.DASHBOARD, paced = false) }
     }
 
     /**
      * The real scan pipeline shared by [startScan] and [runAutoScanOnSplash] — identical work
      * either way (the same live findings, the same persistence, the same resolved/ignored-finding
-     * reconciliation); only [landingScreen] differs, since that's the one thing the two call sites
+     * reconciliation); [landingScreen] and [paced] are the only two things the two call sites
      * actually disagree about.
      */
-    private suspend fun runRealScan(scanner: DeviceScanner, landingScreen: Screen) {
+    private suspend fun runRealScan(scanner: DeviceScanner, landingScreen: Screen, paced: Boolean) {
         var feedSeq = 0L
         // See resolvedRecordsReady's doc: closes the cold-start race where a scan launched
         // before the first disk read lands would otherwise treat every previously fixed or
@@ -1072,7 +1077,7 @@ class AppViewModel(
             resolvedRecordsReady.await()
             ignoredRecordsReady.await()
         }
-        val result = scanner.scan(_state.value.apiKeys) { update ->
+        val result = scanner.scan(_state.value.apiKeys, paced = paced) { update ->
             _state.update {
                 val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
                 val feed = if (update.liveItem != null) {
@@ -1153,7 +1158,7 @@ class AppViewModel(
         if (returned.isNotEmpty()) {
             Log.w(TAG, "scan: ${returned.size} previously resolved threat(s) have re-emerged: $returned")
         }
-        delay(400)
+        if (paced) delay(400)
         _state.update { it.copy(screen = landingScreen, splashPhase = SplashPhase.BRANDING, hasScanned = true) }
     }
 

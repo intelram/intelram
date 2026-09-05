@@ -4,8 +4,8 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit adding live Wi-Fi network security assessment to the scan
-(§7.28), 2026-09-05. ~110 Kotlin files, 170 JVM unit tests (all passing, all offline — no
+**Last verified against:** the commit removing the on-open scan's cosmetic pacing delays
+(§7.29), 2026-09-05. ~110 Kotlin files, 170 JVM unit tests (all passing, all offline — no
 device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
 hardware).
 
@@ -723,6 +723,19 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     actually on Wi-Fi, so off Wi-Fi the absence of a finding never counts as "the problem is fixed"
     (see §5b). `SPLASH_PHASES` in `SplashScreen.kt` is a hand-kept copy of the scanner's phase list
     (§7.18) and was updated with the new phase — scan phases went 7 → 8.
+29. **`DeviceScanner.scan()` takes an unpaced mode for the on-open flow.** User-requested,
+    explicitly: opening the app "is taking some time to load… I don't need it." The ~3.7 seconds it
+    added were never real work — every `delay(350)`/`delay(90)`/`delay(80)` in the scan body existed
+    purely to make the manual "Scan Now" progress bar (`ScanningScreen`) legible to watch rather than
+    a flash, and stacked with the real network/device work regardless of who was looking.
+    `scan(apiKeys, paced: Boolean = true, onPhase)` wraps every one of those delays in a local
+    `pace(ms)` helper that no-ops when `paced == false`. `startScan()` (manual) keeps `paced = true`
+    unchanged; `runAutoScanOnSplash()` (§7.26, the on-open flow) passes `paced = false` through
+    `runRealScan`'s new `paced` parameter, including the closing `delay(400)` before landing.
+    **Never remove real work to make this faster** — every check, network call and finding is
+    identical either way; only the cosmetic waiting differs. If a future phase needs its own
+    delay, wrap it in `pace()` too rather than a bare `delay()`, or it will silently reintroduce
+    the slow-open complaint for that one phase only.
 
 ---
 

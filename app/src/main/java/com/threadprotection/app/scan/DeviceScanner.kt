@@ -53,30 +53,40 @@ class DeviceScanner(
     private val permissionAudit = PermissionAudit(context)
     private val hardwareWatcher = HardwareWatcher(context)
 
-    suspend fun scan(apiKeys: ApiKeys, onPhase: suspend (ScanPhaseUpdate) -> Unit): ScanResult = withContext(Dispatchers.IO) {
+    /**
+     * @param paced Whether to hold each phase on screen with the small artificial delays below —
+     * on for the manual "Scan Now" flow, where lingering a moment on each phase (see the calls in
+     * [ScanningScreen]) reads as legible progress rather than a flash. User-requested off for the
+     * on-open flow (`AppViewModel.runAutoScanOnSplash`): "very time taking… I don't need it" — the
+     * work itself is unchanged (still every real check below), only the roughly 3 seconds of pure
+     * waiting these delays add on top of it disappears. Never skip a real check to make this faster,
+     * only the cosmetic pacing.
+     */
+    suspend fun scan(apiKeys: ApiKeys, paced: Boolean = true, onPhase: suspend (ScanPhaseUpdate) -> Unit): ScanResult = withContext(Dispatchers.IO) {
         val total = 8
         val findings = mutableListOf<Finding>()
+        suspend fun pace(ms: Long) { if (paced) delay(ms) }
 
         onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "Reading installed packages"))
         val audit = permissionAudit.audit { label, packageName ->
             onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "Checking $label", liveItem = "$label  ·  $packageName"))
         }
         onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "${audit.totalInstalledCount} apps installed"))
-        delay(350)
+        pace(350)
 
         onPhase(ScanPhaseUpdate(1, total, "Scanning apps & sideloaded APKs…", "${audit.sideloadedApps.size} installed outside an app store"))
         findings += audit.findings
-        delay(350)
+        pace(350)
 
         val riskyPermCount = audit.apps.sumOf { app -> app.perms.count { it.risk } }
         onPhase(ScanPhaseUpdate(2, total, "Auditing app permissions…", "$riskyPermCount risky permissions found across ${audit.apps.size} apps"))
-        delay(350)
+        pace(350)
 
         onPhase(ScanPhaseUpdate(3, total, "Checking connected hardware…", "USB, Bluetooth, SIM, power"))
         val hwDevices = hardwareWatcher.scan()
         for (dev in hwDevices) {
             onPhase(ScanPhaseUpdate(3, total, "Checking connected hardware…", dev.detail, liveItem = "${dev.name}  ·  ${dev.detail}"))
-            delay(90)
+            pace(90)
         }
         hardwareWatcher.suspiciousHidAlert()?.let {
             findings += Finding(
@@ -94,14 +104,14 @@ class DeviceScanner(
                 source = "UsbManager (on-device)",
             )
         }
-        delay(350)
+        pace(350)
 
         onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", "Checking local socket table"))
         val rawPorts = PortScanner.listeningPorts()
         val ports = rawPorts.map { PortFinding(it.port, ownerLabelForUid(it.uid)) }
         for (p in ports) {
             onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", "Port ${p.port} open", liveItem = "Port ${p.port}  ·  ${p.ownerLabel}"))
-            delay(80)
+            pace(80)
         }
         if (rawPorts.any { it.port == 5555 }) {
             findings += Finding(
@@ -121,12 +131,12 @@ class DeviceScanner(
             )
         }
         onPhase(ScanPhaseUpdate(4, total, "Probing open ports & listeners…", if (PortScanner.readable()) "${ports.size} listening sockets found" else "Restricted on this Android version"))
-        delay(350)
+        pace(350)
 
         onPhase(ScanPhaseUpdate(5, total, "Verifying OS build & patch level…", "Reading security patch date"))
         val patchInfo = OsPatchChecker.current()
         OsPatchChecker.finding(patchInfo)?.let { findings += it }
-        delay(350)
+        pace(350)
 
         onPhase(ScanPhaseUpdate(6, total, "Checking Wi-Fi network security…", "Reading the live connection"))
         val wifiSecurity = WifiSecurityScanner.scan(context)
@@ -135,7 +145,7 @@ class DeviceScanner(
         }
         findings += WifiSecurityScanner.findings(wifiSecurity)
         onPhase(ScanPhaseUpdate(6, total, "Checking Wi-Fi network security…", WifiSecurityScanner.summaryLabel(wifiSecurity)))
-        delay(350)
+        pace(350)
 
         val configuredFeeds = ApiKeyId.entries.count { apiKeys.has(it) }
         onPhase(ScanPhaseUpdate(7, total, "Checking live threat-intelligence feeds…", "Querying NVD for browser/WebView CVEs"))
@@ -149,7 +159,7 @@ class DeviceScanner(
             }
             .onFailure { Log.w(TAG, "scan: WebView CVE lookup failed — not treating its absence as 'cleared'", it) }
         onPhase(ScanPhaseUpdate(7, total, "Checking live threat-intelligence feeds…", "$configuredFeeds/${ApiKeyId.entries.size} sources configured"))
-        delay(350)
+        pace(350)
 
         ScanResult(
             findings = findings.sortedByDescending { it.risk },
