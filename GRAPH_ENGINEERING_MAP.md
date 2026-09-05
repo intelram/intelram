@@ -4,10 +4,10 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit fixing "every website comes back suspicious" — substring brand
-matching and the verdict cliff that caused it (§7.27) — 2026-09-05. ~109 Kotlin files, 157 JVM unit
-tests (all passing, all offline — no device/emulator/`adb` exists in this environment; nothing in
-this app has ever been run on real hardware).
+**Last verified against:** the commit adding live Wi-Fi network security assessment to the scan
+(§7.28), 2026-09-05. ~110 Kotlin files, 170 JVM unit tests (all passing, all offline — no
+device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
+hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -694,6 +694,35 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     8 real domains — `google.com`, `wikipedia.org`, `github.com`, `bbc.co.uk`, `stackoverflow.com`,
     `paypal.com` all SAFE, and Cloudflare's own `malware.testcategory.com` /
     `phishing.testcategory.com` both MALICIOUS. Re-run that check before touching the weights.
+28. **Wi-Fi network security is assessed by the scan, and adds no screen of its own.** Added after a
+    feature-by-feature comparison against MobiArmour (a shipping Android threat-intelligence app the
+    user asked to benchmark against): of its nine advertised capabilities this app already had eight
+    — website scanning, QR scanning, app risk/permissions, data-breach alerts, OTP protection,
+    threat-pattern heuristics, and security guidance — and **Wi-Fi network analysis was the one real
+    gap**. The pre-existing `scan/WifiInfo.kt` only read the connected network's *name* for display
+    and never judged it.
+    `scan/WifiSecurityScanner.kt` assesses the live connection: the cipher actually protecting it
+    (open / OWE / WEP / WPA / WPA2 / WPA3 / enterprise), whether a captive portal is intercepting
+    traffic, whether a VPN or Private DNS is active, the DNS servers handed out, and a live DNS
+    hijack probe.
+    Two design rules to preserve if this is touched:
+    - **It emits `Finding`s, not a screen.** That is what keeps the UI unchanged — the user's
+      explicit constraint — since `ResultsScreen`/`ThreatDetailScreen` already render findings
+      generically. `Category.NETWORK` was added for them, which needs the label in
+      `ThreatDetailScreen.label()` (an exhaustive `when`) but deliberately gets **no**
+      `Derived.systemAuditAreas` entry, so no new Dashboard tile appears.
+    - **Unknown is never reported as a problem.** Android only exposes the cipher directly from
+      API 31 (`WifiInfo.currentSecurityType`); below that it must be read out of the scan-results
+      table, which additionally needs location services actually switched on. When it can't be read
+      the result is `Encryption.UNKNOWN` and *no finding at all* — never an assumed weakness. Same
+      for `dnsHijack == null`.
+    The DNS hijack probe resolves a random name under `.invalid`, which RFC 6761 reserves so that it
+    can never exist: any address in the answer means the network rewrites DNS failures. Chosen over
+    comparing a real domain against a trusted resolver, which would false-alarm every time a CDN
+    legitimately answered differently. `Category.NETWORK` is only added to `coveredCategories` when
+    actually on Wi-Fi, so off Wi-Fi the absence of a finding never counts as "the problem is fixed"
+    (see §5b). `SPLASH_PHASES` in `SplashScreen.kt` is a hand-kept copy of the scanner's phase list
+    (§7.18) and was updated with the new phase — scan phases went 7 → 8.
 
 ---
 
@@ -755,6 +784,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
 | "Check domain age/registration date", "SSL certificate expiry", "hidden pages behind a shortened link", "DNSSEC/DNS security" | Keyless technical checks (no API key involved at all) | `network/TechnicalInspector.kt` (`fetchDomainRegistration`/`fetchTlsDetails`/`fetchHttpTrace`/`fetchDnssecStatus`), `network/DnsApi.kt` | §5d, §7.24 — these always run regardless of configured keys; shown via `ui/components/Misc.kt`'s `TechnicalDetailsCard` |
 | "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/BrandRegistry.kt` (brands + official domains, shared with `UrlHeuristics`, never duplicated) | §5d, §7.27 — not a spell-checker; matches only `visibleText()` on whole words, and needs brand + password field + non-official host |
+| "Wi-Fi/network safety", "is this public network safe", "open network warning", "DNS hijacking" | Live network assessment | `scan/WifiSecurityScanner.kt` (cipher, captive portal, VPN/Private DNS, DNS hijack probe), `scan/DeviceScanner.kt` (its scan phase) | §7.28 — emits findings only, never a screen; unknown must never be reported as a weakness |
 | "A good website is reported suspicious", "every site says suspicious", "verdict is wrong" | Brand matching and verdict scoring | `network/BrandRegistry.kt`, `network/UrlVerdictScoring.kt`, `network/ContentInspector.kt` | §7.27 — run `UrlVerdictAccuracyTest` first; never reintroduce raw `contains(brand)` or a "one flag = suspicious" rule |
 | "QR/website verdict blocks opening a link", "no way to open a flagged link" | Verdict-to-action policy | `ui/screens/QrScannerScreen.kt` (`showOpenAnywayConfirm`, the "Open anyway" text link, the confirm `AlertDialog`) | §7.24 — the verdict must stay informational; never reintroduce a hard block |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |

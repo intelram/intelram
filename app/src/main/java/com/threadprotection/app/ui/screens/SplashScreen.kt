@@ -53,6 +53,7 @@ private val SPLASH_PHASES = listOf(
     "Checking connected hardware…",
     "Probing open ports & listeners…",
     "Verifying OS build & patch level…",
+    "Checking Wi-Fi network security…",
     "Checking live threat-intelligence feeds…",
 )
 

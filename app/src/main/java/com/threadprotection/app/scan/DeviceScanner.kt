@@ -54,7 +54,7 @@ class DeviceScanner(
     private val hardwareWatcher = HardwareWatcher(context)
 
     suspend fun scan(apiKeys: ApiKeys, onPhase: suspend (ScanPhaseUpdate) -> Unit): ScanResult = withContext(Dispatchers.IO) {
-        val total = 7
+        val total = 8
         val findings = mutableListOf<Finding>()
 
         onPhase(ScanPhaseUpdate(0, total, "Building software inventory…", "Reading installed packages"))
@@ -128,8 +128,17 @@ class DeviceScanner(
         OsPatchChecker.finding(patchInfo)?.let { findings += it }
         delay(350)
 
+        onPhase(ScanPhaseUpdate(6, total, "Checking Wi-Fi network security…", "Reading the live connection"))
+        val wifiSecurity = WifiSecurityScanner.scan(context)
+        wifiSecurity.ssid?.let {
+            onPhase(ScanPhaseUpdate(6, total, "Checking Wi-Fi network security…", "Connected to $it", liveItem = "Wi-Fi  ·  $it"))
+        }
+        findings += WifiSecurityScanner.findings(wifiSecurity)
+        onPhase(ScanPhaseUpdate(6, total, "Checking Wi-Fi network security…", WifiSecurityScanner.summaryLabel(wifiSecurity)))
+        delay(350)
+
         val configuredFeeds = ApiKeyId.entries.count { apiKeys.has(it) }
-        onPhase(ScanPhaseUpdate(6, total, "Checking live threat-intelligence feeds…", "Querying NVD for browser/WebView CVEs"))
+        onPhase(ScanPhaseUpdate(7, total, "Checking live threat-intelligence feeds…", "Querying NVD for browser/WebView CVEs"))
         // Distinguish "the lookup ran and found nothing" from "the lookup couldn't run" — only the
         // former is evidence that a previously reported CVE finding is genuinely gone.
         var cveLookupSucceeded = false
@@ -139,7 +148,7 @@ class DeviceScanner(
                 cve?.let { findings += it }
             }
             .onFailure { Log.w(TAG, "scan: WebView CVE lookup failed — not treating its absence as 'cleared'", it) }
-        onPhase(ScanPhaseUpdate(6, total, "Checking live threat-intelligence feeds…", "$configuredFeeds/${ApiKeyId.entries.size} sources configured"))
+        onPhase(ScanPhaseUpdate(7, total, "Checking live threat-intelligence feeds…", "$configuredFeeds/${ApiKeyId.entries.size} sources configured"))
         delay(350)
 
         ScanResult(
@@ -165,6 +174,9 @@ class DeviceScanner(
                 if (PortScanner.readable()) add(Category.PORTS)
                 // A CVE lookup that failed (offline, rate-limited) is not evidence of no CVE.
                 if (cveLookupSucceeded) add(Category.EMAIL)
+                // Only claim network coverage when actually on Wi-Fi — off Wi-Fi, the absence of a
+                // Wi-Fi finding is not evidence the previous one was resolved.
+                if (wifiSecurity.onWifi) add(Category.NETWORK)
             },
         )
     }

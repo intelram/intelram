@@ -2,7 +2,7 @@ package com.threadprotection.app.data
 
 import com.threadprotection.app.ui.theme.Severity
 
-enum class Category { SOFTWARE, PORTS, SERVICES, LICENSING, ACTIVITY, HARDWARE, OS, EMAIL }
+enum class Category { SOFTWARE, PORTS, SERVICES, LICENSING, ACTIVITY, HARDWARE, OS, EMAIL, NETWORK }
 
 data class Breach(val site: String, val date: String, val data: String)
 

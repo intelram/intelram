@@ -386,4 +386,5 @@ private fun com.threadprotection.app.data.Category.label(): String = when (this)
     com.threadprotection.app.data.Category.HARDWARE -> "Hardware"
     com.threadprotection.app.data.Category.OS -> "OS"
     com.threadprotection.app.data.Category.EMAIL -> "Email"
+    com.threadprotection.app.data.Category.NETWORK -> "Network"
 }
