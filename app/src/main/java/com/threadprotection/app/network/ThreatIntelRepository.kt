@@ -28,6 +28,7 @@ data class UrlVerdict(
     val onDeviceFlags: List<String>,
     val sourcesQueried: Int,
     val technical: TechnicalDetails? = null,
+    val content: ContentInspector.ContentReport? = null,
 ) {
     val matchedBy: String get() = signals.firstOrNull { it.verdict == Verdict.MALICIOUS }?.source
         ?: signals.firstOrNull { it.verdict == Verdict.SUSPICIOUS }?.source
@@ -76,6 +77,15 @@ class ThreatIntelRepository {
         val host = runCatching { URI(normalize(rawUrl)).host }.getOrNull()?.let { IDN.toASCII(it) }
 
         val technicalDeferred = async { runCatching { TechnicalInspector.inspect(rawUrl) }.getOrNull() }
+        // Content is judged against the page the link actually lands on — a shortener's own domain
+        // is meaningless to inspect, only where it ultimately redirects to matters — so this waits
+        // on the HTTP trace inside technicalDeferred rather than fetching `rawUrl` directly. It runs
+        // concurrently with every reputation-list job below, not after them.
+        val contentDeferred = async {
+            val tech = technicalDeferred.await() ?: return@async null
+            val finalUrl = tech.http?.finalUrl ?: return@async null
+            withGuard("Page content") { ContentInspector.inspect(finalUrl, tech.host) }
+        }
 
         val jobs = buildList {
             add(async { safeBrowsingSignal(rawUrl, keys) })
@@ -87,7 +97,14 @@ class ThreatIntelRepository {
         }
         val networkSignals = jobs.mapNotNull { it.await() }
         val technical = technicalDeferred.await()
-        val signals = networkSignals + listOfNotNull(domainAgeSignal(technical), tlsSignal(technical))
+        val content = contentDeferred.await()
+        val signals = networkSignals + listOfNotNull(
+            domainAgeSignal(technical),
+            tlsSignal(technical),
+            dnsSecuritySignal(technical),
+            redirectChainSignal(technical),
+            contentSignal(content),
+        )
 
         val maliciousCount = signals.count { it.verdict == Verdict.MALICIOUS }
         val suspiciousCount = signals.count { it.verdict == Verdict.SUSPICIOUS }
@@ -114,6 +131,7 @@ class ThreatIntelRepository {
             onDeviceFlags = onDeviceFlags.map { it.message },
             sourcesQueried = signals.size,
             technical = technical,
+            content = content,
         )
     }
 
@@ -132,6 +150,46 @@ class ThreatIntelRepository {
             tls.trusted -> UrlSignal("TLS certificate (live check)", Verdict.SAFE, "Valid, trusted certificate issued by ${tls.issuer ?: "a recognised authority"}")
             else -> null
         }
+    }
+
+    /**
+     * DNSSEC's absence is common and not itself suspicious — most legitimate consumer sites still
+     * don't sign their zones — so this only ever contributes positive corroboration, never a
+     * malicious/suspicious mark. Unvalidated DNS is still shown in the technical-details card, just
+     * not counted against the verdict.
+     */
+    private fun dnsSecuritySignal(technical: TechnicalDetails?): UrlSignal? {
+        val dnssec = technical?.dnssec ?: return null
+        return if (dnssec.validated) UrlSignal("DNS security (DNSSEC)", Verdict.SAFE, "DNS responses for this domain are cryptographically signed and validated")
+        else null
+    }
+
+    /**
+     * The "hidden pages behind a short link" the user actually lands on. Neutral (UNKNOWN) rather
+     * than SUSPICIOUS by itself — most redirects are entirely ordinary (a link shortener, a tracking
+     * hop, a CDN) — but shown so the user sees exactly what a shortener was hiding before deciding
+     * whether to continue, per the on-device shortener flag in [UrlHeuristics].
+     */
+    private fun redirectChainSignal(technical: TechnicalDetails?): UrlSignal? {
+        val http = technical?.http ?: return null
+        if (http.redirectCount == 0) return null
+        val chain = http.redirectHosts.joinToString(" → ")
+        val landedOn = runCatching { URI(http.finalUrl ?: "").host }.getOrNull() ?: http.finalUrl ?: "?"
+        return UrlSignal("Redirect chain (live check)", Verdict.UNKNOWN, "$chain → $landedOn")
+    }
+
+    /**
+     * Only ever elevates to SUSPICIOUS, never MALICIOUS, on its own — a single content heuristic
+     * isn't reliable enough by itself to make the strongest call; corroborating signals (domain age,
+     * TLS, reputation lists) push the overall verdict to MALICIOUS through the normal aggregation in
+     * [checkUrl] when they agree.
+     */
+    private fun contentSignal(content: ContentInspector.ContentReport?): UrlSignal? {
+        if (content == null || content.error != null) return null
+        val worst = content.findings.maxOfOrNull { it.severity }
+            ?: return UrlSignal("Page content check", Verdict.SAFE, "No obvious phishing indicators found in the fetched page content")
+        val verdict = if (worst >= 3) Verdict.SUSPICIOUS else Verdict.SAFE
+        return UrlSignal("Page content check", verdict, content.findings.joinToString(" · ") { it.message })
     }
 
     private suspend fun <T> withGuard(sourceLabel: String, block: suspend () -> T?): T? =

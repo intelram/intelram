@@ -4,10 +4,11 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit fixing the responder-side `NoSuchMethodError` chat crash
-(§7.22) and adding Bluetooth voice calling (§5g, §7.23), 2026-09-04. ~103 Kotlin files, 136 JVM unit
-tests (all passing, all offline — no device/emulator/`adb` exists in this environment; nothing in
-this app has ever been run on real hardware).
+**Last verified against:** the commit adding keyless DNSSEC/redirect-chain/page-content checks to
+the URL verdict pipeline and making non-safe verdicts openable-with-confirmation instead of a hard
+block (§5d, §7.24), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline — no
+device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
+hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -234,11 +235,41 @@ ThreatIntelRepository.checkUrl(url, apiKeys)   [network/ThreatIntelRepository.kt
     safeBrowsingSignal / virusTotalSignal / urlhausSignal / threatFoxSignal /
     phishTankSignal / abuseIpdbSignal    (each wrapped in withGuard — failures don't crash)
   + on-device: UrlHeuristics.analyze() (typosquatting, punycode, shorteners, brand lookalikes)
-  + TechnicalInspector (TLS/domain-age signals) via RdapApi / IpInfoApi
-  → UrlVerdict { overall, confidence, signals: List<UrlSignal>, onDeviceFlags, technical }
+  + TechnicalInspector (TLS/domain-age/redirect-chain/DNSSEC) via RdapApi / IpInfoApi / DnsApi —
+    always runs, no key needed
+  + ContentInspector (page-content phishing heuristics) — fetches the page the link actually lands
+    on (post-redirect), always runs, no key needed
+  → UrlVerdict { overall, confidence, signals: List<UrlSignal>, onDeviceFlags, technical, content }
 ```
 Every API client in `network/` is a thin Retrofit/OkHttp wrapper, one file each; `ApiKeys` (user's
-own free-tier keys, entered in Settings) gates which ones fire — no key bundled with the app.
+own free-tier keys, entered in Settings) gates which of the *reputation-list* sources fire — the
+technical/content checks below need no key at all and always run.
+
+**What each technical/content signal actually checks — all free, all keyless, all real (§7.24):**
+- **Domain age** (`domainAgeSignal`) — RDAP registration date; a domain registered days ago is one
+  of the strongest, most standard phishing signals.
+- **TLS certificate** (`tlsSignal`) — live handshake on port 443; trust, issuer, and (via
+  `TechnicalDetailsCard`) days until expiry.
+- **Redirect chain** (`redirectChainSignal` + `TechnicalDetailsCard`'s "Redirect chain" row) — the
+  actual hop-by-hop hosts a shortened/tracking link passes through before landing, from a real HEAD
+  request with redirects followed; this is literally "what page is hidden behind this QR code."
+  Neutral (`Verdict.UNKNOWN`) by itself — most redirects are ordinary — shown so the user sees the
+  real destination before deciding, not to accuse a link of anything on its own.
+- **DNS security / DNSSEC** (`dnsSecuritySignal` + `DnsApi`) — reads the `AD` (Authenticated Data)
+  flag off Google's own DoH resolver, which already validates DNSSEC on every query; this app never
+  re-implements DNSSEC validation itself. Absence is common and never counted against a site —
+  only presence ever contributes (`Verdict.SAFE`), same asymmetry as the TLS/domain checks avoid
+  false positives for ordinary sites that just don't sign their zone.
+- **Page content check** (`contentSignal` + `ContentInspector`) — a real GET of the *final*
+  post-redirect page (capped at 200KB), checked for: a brand name from `UrlHeuristics.
+  IMPERSONATED_BRANDS` appearing in the page content while the host isn't that brand's own domain
+  (content-level impersonation, catching cases the domain-string heuristic alone misses); scam-kit
+  pressure phrases ("verify your account immediately", etc.); a password field paired with brand
+  impersonation; a missing `<title>`. This is **not** a spell-checker — the app bundles no
+  dictionary and makes no claim to catch every typo — it's the same handful of concrete tells a
+  careful human looks for, applied to bytes actually fetched just now. Only ever elevates to
+  `SUSPICIOUS` on its own, never `MALICIOUS` — corroborating signals push it further through the
+  normal aggregation in `checkUrl`.
 
 ### 5e. Bluetooth chat (Chat screens)
 ```
@@ -563,6 +594,21 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     (`ChatConversationScreen`'s `requestCall`), matching how Chat's own Bluetooth permissions are
     requested at the point of scanning rather than up front at app launch — do not move it to a
     startup/onboarding prompt.
+24. **The QR/website verdict never hard-blocks opening a link — it's evidence, not a lock.** Only
+    `Verdict.SAFE` used to get an "Open link" button at all; every other verdict had no way to
+    proceed short of leaving the screen. User-requested reversal: the app's job ends at showing the
+    evidence, and whether to open a flagged link is explicitly the user's call. Non-safe verdicts
+    still default to "Don't open — go back" (the safe path stays the path of least resistance), but
+    `QrScannerScreen`'s "Open anyway" text link (deliberately not a button — same treatment a
+    browser gives its own unsafe-site interstitial) reaches the same `onOpenLink` after one
+    confirmation dialog that repeats the specific risk. Never remove that link to "protect" the
+    user harder than they asked to be protected — that was the exact behavior this reversed.
+    `ScanWebsiteScreen` never had an open action at all (it's a "check before I go there myself"
+    tool) and is intentionally untouched by this — there's nothing to unblock there.
+    New keyless technical/content checks (§5d) feed the *same* `signals` list every existing verdict
+    UI already iterates generically (`QrResultDetails`, `WebsiteVerdictCard`) — adding a new
+    `UrlSignal` source needs no per-screen UI change, only a real reason for it to exist in
+    `ThreatIntelRepository.checkUrl`'s `signals` list.
 
 ---
 
@@ -620,6 +666,9 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
+| "Check domain age/registration date", "SSL certificate expiry", "hidden pages behind a shortened link", "DNSSEC/DNS security" | Keyless technical checks (no API key involved at all) | `network/TechnicalInspector.kt` (`fetchDomainRegistration`/`fetchTlsDetails`/`fetchHttpTrace`/`fetchDnssecStatus`), `network/DnsApi.kt` | §5d, §7.24 — these always run regardless of configured keys; shown via `ui/components/Misc.kt`'s `TechnicalDetailsCard` |
+| "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/UrlHeuristics.kt` (`IMPERSONATED_BRANDS`, `isOfficialDomain` — shared, not duplicated) | §5d — not a spell-checker, a curated set of real phishing tells against the actual fetched page; only ever elevates to SUSPICIOUS on its own |
+| "QR/website verdict blocks opening a link", "no way to open a flagged link" | Verdict-to-action policy | `ui/screens/QrScannerScreen.kt` (`showOpenAnywayConfirm`, the "Open anyway" text link, the confirm `AlertDialog`) | §7.24 — the verdict must stay informational; never reintroduce a hard block |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
 | "Chat request doesn't notify/pop up (especially when the app is closed)" | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postChatRequest`/`cancelChatRequest` call sites), `service/NotificationHelper.kt` | §7.17 — must not depend on `AppViewModel`/`viewModelScope` being alive; `MainActivity.kt`'s `IncomingChatRequestOverlay` for the in-app side |
 | "Going back during a chat disconnects it" | Screen-leave vs. connection lifecycle | `state/AppViewModel.kt` (`leaveChatConversation`, `resumeChatConversation`, `leaveChat`) | §7.20 — `exitChat()` is the only function that should ever disconnect; `ui/screens/ChatScreen.kt`'s "Resume chat" banner |

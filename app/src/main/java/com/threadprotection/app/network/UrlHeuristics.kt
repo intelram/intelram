@@ -18,7 +18,9 @@ object UrlHeuristics {
         "rebrand.ly", "shorte.st", "s.id", "rb.gy", "tiny.cc", "lnkd.in",
     )
 
-    private val IMPERSONATED_BRANDS = listOf(
+    /** Shared with [ContentInspector] — one list, so a brand added for domain-name checks is
+     * automatically covered for page-content checks too, and vice versa. */
+    val IMPERSONATED_BRANDS = listOf(
         "paypal", "google", "apple", "amazon", "microsoft", "netflix", "facebook", "instagram",
         "bankofamerica", "chase", "wellsfargo", "irs", "usps", "fedex", "ups", "dhl", "coinbase",
         "binance", "whatsapp",
@@ -82,7 +84,8 @@ object UrlHeuristics {
         return host in URL_SHORTENERS
     }
 
-    private fun isOfficialDomain(host: String, brand: String): Boolean {
+    /** Also used by [ContentInspector] to tell "this page's content names Brand X" from "this page IS Brand X's real site". */
+    fun isOfficialDomain(host: String, brand: String): Boolean {
         // crude but effective: the brand's real domain is the registrable domain itself,
         // e.g. "paypal.com" or "accounts.google.com" — not "paypal.evil-domain.tk".
         val labels = host.split(".")

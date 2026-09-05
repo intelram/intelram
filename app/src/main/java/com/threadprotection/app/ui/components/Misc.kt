@@ -231,10 +231,23 @@ fun TechnicalDetailsCard(tech: TechnicalDetails, modifier: Modifier = Modifier) 
             } else {
                 DetailRow("Live request", "HTTP ${http.statusCode ?: "?"}${http.serverHeader?.let { " · server: $it" }.orEmpty()}")
                 if (http.redirectCount > 0) {
-                    DetailRow("Redirected", "${http.redirectCount} hop${if (http.redirectCount == 1) "" else "s"} → ${http.finalUrl}")
+                    // The full hop-by-hop chain, not just a count — this is exactly what a shortener
+                    // was hiding before this check followed it.
+                    val landedOnHost = http.finalUrl?.let { url -> runCatching { java.net.URI(url).host }.getOrNull() }
+                    DetailRow("Redirect chain", (http.redirectHosts + listOfNotNull(landedOnHost)).joinToString(" → "))
                 }
             }
         }
+
+        val dnssec = tech.dnssec
+        DetailRow(
+            "DNS security",
+            when {
+                dnssec == null -> "Could not check"
+                dnssec.validated -> "DNSSEC validated — DNS answers are cryptographically signed"
+                else -> "Not DNSSEC-signed (common — not itself a warning sign)"
+            },
+        )
     }
 }
 

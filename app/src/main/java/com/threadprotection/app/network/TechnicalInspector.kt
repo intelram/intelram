@@ -49,6 +49,9 @@ data class HttpTrace(
     val error: String? = null,
 )
 
+/** Whether this domain's DNS answers are DNSSEC-signed and validated — see [DnsApi]'s doc comment. */
+data class DnssecStatus(val validated: Boolean, val nameservers: List<String>)
+
 data class TechnicalDetails(
     val host: String,
     val resolvedIps: List<String>,
@@ -56,6 +59,7 @@ data class TechnicalDetails(
     val domain: DomainRegistration?,
     val tls: TlsDetails?,
     val http: HttpTrace?,
+    val dnssec: DnssecStatus?,
 )
 
 /**
@@ -73,6 +77,7 @@ object TechnicalInspector {
 
     private val rdap by lazy { NetworkModule.create<RdapApi>(RdapApi.BASE_URL) }
     private val ipInfo by lazy { NetworkModule.create<IpInfoApi>(IpInfoApi.BASE_URL) }
+    private val dns by lazy { NetworkModule.create<DnsApi>(DnsApi.BASE_URL) }
 
     suspend fun inspect(rawUrl: String): TechnicalDetails? = coroutineScope {
         val normalized = if ("://" in rawUrl) rawUrl.trim() else "https://${rawUrl.trim()}"
@@ -84,6 +89,7 @@ object TechnicalInspector {
         val domainDeferred = async { fetchDomainRegistration(host) }
         val tlsDeferred = async { fetchTlsDetails(host) }
         val httpDeferred = async { fetchHttpTrace(normalized) }
+        val dnssecDeferred = async { fetchDnssecStatus(host) }
 
         TechnicalDetails(
             host = host,
@@ -92,6 +98,7 @@ object TechnicalInspector {
             domain = domainDeferred.await(),
             tls = tlsDeferred.await(),
             http = httpDeferred.await(),
+            dnssec = dnssecDeferred.await(),
         )
     }
 
@@ -164,6 +171,24 @@ object TechnicalInspector {
                 }
             }
         }
+    }
+
+    /**
+     * Real DNSSEC validation status via Google's DoH resolver — see [DnsApi]'s doc comment for why
+     * asking an already-validating resolver is the honest approach here, not a claim that this app
+     * validates DNSSEC signatures itself. The absence of DNSSEC is common (most consumer sites still
+     * don't sign their zones) and is deliberately never treated as a red flag on its own — only its
+     * presence is used as positive corroboration; see [ThreatIntelRepository]'s `dnsSecuritySignal`.
+     */
+    private suspend fun fetchDnssecStatus(host: String): DnssecStatus? = withTimeoutOrNull(6_000) {
+        runCatching {
+            val answer = dns.resolve(host, "A")
+            val nsAnswer = runCatching { dns.resolve(host, "NS") }.getOrNull()
+            DnssecStatus(
+                validated = answer.Status == 0 && answer.AD,
+                nameservers = nsAnswer?.Answer?.mapNotNull { it.data?.trimEnd('.') }.orEmpty(),
+            )
+        }.getOrNull()
     }
 
     private suspend fun fetchHttpTrace(url: String): HttpTrace? = withContext(Dispatchers.IO) {

@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
@@ -79,6 +81,36 @@ fun QrScannerScreen(
     val palette = LocalTpPalette.current
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
     val verdict = state.qrVerdict
+    // The verdict is information, not a lock — README's design has always ended this app's job at
+    // showing the evidence, never at deciding for the user. A non-safe verdict defaults to "don't
+    // open" and says why, but "Open anyway" stays reachable behind one extra confirmation that
+    // repeats the specific risk, so the choice — and the responsibility for it — stays the user's.
+    var showOpenAnywayConfirm by remember { mutableStateOf(false) }
+
+    if (showOpenAnywayConfirm && verdict != null) {
+        val vc = verdictColors(verdict.overall)
+        AlertDialog(
+            onDismissRequest = { showOpenAnywayConfirm = false },
+            title = { Text("Open this link anyway?", style = TpType.cardTitle.copy(fontSize = 17.sp), color = palette.fg) },
+            text = {
+                Text(
+                    "This link was flagged ${vc.label.lowercase()} for the reasons shown above. " +
+                        "Thread Protection can warn you, but it's your call whether to continue.",
+                    style = TpType.body.copy(fontSize = 14.5.sp, lineHeight = 21.sp),
+                    color = palette.muted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showOpenAnywayConfirm = false; verdict.url.let(onOpenLink) }) {
+                    Text("Open anyway", color = vc.color)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOpenAnywayConfirm = false }) { Text("Cancel", color = palette.fg2) }
+            },
+            containerColor = palette.card,
+        )
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -304,6 +336,18 @@ fun QrScannerScreen(
                         PrimaryPillButton(text = "Open link", onClick = { verdict?.url?.let(onOpenLink) })
                     } else if (vc != null) {
                         OutlinedPillButton(text = "Don't open — go back", onClick = onRescan, borderColor = vc.border, textColor = vc.color)
+                        // Deliberately a plain text link, not a button — same "not recommended, but
+                        // reachable" treatment a browser gives its own unsafe-site interstitial.
+                        Text(
+                            "Open anyway",
+                            style = TpType.caption.copy(fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold),
+                            color = palette.muted,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showOpenAnywayConfirm = true }
+                                .padding(vertical = 8.dp),
+                        )
                     }
                     OutlinedPillButton(text = "Scan another code", onClick = onRescan, borderColor = palette.line3)
                 }
