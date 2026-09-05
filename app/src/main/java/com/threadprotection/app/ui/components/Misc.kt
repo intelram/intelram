@@ -206,23 +206,55 @@ fun TechnicalDetailsCard(tech: TechnicalDetails, modifier: Modifier = Modifier) 
             listOfNotNull(ip.city, ip.country).joinToString(", ").takeIf { it.isNotBlank() }?.let { DetailRow("Location", it) }
         }
 
-        val domain = tech.domain
-        when {
-            domain?.ageDays != null -> {
-                DetailRow("Domain age", "${domain.ageDays} day${if (domain.ageDays == 1L) "" else "s"} (registered ${domain.registeredOn?.take(10) ?: "?"})")
-                domain.registrar?.let { DetailRow("Registrar", it) }
-            }
-            else -> DetailRow("Domain age", "Not available for this domain's registry")
+        tech.threatDns?.takeIf { it.checked }?.let { threat ->
+            DetailRow(
+                "Threat blocklist",
+                if (threat.blocked) "Blocked by Cloudflare's security resolver as malware/phishing"
+                else "Not on Cloudflare's malware or phishing blocklist",
+            )
         }
 
+        // ── Domain registration ───────────────────────────────────────────────────────────────
+        val domain = tech.domain
+        if (domain != null) {
+            domain.ageHuman?.let { DetailRow("Domain age", "$it old") }
+            domain.registeredOn?.let { DetailRow("Registered on", formatStamp(it)) }
+            domain.expiresOn?.let {
+                val left = domain.daysUntilExpiry
+                val suffix = when {
+                    left == null -> ""
+                    left < 0 -> " · already expired"
+                    else -> " · $left day${if (left == 1L) "" else "s"} left"
+                }
+                DetailRow("Registration expires", formatStamp(it) + suffix)
+            }
+            domain.lastChangedOn?.let { DetailRow("Record last changed", formatStamp(it)) }
+            domain.registrar?.let { DetailRow("Registrar", it) }
+            if (domain.status.isNotEmpty()) DetailRow("Registry status", domain.status.joinToString(", "))
+            if (domain.nameservers.isNotEmpty()) DetailRow("Nameservers", domain.nameservers.joinToString(", "))
+            if (domain.ageDays == null) DetailRow("Domain age", "Not published by this domain's registry")
+        } else {
+            DetailRow("Domain registration", "Not available for this domain's registry")
+        }
+
+        // ── TLS certificate ───────────────────────────────────────────────────────────────────
         val tls = tech.tls
         when {
             tls == null -> DetailRow("TLS certificate", "Could not connect on port 443")
             tls.error != null -> DetailRow("TLS certificate", tls.error)
-            tls.trusted -> DetailRow(
-                "TLS certificate",
-                "Trusted · issued by ${tls.issuer?.substringBefore(',') ?: "unknown"} · expires in ${tls.daysUntilExpiry ?: "?"} days",
-            )
+            tls.trusted -> {
+                DetailRow("TLS certificate", "Trusted · issued by ${commonNameOf(tls.issuer)}")
+                DetailRow("Certificate for", commonNameOf(tls.subject))
+                DetailRow(
+                    "Certificate valid",
+                    "${tls.validFrom?.take(10) ?: "?"} → ${tls.validTo?.take(10) ?: "?"}" +
+                        (tls.daysUntilExpiry?.let { " · expires in $it day${if (it == 1L) "" else "s"}" } ?: ""),
+                )
+                tls.signatureAlgorithm?.let { DetailRow("Signature", it) }
+                if (tls.subjectAltNames.isNotEmpty()) {
+                    DetailRow("Also valid for", tls.subjectAltNames.take(8).joinToString(", ") + if (tls.subjectAltNames.size > 8) " (+${tls.subjectAltNames.size - 8} more)" else "")
+                }
+            }
         }
 
         tech.http?.let { http ->
@@ -244,12 +276,32 @@ fun TechnicalDetailsCard(tech: TechnicalDetails, modifier: Modifier = Modifier) 
             "DNS security",
             when {
                 dnssec == null -> "Could not check"
-                dnssec.validated -> "DNSSEC validated — DNS answers are cryptographically signed"
+                dnssec.validated -> "DNSSEC signed and validated"
                 else -> "Not DNSSEC-signed (common — not itself a warning sign)"
             },
         )
+
+        // ── Every record set the domain publishes ─────────────────────────────────────────────
+        if (tech.dnsRecords.isNotEmpty()) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(palette.line2))
+            Text("DNS records", style = TpType.cardTitle.copy(fontSize = 14.sp), color = palette.fg)
+            tech.dnsRecords.forEach { set ->
+                DetailRow(set.type, set.records.joinToString("\n"))
+            }
+        }
     }
 }
+
+/** Pulls "example.com" out of an X.500 name like `CN=example.com,O=Example Inc,C=US`. */
+private fun commonNameOf(x500: String?): String {
+    if (x500.isNullOrBlank()) return "unknown"
+    return x500.split(',').firstOrNull { it.trim().startsWith("CN=", ignoreCase = true) }
+        ?.trim()?.removePrefix("CN=")?.removePrefix("cn=")
+        ?: x500.take(60)
+}
+
+/** RDAP timestamps are full ISO-8601; only the date is worth a row. */
+private fun formatStamp(raw: String): String = raw.take(10)
 
 @Composable
 fun DetailRow(label: String, value: String) {

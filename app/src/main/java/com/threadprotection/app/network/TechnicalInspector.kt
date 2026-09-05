@@ -11,6 +11,7 @@ import java.net.InetAddress
 import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -27,6 +28,9 @@ data class TlsDetails(
     val validTo: String?,
     val daysUntilExpiry: Long?,
     val selfSigned: Boolean,
+    /** Every name the certificate is valid for — what actually decides whether it matches this site. */
+    val subjectAltNames: List<String> = emptyList(),
+    val signatureAlgorithm: String? = null,
     val error: String? = null,
 )
 
@@ -34,8 +38,33 @@ data class DomainRegistration(
     val registrar: String?,
     val registeredOn: String?,
     val expiresOn: String?,
+    val lastChangedOn: String? = null,
     val ageDays: Long?,
-)
+    /** Days until the registration lapses — negative means it has already expired. */
+    val daysUntilExpiry: Long? = null,
+    /** Registry status codes, e.g. "client transfer prohibited". */
+    val status: List<String> = emptyList(),
+    val nameservers: List<String> = emptyList(),
+    /** The registry's own DNSSEC answer, when it publishes one. */
+    val delegationSigned: Boolean? = null,
+) {
+    /** "28 years, 4 months" rather than a raw day count — what the user actually asked to see. */
+    val ageHuman: String?
+        get() {
+            val days = ageDays ?: return null
+            if (days < 0) return null
+            val years = days / 365
+            val months = (days % 365) / 30
+            return when {
+                years > 0 && months > 0 -> "$years year${plural(years)}, $months month${plural(months)}"
+                years > 0 -> "$years year${plural(years)}"
+                months > 0 -> "$months month${plural(months)}"
+                else -> "$days day${plural(days)}"
+            }
+        }
+
+    private fun plural(n: Long) = if (n == 1L) "" else "s"
+}
 
 data class IpIntel(val ip: String, val country: String?, val city: String?, val isp: String?, val org: String?, val asn: Int?)
 
@@ -49,8 +78,17 @@ data class HttpTrace(
     val error: String? = null,
 )
 
-/** Whether this domain's DNS answers are DNSSEC-signed and validated — see [DnsApi]'s doc comment. */
+/** Whether this domain's DNS answers are DNSSEC-signed and validated — see [DnsApi]'s doc. */
 data class DnssecStatus(val validated: Boolean, val nameservers: List<String>)
+
+/** One published DNS record set, e.g. all the MX records, shown verbatim in the technical details. */
+data class DnsRecordSet(val type: String, val records: List<String>)
+
+/**
+ * Cloudflare's malware/phishing verdict for this domain — see [ThreatDnsApi]'s doc for how the
+ * sinkhole answer was verified against Cloudflare's own documented test domains.
+ */
+data class ThreatDnsResult(val blocked: Boolean, val checked: Boolean)
 
 data class TechnicalDetails(
     val host: String,
@@ -60,12 +98,16 @@ data class TechnicalDetails(
     val tls: TlsDetails?,
     val http: HttpTrace?,
     val dnssec: DnssecStatus?,
+    /** A/AAAA/MX/NS/TXT/CNAME/SOA, in that order, omitting the ones the domain doesn't publish. */
+    val dnsRecords: List<DnsRecordSet> = emptyList(),
+    val threatDns: ThreatDnsResult? = null,
 )
 
 /**
  * Everything about a URL/domain that's independently verifiable, on top of the reputation-list
  * signals in [ThreatIntelRepository] — README's "show the technical details as proof": who owns
- * the IP, when the domain was registered, whether its TLS certificate is real and trusted, and
+ * the IP, when the domain was registered and when it expires, every DNS record set it publishes,
+ * whether its TLS certificate is real and trusted, whether a major security resolver blocks it, and
  * what actually happens when you request it (redirect chain, real server, real status code).
  * Every field here comes from a live lookup or a live connection made right now, never a guess.
  */
@@ -75,9 +117,13 @@ object TechnicalInspector {
         timeZone = java.util.TimeZone.getTimeZone("UTC")
     }
 
+    /** The record types worth showing a user, in the order they're displayed. */
+    private val RECORD_TYPES = listOf("A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA")
+
     private val rdap by lazy { NetworkModule.create<RdapApi>(RdapApi.BASE_URL) }
     private val ipInfo by lazy { NetworkModule.create<IpInfoApi>(IpInfoApi.BASE_URL) }
     private val dns by lazy { NetworkModule.create<DnsApi>(DnsApi.BASE_URL) }
+    private val threatDns by lazy { NetworkModule.create<ThreatDnsApi>(ThreatDnsApi.BASE_URL) }
 
     suspend fun inspect(rawUrl: String): TechnicalDetails? = coroutineScope {
         val normalized = if ("://" in rawUrl) rawUrl.trim() else "https://${rawUrl.trim()}"
@@ -90,15 +136,24 @@ object TechnicalInspector {
         val tlsDeferred = async { fetchTlsDetails(host) }
         val httpDeferred = async { fetchHttpTrace(normalized) }
         val dnssecDeferred = async { fetchDnssecStatus(host) }
+        val recordsDeferred = async { fetchDnsRecords(host) }
+        val threatDeferred = async { fetchThreatDnsVerdict(host) }
 
+        val registration = domainDeferred.await()
+        val dnssec = dnssecDeferred.await()
         TechnicalDetails(
             host = host,
             resolvedIps = ips,
             ipIntel = ipDeferred.await(),
-            domain = domainDeferred.await(),
+            domain = registration,
             tls = tlsDeferred.await(),
             http = httpDeferred.await(),
-            dnssec = dnssecDeferred.await(),
+            // The registry's own answer wins over the resolver's per-query AD flag when both exist.
+            dnssec = registration?.delegationSigned?.let { signed ->
+                DnssecStatus(validated = signed, nameservers = dnssec?.nameservers ?: registration.nameservers)
+            } ?: dnssec,
+            dnsRecords = recordsDeferred.await(),
+            threatDns = threatDeferred.await(),
         )
     }
 
@@ -112,37 +167,66 @@ object TechnicalInspector {
             ?.let { IpIntel(ip, it.country, it.city, it.connection?.isp, it.connection?.org, it.connection?.asn) }
     }
 
-    private suspend fun fetchDomainRegistration(host: String): DomainRegistration? = withTimeoutOrNull(8_000) {
-        val registrable = registrableDomain(host) ?: return@withTimeoutOrNull null
+    private suspend fun fetchDomainRegistration(host: String): DomainRegistration? = withTimeoutOrNull(10_000) {
+        val registrable = BrandRegistry.registrableDomain(host).takeIf { it.contains('.') } ?: return@withTimeoutOrNull null
         val response = runCatching { rdap.lookup(registrable) }.getOrNull() ?: return@withTimeoutOrNull null
         val registeredOn = response.registeredOn
-        val ageDays = registeredOn?.let { parseRdapInstant(it) }?.let { ChronoUnit.DAYS.between(it, Instant.now()) }
+        val now = Instant.now()
+        val ageDays = registeredOn?.let { parseRdapInstant(it) }?.let { ChronoUnit.DAYS.between(it, now) }
+        val daysLeft = response.expiresOn?.let { parseRdapInstant(it) }?.let { ChronoUnit.DAYS.between(now, it) }
         DomainRegistration(
             registrar = response.registrarName,
             registeredOn = registeredOn,
             expiresOn = response.expiresOn,
+            lastChangedOn = response.lastChanged,
             ageDays = ageDays,
+            daysUntilExpiry = daysLeft,
+            status = response.status,
+            nameservers = response.nameserverNames,
+            delegationSigned = response.secureDNS?.delegationSigned,
         )
     }
 
-    private fun parseRdapInstant(raw: String): Instant? = runCatching { Instant.parse(raw) }.getOrNull()
+    /**
+     * RDAP dates are ISO-8601 but registries differ on whether they use `Z` or a numeric offset
+     * (`1997-09-15T04:00:00-04:00`). `Instant.parse` rejects the offset form outright, which
+     * silently cost the domain age — and therefore the strongest positive signal there is — at
+     * every registry that formats dates that way.
+     */
+    internal fun parseRdapInstant(raw: String): Instant? =
+        runCatching { Instant.parse(raw) }.getOrNull()
+            ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
 
-    /** Naive eTLD+1 extraction: exact for the vast majority of domains, imperfect for uncommon multi-label TLDs — no bundled public-suffix list. */
-    private fun registrableDomain(host: String): String? {
-        val labels = host.split('.').filter { it.isNotBlank() }
-        if (labels.size < 2) return null
-        val lastTwo = labels.takeLast(2).joinToString(".")
-        val secondLevel = labels.getOrNull(labels.size - 2)?.lowercase()
-        return if (secondLevel in MULTI_LABEL_SUFFIX_SECOND_LEVEL && labels.size >= 3) {
-            labels.takeLast(3).joinToString(".")
-        } else {
-            lastTwo
-        }
+    private suspend fun fetchDnssecStatus(host: String): DnssecStatus? = withTimeoutOrNull(6_000) {
+        runCatching {
+            val answer = dns.resolve(host, "A")
+            val nsAnswer = runCatching { dns.resolve(host, "NS") }.getOrNull()
+            DnssecStatus(
+                validated = answer.Status == 0 && answer.AD,
+                nameservers = nsAnswer?.Answer?.mapNotNull { it.data?.trimEnd('.') }.orEmpty(),
+            )
+        }.getOrNull()
     }
 
-    private val MULTI_LABEL_SUFFIX_SECOND_LEVEL = setOf(
-        "co", "com", "org", "gov", "ac", "net", "edu",
-    )
+    /** Every record set the domain publishes — the "show all the record sets" the user asked for. */
+    private suspend fun fetchDnsRecords(host: String): List<DnsRecordSet> = coroutineScope {
+        RECORD_TYPES.map { type ->
+            async {
+                val answer = withTimeoutOrNull(6_000) { runCatching { dns.resolve(host, type) }.getOrNull() }
+                val records = answer?.Answer.orEmpty().mapNotNull { it.data?.trim() }.filter { it.isNotBlank() }
+                if (records.isEmpty()) null else DnsRecordSet(type, records)
+            }
+        }.mapNotNull { it.await() }
+    }
+
+    private suspend fun fetchThreatDnsVerdict(host: String): ThreatDnsResult? = withTimeoutOrNull(6_000) {
+        val response = runCatching { threatDns.resolve(host, "A") }.getOrNull()
+            ?: return@withTimeoutOrNull ThreatDnsResult(blocked = false, checked = false)
+        ThreatDnsResult(
+            blocked = ThreatDnsVerdictReader.isBlocked(response),
+            checked = ThreatDnsVerdictReader.isBlocked(response) || ThreatDnsVerdictReader.isClean(response),
+        )
+    }
 
     private suspend fun fetchTlsDetails(host: String): TlsDetails? = withContext(Dispatchers.IO) {
         withTimeoutOrNull(6_000) {
@@ -162,6 +246,10 @@ object TechnicalInspector {
                         validTo = ISO_UTC.format(cert.notAfter),
                         daysUntilExpiry = daysLeft,
                         selfSigned = cert.issuerX500Principal == cert.subjectX500Principal,
+                        subjectAltNames = runCatching {
+                            cert.subjectAlternativeNames.orEmpty().mapNotNull { it.getOrNull(1)?.toString() }
+                        }.getOrDefault(emptyList()),
+                        signatureAlgorithm = cert.sigAlgName,
                     )
                 }
             }.getOrElse { e ->
@@ -171,24 +259,6 @@ object TechnicalInspector {
                 }
             }
         }
-    }
-
-    /**
-     * Real DNSSEC validation status via Google's DoH resolver — see [DnsApi]'s doc comment for why
-     * asking an already-validating resolver is the honest approach here, not a claim that this app
-     * validates DNSSEC signatures itself. The absence of DNSSEC is common (most consumer sites still
-     * don't sign their zones) and is deliberately never treated as a red flag on its own — only its
-     * presence is used as positive corroboration; see [ThreatIntelRepository]'s `dnsSecuritySignal`.
-     */
-    private suspend fun fetchDnssecStatus(host: String): DnssecStatus? = withTimeoutOrNull(6_000) {
-        runCatching {
-            val answer = dns.resolve(host, "A")
-            val nsAnswer = runCatching { dns.resolve(host, "NS") }.getOrNull()
-            DnssecStatus(
-                validated = answer.Status == 0 && answer.AD,
-                nameservers = nsAnswer?.Answer?.mapNotNull { it.data?.trimEnd('.') }.orEmpty(),
-            )
-        }.getOrNull()
     }
 
     private suspend fun fetchHttpTrace(url: String): HttpTrace? = withContext(Dispatchers.IO) {

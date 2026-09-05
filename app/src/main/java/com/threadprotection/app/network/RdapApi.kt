@@ -28,12 +28,26 @@ data class RdapResponse(
     val events: List<RdapEvent> = emptyList(),
     val entities: List<RdapEntity> = emptyList(),
     val status: List<String> = emptyList(),
+    val nameservers: List<RdapNameserver> = emptyList(),
+    val secureDNS: RdapSecureDns? = null,
 ) {
     val registeredOn: String? get() = events.firstOrNull { it.eventAction == "registration" }?.eventDate
     val expiresOn: String? get() = events.firstOrNull { it.eventAction == "expiration" }?.eventDate
     val lastChanged: String? get() = events.firstOrNull { it.eventAction == "last changed" }?.eventDate
     val registrarName: String? get() = entities.firstOrNull { "registrar" in it.roles }?.vcardFn
+    val nameserverNames: List<String> get() = nameservers.mapNotNull { it.ldhName?.lowercase() }
 }
+
+@Serializable
+data class RdapNameserver(val ldhName: String? = null)
+
+/**
+ * The registry's own answer on whether the zone is DNSSEC-signed. More authoritative than a
+ * resolver's `AD` flag (which only reports that *this* lookup validated), so [TechnicalInspector]
+ * prefers it and falls back to the resolver flag when a registry omits it.
+ */
+@Serializable
+data class RdapSecureDns(val delegationSigned: Boolean? = null)
 
 @Serializable
 data class RdapEvent(val eventAction: String? = null, val eventDate: String? = null)

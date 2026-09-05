@@ -9,15 +9,24 @@ import okio.Buffer
 /**
  * Real, on-the-wire checks of what a page actually contains — not a spell-checker (this app bundles
  * no dictionary and makes no claim to catch every typo) but the same handful of concrete, verifiable
- * red flags a careful human would look for after landing on a page: does it claim to be a brand it
- * isn't, does it lean on the pressure language phishing kits reuse near-verbatim, does it ask for a
- * password on a page that gave every other reason to distrust it. Every finding here is a fact about
- * bytes this app actually fetched from [finalUrl] just now, never a guess.
+ * red flags a careful human would look for after landing on a page. Every finding here is a fact
+ * about bytes this app actually fetched from the final URL just now, never a guess.
+ *
+ * **Two root causes this was rewritten to fix**, both of which made ordinary sites read as
+ * suspicious:
+ *
+ * 1. **It searched raw HTML, including scripts and stylesheets.** `google.com`'s own homepage
+ *    matched "microsoft" (from `navigator.userAgent` sniffing for `"microsoft edge"`) and "irs"
+ *    (inside the CSS `:first-child`); `bbc.com` matched six brands. Only [visibleText] — markup,
+ *    `<script>` and `<style>` stripped — is searched now, and only on whole-word boundaries.
+ * 2. **Naming a brand was treated as impersonation by itself.** Any page that mentions a big
+ *    company — a news story, a review, a documentation page — was flagged. Impersonation now
+ *    requires the actual phishing shape: the brand is named *and* the page collects a password
+ *    *and* the host isn't one of that brand's own domains.
  */
 object ContentInspector {
 
-    /** Reused near-verbatim across real phishing kits — not exhaustive, but each phrase alone is a
-     * strong tell, and it costs nothing to check for all of them. */
+    /** Reused near-verbatim across real phishing kits — each phrase alone is a strong tell. */
     private val URGENCY_PHRASES = listOf(
         "verify your account immediately", "account will be suspended", "confirm your identity now",
         "your account has been limited", "unusual activity detected", "click here immediately",
@@ -27,6 +36,13 @@ object ContentInspector {
     )
 
     private const val MAX_BYTES = 200_000L
+
+    private val SCRIPT_OR_STYLE = Regex("<(script|style|noscript|template)\\b[^>]*>.*?</\\1>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+    private val HTML_COMMENT = Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL)
+    private val ANY_TAG = Regex("<[^>]*>", RegexOption.DOT_MATCHES_ALL)
+    private val TITLE_TAG = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+    private val PASSWORD_FIELD = Regex("<input[^>]*type\\s*=\\s*[\"']?password", RegexOption.IGNORE_CASE)
+    private val WHITESPACE = Regex("\\s+")
 
     data class ContentFinding(val severity: Int, val message: String)
 
@@ -38,8 +54,8 @@ object ContentInspector {
         val error: String? = null,
     )
 
-    /** [host] is the *final*, post-redirect host — content is judged against where it actually
-     * ended up, not the link that was scanned. */
+    /** [host] is the *final*, post-redirect host — content is judged against where the link
+     *  actually ended up, not the link that was scanned. */
     suspend fun inspect(finalUrl: String, host: String): ContentReport? = withContext(Dispatchers.IO) {
         withTimeoutOrNull(8_000) {
             runCatching {
@@ -72,33 +88,47 @@ object ContentInspector {
         }
     }
 
-    private fun analyze(html: String, host: String): ContentReport {
+    /** What a person actually reads on the page: no markup, no scripts, no stylesheets. */
+    internal fun visibleText(html: String): String =
+        html.replace(SCRIPT_OR_STYLE, " ")
+            .replace(HTML_COMMENT, " ")
+            .replace(ANY_TAG, " ")
+            .replace(WHITESPACE, " ")
+            .trim()
+
+    /** Split out from [inspect] so the judgement is testable without a network fetch. */
+    internal fun analyze(html: String, host: String): ContentReport {
         if (html.isBlank()) return ContentReport(null, false, 0, emptyList())
-        val lower = html.lowercase()
         val findings = mutableListOf<ContentFinding>()
 
-        val title = Regex("<title[^>]*>(.*?)</title>", RegexOption.DOT_MATCHES_ALL)
-            .find(html)?.groupValues?.get(1)?.replace(Regex("\\s+"), " ")?.trim()?.take(200)
-        val hasPasswordField = Regex("type\\s*=\\s*[\"']password[\"']").containsMatchIn(lower)
+        val title = TITLE_TAG.find(html)?.groupValues?.get(1)?.replace(WHITESPACE, " ")?.trim()?.take(200)
+        val hasPasswordField = PASSWORD_FIELD.containsMatchIn(html)
+        val text = visibleText(html)
+        val lowerText = text.lowercase()
 
-        val mentionedBrand = UrlHeuristics.IMPERSONATED_BRANDS.firstOrNull { brand ->
-            lower.contains(brand) && !UrlHeuristics.isOfficialDomain(host, brand)
-        }
-        if (mentionedBrand != null) {
-            findings += ContentFinding(3, "Page content refers to \"$mentionedBrand\" but is hosted on $host, not $mentionedBrand's own domain — a classic phishing setup")
+        // Impersonation needs the whole phishing shape, not just a brand name on the page — see
+        // this object's doc for the false positives that rule exists to kill.
+        val namedBrand = BrandRegistry.brandNamedInText(text, host)
+        if (namedBrand != null && hasPasswordField) {
+            findings += ContentFinding(
+                3,
+                "Asks for a password while presenting itself as ${namedBrand.display} — but $host is not one of ${namedBrand.display}'s own domains",
+            )
         }
 
-        val matchedPhrase = URGENCY_PHRASES.firstOrNull { lower.contains(it) }
+        val matchedPhrase = URGENCY_PHRASES.firstOrNull { BrandRegistry.containsWord(lowerText, it) }
         if (matchedPhrase != null) {
             findings += ContentFinding(2, "Uses pressure/urgency wording common to scam pages (\"$matchedPhrase\")")
         }
 
-        if (hasPasswordField && mentionedBrand != null) {
-            findings += ContentFinding(3, "Asks for a password while impersonating another brand's site")
+        if (hasPasswordField && findings.isEmpty()) {
+            // Worth stating plainly — a sign-in page is not a problem, it's just the thing worth
+            // being sure about before typing into it.
+            findings += ContentFinding(1, "This page asks for a password — make sure the address above is the one you expect")
         }
 
         if (title.isNullOrBlank()) {
-            findings += ContentFinding(1, "Page has no <title> — often a sign of an unfinished or auto-generated scam page")
+            findings += ContentFinding(1, "Page has no title — sometimes a sign of an unfinished or auto-generated page")
         }
 
         return ContentReport(title, hasPasswordField, html.toByteArray(Charsets.UTF_8).size, findings)

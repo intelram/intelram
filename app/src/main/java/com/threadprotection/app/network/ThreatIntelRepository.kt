@@ -18,7 +18,24 @@ data class BreachRecord(val name: String, val date: String, val dataExposed: Str
 
 data class BreachCheckResult(val email: String, val breaches: List<BreachRecord>, val checked: Boolean, val error: String? = null)
 
-data class UrlSignal(val source: String, val verdict: Verdict, val detail: String)
+/** How much a single [UrlSignal] is allowed to move the verdict — see [UrlVerdictScoring]. */
+enum class SignalWeight {
+    /** A dedicated blocklist naming this exact URL/domain, or a certificate that fails validation. */
+    DEFINITIVE,
+
+    /** Meaningful but circumstantial: host-IP reputation, page content, registration age. */
+    STRONG,
+
+    /** Context the user should see, which must never decide the verdict on its own. */
+    SUPPORTING,
+}
+
+data class UrlSignal(
+    val source: String,
+    val verdict: Verdict,
+    val detail: String,
+    val weight: SignalWeight = SignalWeight.SUPPORTING,
+)
 
 data class UrlVerdict(
     val url: String,
@@ -99,6 +116,7 @@ class ThreatIntelRepository {
         val technical = technicalDeferred.await()
         val content = contentDeferred.await()
         val signals = networkSignals + listOfNotNull(
+            threatDnsSignal(technical),
             domainAgeSignal(technical),
             tlsSignal(technical),
             dnsSecuritySignal(technical),
@@ -106,27 +124,18 @@ class ThreatIntelRepository {
             contentSignal(content),
         )
 
-        val maliciousCount = signals.count { it.verdict == Verdict.MALICIOUS }
-        val suspiciousCount = signals.count { it.verdict == Verdict.SUSPICIOUS }
-        val worstHeuristic = onDeviceFlags.firstOrNull()?.severity ?: 0
+        // "We reached the site and learned something" — without this, a domain that doesn't resolve
+        // at all would fall through to SAFE purely for having produced no bad news.
+        val hasAnyEvidence = signals.isNotEmpty() || technical?.resolvedIps?.isNotEmpty() == true
 
-        val overall = when {
-            maliciousCount > 0 -> Verdict.MALICIOUS
-            worstHeuristic >= 3 -> Verdict.MALICIOUS
-            suspiciousCount > 0 || worstHeuristic >= 1 -> Verdict.SUSPICIOUS
-            signals.any { it.verdict == Verdict.SAFE } -> Verdict.SAFE
-            else -> Verdict.UNKNOWN
-        }
-
-        val confidence = when {
-            signals.isEmpty() && onDeviceFlags.isEmpty() -> 40
-            else -> (55 + signals.size * 8 + onDeviceFlags.size * 4).coerceAtMost(99)
-        }
+        val outcome = UrlVerdictScoring.evaluate(
+            UrlVerdictScoring.Input(signals = signals, flags = onDeviceFlags, hasAnyEvidence = hasAnyEvidence),
+        )
 
         UrlVerdict(
             url = rawUrl,
-            overall = overall,
-            confidence = confidence,
+            overall = outcome.verdict,
+            confidence = outcome.confidence,
             signals = signals,
             onDeviceFlags = onDeviceFlags.map { it.message },
             sourcesQueried = signals.size,
@@ -135,22 +144,63 @@ class ThreatIntelRepository {
         )
     }
 
+    /**
+     * Cloudflare's malware/phishing resolver — the only real threat-intelligence source here that
+     * needs no API key, and therefore the only one most users will ever actually have working. See
+     * [ThreatDnsApi]'s doc for how the block signal was verified.
+     */
+    private fun threatDnsSignal(technical: TechnicalDetails?): UrlSignal? {
+        val result = technical?.threatDns ?: return null
+        if (!result.checked) return null
+        return if (result.blocked) {
+            UrlSignal("Cloudflare security DNS", Verdict.MALICIOUS, "Blocked as malware or phishing by Cloudflare's threat resolver", SignalWeight.DEFINITIVE)
+        } else {
+            UrlSignal("Cloudflare security DNS", Verdict.SAFE, "Not on Cloudflare's malware or phishing blocklist", SignalWeight.DEFINITIVE)
+        }
+    }
+
+    /**
+     * Registration age, the single most useful non-blocklist signal there is: phishing domains are
+     * overwhelmingly days or weeks old, and a domain that has been continuously registered for
+     * years is very hard to fake. Graded rather than binary — a two-year-old domain is genuinely
+     * more reassuring than a four-month-old one.
+     */
     private fun domainAgeSignal(technical: TechnicalDetails?): UrlSignal? {
-        val ageDays = technical?.domain?.ageDays ?: return null
+        val domain = technical?.domain ?: return null
+        val ageDays = domain.ageDays ?: return null
+        val age = domain.ageHuman ?: "$ageDays days"
+        val via = domain.registrar?.let { " · registered via $it" }.orEmpty()
         return when {
-            ageDays < 30 -> UrlSignal("Domain registration (RDAP)", Verdict.SUSPICIOUS, "Registered only $ageDays day${if (ageDays == 1L) "" else "s"} ago — many phishing sites use brand-new domains")
-            else -> UrlSignal("Domain registration (RDAP)", Verdict.SAFE, "Registered $ageDays days ago${technical.domain.registrar?.let { " via $it" }.orEmpty()}")
+            ageDays < 30 -> UrlSignal("Domain age (RDAP)", Verdict.SUSPICIOUS, "Registered only $age ago — most phishing sites use brand-new domains$via", SignalWeight.STRONG)
+            ageDays < 180 -> UrlSignal("Domain age (RDAP)", Verdict.SUSPICIOUS, "Registered $age ago — still fairly new$via", SignalWeight.SUPPORTING)
+            ageDays < 365 -> UrlSignal("Domain age (RDAP)", Verdict.SAFE, "Registered $age ago$via", SignalWeight.SUPPORTING)
+            else -> UrlSignal("Domain age (RDAP)", Verdict.SAFE, "Established domain — registered $age ago$via", SignalWeight.STRONG)
         }
     }
 
     private fun tlsSignal(technical: TechnicalDetails?): UrlSignal? {
         val tls = technical?.tls ?: return null
+        val issuer = tls.issuer?.let { commonName(it) }
         return when {
-            tls.error != null -> UrlSignal("TLS certificate (live check)", Verdict.MALICIOUS, tls.error)
-            tls.trusted -> UrlSignal("TLS certificate (live check)", Verdict.SAFE, "Valid, trusted certificate issued by ${tls.issuer ?: "a recognised authority"}")
+            // A certificate that fails validation is the one TLS outcome that decides a verdict:
+            // it means the connection cannot be trusted to reach who it claims to.
+            tls.error != null -> UrlSignal("TLS certificate", Verdict.MALICIOUS, tls.error, SignalWeight.DEFINITIVE)
+            tls.trusted -> UrlSignal(
+                "TLS certificate",
+                Verdict.SAFE,
+                "Valid, trusted certificate from ${issuer ?: "a recognised authority"}" +
+                    (tls.daysUntilExpiry?.let { " · expires in $it day${if (it == 1L) "" else "s"}" } ?: ""),
+                SignalWeight.STRONG,
+            )
             else -> null
         }
     }
+
+    /** Pulls "DigiCert Inc" out of an X.500 name like `CN=DigiCert Inc,O=...,C=US`. */
+    private fun commonName(x500: String): String =
+        x500.split(',').firstOrNull { it.trim().startsWith("CN=", ignoreCase = true) }
+            ?.trim()?.removePrefix("CN=")?.removePrefix("cn=")
+            ?: x500.take(60)
 
     /**
      * DNSSEC's absence is common and not itself suspicious — most legitimate consumer sites still
@@ -160,8 +210,11 @@ class ThreatIntelRepository {
      */
     private fun dnsSecuritySignal(technical: TechnicalDetails?): UrlSignal? {
         val dnssec = technical?.dnssec ?: return null
-        return if (dnssec.validated) UrlSignal("DNS security (DNSSEC)", Verdict.SAFE, "DNS responses for this domain are cryptographically signed and validated")
-        else null
+        return if (dnssec.validated) {
+            UrlSignal("DNS security (DNSSEC)", Verdict.SAFE, "DNS records are cryptographically signed and validated", SignalWeight.SUPPORTING)
+        } else {
+            null
+        }
     }
 
     /**
@@ -175,21 +228,26 @@ class ThreatIntelRepository {
         if (http.redirectCount == 0) return null
         val chain = http.redirectHosts.joinToString(" → ")
         val landedOn = runCatching { URI(http.finalUrl ?: "").host }.getOrNull() ?: http.finalUrl ?: "?"
-        return UrlSignal("Redirect chain (live check)", Verdict.UNKNOWN, "$chain → $landedOn")
+        return UrlSignal("Redirect chain", Verdict.UNKNOWN, "$chain → $landedOn", SignalWeight.SUPPORTING)
     }
 
     /**
-     * Only ever elevates to SUSPICIOUS, never MALICIOUS, on its own — a single content heuristic
-     * isn't reliable enough by itself to make the strongest call; corroborating signals (domain age,
-     * TLS, reputation lists) push the overall verdict to MALICIOUS through the normal aggregation in
-     * [checkUrl] when they agree.
+     * Never DEFINITIVE on its own — one content heuristic isn't reliable enough to make the
+     * strongest call by itself; corroborating signals push the overall verdict further through
+     * [UrlVerdictScoring] when they agree. Severity 1 findings (a sign-in page, a missing title) are
+     * reported to the user but deliberately don't count against the site at all: they describe
+     * perfectly normal pages.
      */
     private fun contentSignal(content: ContentInspector.ContentReport?): UrlSignal? {
         if (content == null || content.error != null) return null
         val worst = content.findings.maxOfOrNull { it.severity }
-            ?: return UrlSignal("Page content check", Verdict.SAFE, "No obvious phishing indicators found in the fetched page content")
-        val verdict = if (worst >= 3) Verdict.SUSPICIOUS else Verdict.SAFE
-        return UrlSignal("Page content check", verdict, content.findings.joinToString(" · ") { it.message })
+            ?: return UrlSignal("Page content", Verdict.SAFE, "No phishing indicators found in the page itself", SignalWeight.SUPPORTING)
+        val detail = content.findings.joinToString(" · ") { it.message }
+        return when {
+            worst >= 3 -> UrlSignal("Page content", Verdict.SUSPICIOUS, detail, SignalWeight.STRONG)
+            worst == 2 -> UrlSignal("Page content", Verdict.SUSPICIOUS, detail, SignalWeight.SUPPORTING)
+            else -> UrlSignal("Page content", Verdict.SAFE, detail, SignalWeight.SUPPORTING)
+        }
     }
 
     private suspend fun <T> withGuard(sourceLabel: String, block: suspend () -> T?): T? =
@@ -202,9 +260,9 @@ class ThreatIntelRepository {
             val response = safeBrowsing.findThreatMatches(key, SafeBrowsingRequest(threatInfo = SbThreatInfo(threatEntries = listOf(SbThreatEntry(url)))))
             if (response.matches.isNotEmpty()) {
                 val types = response.matches.joinToString { it.threatType.lowercase().replace('_', ' ') }
-                UrlSignal("Google Safe Browsing", Verdict.MALICIOUS, "Flagged for: $types")
+                UrlSignal("Google Safe Browsing", Verdict.MALICIOUS, "Flagged for: $types", SignalWeight.DEFINITIVE)
             } else {
-                UrlSignal("Google Safe Browsing", Verdict.SAFE, "No known threats found")
+                UrlSignal("Google Safe Browsing", Verdict.SAFE, "No known threats found", SignalWeight.DEFINITIVE)
             }
         }
     }
@@ -218,9 +276,9 @@ class ThreatIntelRepository {
             val stats = report?.data?.attributes?.lastAnalysisStats
             when {
                 stats == null -> null
-                stats.malicious > 0 -> UrlSignal("VirusTotal", Verdict.MALICIOUS, "${stats.malicious}/${stats.engineTotal} engines flagged this")
-                stats.suspicious > 0 -> UrlSignal("VirusTotal", Verdict.SUSPICIOUS, "${stats.suspicious}/${stats.engineTotal} engines marked this suspicious")
-                else -> UrlSignal("VirusTotal", Verdict.SAFE, "0/${stats.engineTotal} engines flagged this")
+                stats.malicious > 0 -> UrlSignal("VirusTotal", Verdict.MALICIOUS, "${stats.malicious}/${stats.engineTotal} engines flagged this", SignalWeight.DEFINITIVE)
+                stats.suspicious > 0 -> UrlSignal("VirusTotal", Verdict.SUSPICIOUS, "${stats.suspicious}/${stats.engineTotal} engines marked this suspicious", SignalWeight.STRONG)
+                else -> UrlSignal("VirusTotal", Verdict.SAFE, "0/${stats.engineTotal} engines flagged this", SignalWeight.DEFINITIVE)
             }
         }
     }
@@ -231,9 +289,9 @@ class ThreatIntelRepository {
         return withGuard("URLhaus") {
             val response = urlhaus.lookupUrl(key, url)
             if (response.isListed) {
-                UrlSignal("URLhaus", Verdict.MALICIOUS, "Listed as ${response.threat ?: "malware distribution"} (${response.urlStatus ?: "unknown"})")
+                UrlSignal("URLhaus", Verdict.MALICIOUS, "Listed as ${response.threat ?: "malware distribution"} (${response.urlStatus ?: "unknown"})", SignalWeight.DEFINITIVE)
             } else {
-                UrlSignal("URLhaus", Verdict.SAFE, "Not listed in the malware URL database")
+                UrlSignal("URLhaus", Verdict.SAFE, "Not listed in the malware URL database", SignalWeight.DEFINITIVE)
             }
         }
     }
@@ -245,9 +303,9 @@ class ThreatIntelRepository {
             val response = threatFox.searchIoc(key, ThreatFoxRequest(searchTerm = host))
             if (response.isListed) {
                 val ioc = response.data?.firstOrNull()
-                UrlSignal("ThreatFox", Verdict.MALICIOUS, "Reported as IOC for ${ioc?.malwarePrintable ?: "malware"} (confidence ${ioc?.confidenceLevel ?: 0}%)")
+                UrlSignal("ThreatFox", Verdict.MALICIOUS, "Reported as IOC for ${ioc?.malwarePrintable ?: "malware"} (confidence ${ioc?.confidenceLevel ?: 0}%)", SignalWeight.DEFINITIVE)
             } else {
-                UrlSignal("ThreatFox", Verdict.SAFE, "No IOC reports for this host")
+                UrlSignal("ThreatFox", Verdict.SAFE, "No IOC reports for this host", SignalWeight.STRONG)
             }
         }
     }
@@ -259,9 +317,9 @@ class ThreatIntelRepository {
             val result = response.results
             when {
                 result == null -> null
-                result.inDatabase && result.valid == "y" -> UrlSignal("PhishTank", Verdict.MALICIOUS, "Confirmed phishing report on file")
-                result.inDatabase -> UrlSignal("PhishTank", Verdict.SUSPICIOUS, "Reported, not yet verified")
-                else -> UrlSignal("PhishTank", Verdict.SAFE, "Not in the phishing database")
+                result.inDatabase && result.valid == "y" -> UrlSignal("PhishTank", Verdict.MALICIOUS, "Confirmed phishing report on file", SignalWeight.DEFINITIVE)
+                result.inDatabase -> UrlSignal("PhishTank", Verdict.SUSPICIOUS, "Reported, not yet verified", SignalWeight.STRONG)
+                else -> UrlSignal("PhishTank", Verdict.SAFE, "Not in the phishing database", SignalWeight.STRONG)
             }
         }
     }
@@ -274,9 +332,9 @@ class ThreatIntelRepository {
             val response = abuseIpdb.check(apiKey = key, ipAddress = ip)
             val score = response.data?.abuseConfidenceScore ?: return@withGuard null
             when {
-                score >= 60 -> UrlSignal("AbuseIPDB", Verdict.MALICIOUS, "Host IP has a $score% abuse confidence score")
-                score >= 25 -> UrlSignal("AbuseIPDB", Verdict.SUSPICIOUS, "Host IP has a $score% abuse confidence score")
-                else -> UrlSignal("AbuseIPDB", Verdict.SAFE, "Host IP has a low ($score%) abuse confidence score")
+                score >= 60 -> UrlSignal("AbuseIPDB", Verdict.MALICIOUS, "Host IP has a $score% abuse confidence score", SignalWeight.STRONG)
+                score >= 25 -> UrlSignal("AbuseIPDB", Verdict.SUSPICIOUS, "Host IP has a $score% abuse confidence score", SignalWeight.SUPPORTING)
+                else -> UrlSignal("AbuseIPDB", Verdict.SAFE, "Host IP has a low ($score%) abuse confidence score", SignalWeight.SUPPORTING)
             }
         }
     }

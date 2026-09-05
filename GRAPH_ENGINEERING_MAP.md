@@ -4,11 +4,10 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit collapsing the app-open flow to one continuous scanning screen
-that lands straight on the homepage — no separate `Screen.SCANNING`/`Screen.RESULTS` hop — for a
-reopened app (§7.26), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline —
-no device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
-hardware).
+**Last verified against:** the commit fixing "every website comes back suspicious" — substring brand
+matching and the verdict cliff that caused it (§7.27) — 2026-09-05. ~109 Kotlin files, 157 JVM unit
+tests (all passing, all offline — no device/emulator/`adb` exists in this environment; nothing in
+this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -245,7 +244,15 @@ Every API client in `network/` is a thin Retrofit/OkHttp wrapper, one file each;
 own free-tier keys, entered in Settings) gates which of the *reputation-list* sources fire — the
 technical/content checks below need no key at all and always run.
 
+The verdict itself is computed by **`UrlVerdictScoring.evaluate()`** (pure, unit-tested), not by
+counting signals — see §7.27 for the false-positive epidemic that replaced.
+
 **What each technical/content signal actually checks — all free, all keyless, all real (§7.24):**
+- **Cloudflare security DNS** (`threatDnsSignal` + `ThreatDnsApi`) — the *only* real
+  threat-intelligence source here that needs no API key, and therefore the only one most users
+  ever have working. Cloudflare's malware/phishing resolver answers `0.0.0.0`/`::` with an RFC 8914
+  Extended DNS Error 16 ("Censored") for domains it classifies as malicious. `DEFINITIVE` in both
+  directions: a block ends the verdict at MALICIOUS, a clean answer is real positive evidence.
 - **Domain age** (`domainAgeSignal`) — RDAP registration date; a domain registered days ago is one
   of the strongest, most standard phishing signals.
 - **TLS certificate** (`tlsSignal`) — live handshake on port 443; trust, issuer, and (via
@@ -656,6 +663,37 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     persistence, and its resolved/ignored-finding reconciliation are identical either way; only the
     landing screen (and whether `Screen.SCANNING` is ever shown) differs. If a future change needs a
     third landing screen, add another `AutoScanFlow` case rather than duplicating `runRealScan`.
+27. **Every website — `google.com` included — used to come back SUSPICIOUS.** Two independent
+    defects compounded, and both fixes are load-bearing:
+    - **Substring brand matching.** `UrlHeuristics` and `ContentInspector` both asked
+      `text.contains(brand)` against a flat brand list. In page HTML `"irs"` matches the CSS
+      `:first-child`, `"ups"` matches `groups`/`backups`, `"chase"` matches `purchase`, and
+      `"microsoft"` matches the `"microsoft edge"` user-agent sniffing in ordinary JavaScript.
+      Measured on real pages: `google.com` tripped 2 severity-3 "brand impersonation" findings,
+      `wikipedia.org` 4, `bbc.com` 6. In host names `purchase.com` was Chase and `backups.io` was
+      UPS. Replaced by `BrandRegistry`: official-domain allowlists checked first, whole-host-label
+      matching for short tokens (substring only for tokens ≥ 6 chars), leetspeak normalisation for
+      look-alikes (`paypa1`, `g00gle`), and — for page content — only `visibleText()` (scripts,
+      styles and markup stripped) matched on whole-word boundaries. Page content additionally now
+      requires the whole phishing shape — brand named **and** a password field **and** a non-official
+      host — because merely naming a company is what news articles and documentation do.
+    - **A verdict cliff with no way back.** `suspiciousCount > 0 || worstHeuristic >= 1 →
+      SUSPICIOUS` meant one low-severity note (a `.xyz` ending, four hyphens, plain HTTP) condemned
+      a site, and no amount of positive evidence could pull it back. Replaced by
+      `UrlVerdictScoring`, which weighs risk against trust: `SignalWeight.DEFINITIVE` signals (a
+      blocklist naming this exact URL, a certificate that fails validation) decide alone, everything
+      else scores, and established registration / trusted TLS / a clean Cloudflare answer subtract
+      points. **Positive credit from TLS and DNSSEC is suppressed when a severity-3 deception flag
+      fired** — a free certificate proves control of a domain, not honesty, so a look-alike can't
+      buy its way back to safe with one.
+    Also fixed here: `parseRdapInstant` only accepted the `Z` date form, so every registry that
+    publishes a numeric offset (`1997-09-15T04:00:00-04:00`) silently lost the domain age — the
+    strongest positive signal there is. **Verified two ways** (no device exists in this
+    environment): `UrlVerdictAccuracyTest` pins the logic offline against the exact markup that
+    caused the false positives, and the scoring rules were mirrored and run against live data for
+    8 real domains — `google.com`, `wikipedia.org`, `github.com`, `bbc.co.uk`, `stackoverflow.com`,
+    `paypal.com` all SAFE, and Cloudflare's own `malware.testcategory.com` /
+    `phishing.testcategory.com` both MALICIOUS. Re-run that check before touching the weights.
 
 ---
 
@@ -716,7 +754,8 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |
 | "Check domain age/registration date", "SSL certificate expiry", "hidden pages behind a shortened link", "DNSSEC/DNS security" | Keyless technical checks (no API key involved at all) | `network/TechnicalInspector.kt` (`fetchDomainRegistration`/`fetchTlsDetails`/`fetchHttpTrace`/`fetchDnssecStatus`), `network/DnsApi.kt` | §5d, §7.24 — these always run regardless of configured keys; shown via `ui/components/Misc.kt`'s `TechnicalDetailsCard` |
-| "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/UrlHeuristics.kt` (`IMPERSONATED_BRANDS`, `isOfficialDomain` — shared, not duplicated) | §5d — not a spell-checker, a curated set of real phishing tells against the actual fetched page; only ever elevates to SUSPICIOUS on its own |
+| "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/BrandRegistry.kt` (brands + official domains, shared with `UrlHeuristics`, never duplicated) | §5d, §7.27 — not a spell-checker; matches only `visibleText()` on whole words, and needs brand + password field + non-official host |
+| "A good website is reported suspicious", "every site says suspicious", "verdict is wrong" | Brand matching and verdict scoring | `network/BrandRegistry.kt`, `network/UrlVerdictScoring.kt`, `network/ContentInspector.kt` | §7.27 — run `UrlVerdictAccuracyTest` first; never reintroduce raw `contains(brand)` or a "one flag = suspicious" rule |
 | "QR/website verdict blocks opening a link", "no way to open a flagged link" | Verdict-to-action policy | `ui/screens/QrScannerScreen.kt` (`showOpenAnywayConfirm`, the "Open anyway" text link, the confirm `AlertDialog`) | §7.24 — the verdict must stay informational; never reintroduce a hard block |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
 | "Chat request doesn't notify/pop up (especially when the app is closed)" | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postChatRequest`/`cancelChatRequest` call sites), `service/NotificationHelper.kt` | §7.17 — must not depend on `AppViewModel`/`viewModelScope` being alive; `MainActivity.kt`'s `IncomingChatRequestOverlay` for the in-app side |

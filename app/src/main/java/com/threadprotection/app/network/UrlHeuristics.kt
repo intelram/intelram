@@ -5,6 +5,15 @@ import java.net.URI
 /**
  * On-device URL red-flag checks — no network, no API key. These run for every QR scan and every
  * link check regardless of which (if any) threat-intel keys the user has configured.
+ *
+ * **Severity is a real scale, not a boolean.** [ThreatIntelRepository] weighs these against the
+ * positive evidence it gathers (domain age, valid certificate, clean reputation lookups), so a
+ * single low-severity note here no longer condemns a site on its own. Getting that wrong is what
+ * made an ordinary `.top` domain read the same as a confirmed phishing page:
+ * - 1 — worth mentioning, meaningless alone (a cheap TLD, hyphens, plain HTTP).
+ * - 2 — genuinely unusual; a couple of these together are a real problem.
+ * - 3 — a technique that essentially only exists to deceive (raw IP, punycode, embedded
+ *   credentials, brand impersonation).
  */
 object UrlHeuristics {
 
@@ -16,14 +25,6 @@ object UrlHeuristics {
     private val URL_SHORTENERS = setOf(
         "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "cutt.ly",
         "rebrand.ly", "shorte.st", "s.id", "rb.gy", "tiny.cc", "lnkd.in",
-    )
-
-    /** Shared with [ContentInspector] — one list, so a brand added for domain-name checks is
-     * automatically covered for page-content checks too, and vice versa. */
-    val IMPERSONATED_BRANDS = listOf(
-        "paypal", "google", "apple", "amazon", "microsoft", "netflix", "facebook", "instagram",
-        "bankofamerica", "chase", "wellsfargo", "irs", "usps", "fedex", "ups", "dhl", "coinbase",
-        "binance", "whatsapp",
     )
 
     private val IPV4_REGEX = Regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$")
@@ -63,9 +64,16 @@ object UrlHeuristics {
         if (host.count { it == '-' } >= 4) {
             flags += Flag(1, "Unusually many hyphens in the domain name")
         }
-        val brand = IMPERSONATED_BRANDS.firstOrNull { host.contains(it) }
-        if (brand != null && !isOfficialDomain(host, brand)) {
-            flags += Flag(3, "Domain contains \"$brand\" but is not $brand's real domain — possible brand impersonation")
+        // See BrandRegistry's doc: whole-label matching for short tokens and leetspeak-normalised
+        // lookalikes, never raw substring — `purchase.com` is not Chase and `backups.io` is not UPS.
+        BrandRegistry.impersonationIn(host)?.let { match ->
+            val why = when (match.kind) {
+                BrandRegistry.MatchKind.LOOKALIKE ->
+                    "Domain is a look-alike of ${match.brand.display} (\"${match.token}\" with digits swapped in) but isn't ${match.brand.display}'s real domain"
+                BrandRegistry.MatchKind.LABEL ->
+                    "Domain uses ${match.brand.display}'s name but isn't one of ${match.brand.display}'s real domains — possible brand impersonation"
+            }
+            flags += Flag(3, why)
         }
         uri?.port?.let { port ->
             if (port != -1 && port !in setOf(80, 443)) {
@@ -82,15 +90,6 @@ object UrlHeuristics {
     fun isShortener(rawUrl: String): Boolean {
         val host = runCatching { URI(normalizeForParsing(rawUrl)).host?.lowercase() }.getOrNull() ?: return false
         return host in URL_SHORTENERS
-    }
-
-    /** Also used by [ContentInspector] to tell "this page's content names Brand X" from "this page IS Brand X's real site". */
-    fun isOfficialDomain(host: String, brand: String): Boolean {
-        // crude but effective: the brand's real domain is the registrable domain itself,
-        // e.g. "paypal.com" or "accounts.google.com" — not "paypal.evil-domain.tk".
-        val labels = host.split(".")
-        val registrable = if (labels.size >= 2) labels[labels.size - 2] else host
-        return registrable == brand
     }
 
     private fun normalizeForParsing(rawUrl: String): String {
