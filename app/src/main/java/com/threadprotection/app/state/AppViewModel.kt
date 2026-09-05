@@ -765,10 +765,50 @@ class AppViewModel(
 
     // ───────────────────────── splash ─────────────────────────
 
-    /** Called once the branded splash animation has played out. Leaves DASHBOARD alone if an
-     *  account was already restored from disk while the splash was showing. */
+    /**
+     * Called once the branded splash animation has played out.
+     *
+     * On a true cold start this is almost always a no-op: `accountFlow`'s collector (see `init`)
+     * reads a returning user's account from disk and moves `screen` to DASHBOARD well before the
+     * splash's own ~1.85s timer finishes, so by the time this fires `it.screen != Screen.SPLASH`
+     * already. It only actually does something for a brand-new account (still SPLASH, no account
+     * yet → SIGNIN) or for [replayLaunchExperience]'s repeat showing (still SPLASH, account already
+     * present from a prior launch → straight back to DASHBOARD, with a fresh scan).
+     */
     fun finishSplash() {
-        _state.update { if (it.screen == Screen.SPLASH) it.copy(screen = Screen.SIGNIN) else it }
+        var landedOnDashboard = false
+        _state.update { s ->
+            when {
+                s.screen != Screen.SPLASH -> s
+                s.account != null -> { landedOnDashboard = true; s.copy(screen = Screen.DASHBOARD) }
+                else -> s.copy(screen = Screen.SIGNIN)
+            }
+        }
+        if (landedOnDashboard) triggerAutoScanOnce()
+    }
+
+    /**
+     * Replays the branded splash — and, once it finishes, a fresh real scan — every time the app is
+     * genuinely reopened after being backgrounded, not only on the true cold process start that
+     * already gets this for free from [AppUiState]'s initial `screen = Screen.SPLASH`. User-requested,
+     * repeatedly and explicitly: this exact screen "whenever somebody opened the application," not
+     * only the first time per process.
+     *
+     * Wired to `ProcessLifecycleOwner`'s `ON_START` in `MainActivity` — unlike an Activity-level
+     * `onResume`, that only fires on a genuine whole-app foreground transition, not incidental
+     * in-app blips (a permission dialog, a picked file, a orientation change), so this doesn't
+     * replay the splash over something as small as returning from a system permission prompt.
+     *
+     * The guard below also makes the very first `ON_START` (which fires as a "catch up" dispatch
+     * the instant the observer is registered, even on a true cold start) a safe no-op: at that
+     * point `screen` is still its initial `Screen.SPLASH` value, so there's nothing to replay yet —
+     * the real cold-start splash just plays once, normally, through [finishSplash] above.
+     */
+    fun replayLaunchExperience() {
+        if (_state.value.account == null) return
+        if (_state.value.screen == Screen.SPLASH) return
+        autoScanTriggeredThisLaunch = false
+        _state.update { it.copy(screen = Screen.SPLASH) }
     }
 
     // ───────────────────────── sign-in ─────────────────────────
@@ -921,16 +961,18 @@ class AppViewModel(
     // ───────────────────────── scanning (real device scan) ─────────────────────────
 
     /**
-     * Runs one real [startScan] automatically the moment the user first reaches Dashboard this
-     * app launch — whether they landed there via auto sign-in (a persisted account) or by finishing
-     * onboarding for the first time. User-requested: every time the app is opened, not only the
-     * first time, it should scan the real environment and show a real result, rather than requiring
-     * a manual "Scan Now" tap first.
+     * Runs one real [startScan] automatically the moment the user reaches Dashboard fresh off the
+     * splash — whether that's auto sign-in (a persisted account), finishing onboarding for the
+     * first time, or [replayLaunchExperience] replaying the splash for a later reopen of the app.
+     * User-requested: every time the app is opened, not only the first time, it should scan the
+     * real environment and show a real result, rather than requiring a manual "Scan Now" tap first.
      *
-     * [autoScanTriggeredThisLaunch] makes this a true one-shot per process: without it, this would
+     * [autoScanTriggeredThisLaunch] makes each of those a true one-shot: without it, this would
      * also fire on an unrelated later account-flow re-emission (any DataStore write re-emits the
      * whole account, not just an actual sign-in — see the comment on that collector) and re-launch
-     * a full scan out of nowhere in the middle of a session.
+     * a full scan out of nowhere in the middle of a session. [replayLaunchExperience] deliberately
+     * resets this guard back to `false` before replaying the splash, so the *next* landing gets its
+     * own fresh one-shot scan too.
      */
     private fun triggerAutoScanOnce() {
         if (autoScanTriggeredThisLaunch) return

@@ -4,9 +4,9 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit adding keyless DNSSEC/redirect-chain/page-content checks to
-the URL verdict pipeline and making non-safe verdicts openable-with-confirmation instead of a hard
-block (§5d, §7.24), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline — no
+**Last verified against:** the commit making the branded splash (and the real scan behind it)
+replay every time the app is reopened from the background, not only on a true cold process start
+(§7.25), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline — no
 device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
 hardware).
 
@@ -525,19 +525,22 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     hand — if the real scan's phase labels change, update `SPLASH_PHASES` too, or the splash will
     preview phases that no longer match the scan that follows it. The splash's own progress/"checks"
     counter is still a simulated warm-up, not a real scan — see the file's own doc.
-19. **A real scan now runs automatically on every app launch, not just on manual "Scan Now."**
-    User-requested: opening the app should scan the real environment and show a real result every
-    time, first launch or not — not just display whatever was cached from the last scan.
-    `AppViewModel.triggerAutoScanOnce()` calls the real `startScan()` the moment the user first
-    reaches `Screen.DASHBOARD` this process — either via the `accountFlow` collector's "landing"
-    transition (returning user, persisted account) or `completeOnboarding()` (brand-new account).
-    `autoScanTriggeredThisLaunch` makes it fire exactly once per process: don't wire it into
+19. **A real scan now runs automatically every time the user opens the app, not just on manual
+    "Scan Now."** User-requested, repeatedly and explicitly: opening the app should show the
+    branded splash and scan the real environment every time — first launch, a fresh cold start, or
+    reopening after the app was merely backgrounded (not killed) — never just display whatever was
+    cached from the last scan. `AppViewModel.triggerAutoScanOnce()` calls the real `startScan()` the
+    moment the user reaches `Screen.DASHBOARD` fresh off the splash, from any of three call sites:
+    the `accountFlow` collector's "landing" transition (returning user, persisted account, true cold
+    start), `completeOnboarding()` (brand-new account, true cold start), or `finishSplash()` when
+    `replayLaunchExperience()` (§7.25) has just replayed the splash for a later reopen.
+    `autoScanTriggeredThisLaunch` makes each landing a true one-shot — don't wire this into
     `goDashboard()` or any other `setScreen(Screen.DASHBOARD)` call (`cancelScan()`, `leaveChat()`)
     — those are ordinary in-session navigation, not "the app was just opened," and would re-trigger
     a full scan on an unrelated screen change if hooked. This is a real, network-calling,
     permission-auditing, port-probing scan — it takes several seconds and a small amount of
-    data/battery on every launch now, not just when the user asks for it; that trade-off was
-    explicit in the request, not an oversight.
+    data/battery on every open now, not just when the user asks for it; that trade-off was explicit
+    in the request, not an oversight.
 20. **Leaving the chat conversation screen (Back) must never disconnect the call** —
     `AppViewModel.leaveChatConversation()` is pure navigation to `Screen.CHAT`; the live socket,
     `chatPeerName`, `chatMeshPeer` and `chatMessages` are left exactly as they are.
@@ -609,6 +612,27 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     UI already iterates generically (`QrResultDetails`, `WebsiteVerdictCard`) — adding a new
     `UrlSignal` source needs no per-screen UI change, only a real reason for it to exist in
     `ThreatIntelRepository.checkUrl`'s `signals` list.
+25. **The branded splash (§7.18) only ever played once per process before this — reopening the app
+    from the background (not killed) skipped straight to whatever screen was last shown, with no
+    splash and no fresh scan.** Root cause: `AppUiState.screen` defaults to `Screen.SPLASH` only
+    when a *new* `AppViewModel`/state instance is created (a true cold start, or the process was
+    actually killed and relaunched) — the ViewModel survives an ordinary background/foreground round
+    trip, so `screen` just stays wherever the user left it. User-requested, repeatedly and
+    explicitly: this exact splash — and the real scan behind it — every time the app is opened, not
+    only the first time per process. Fixed with `AppViewModel.replayLaunchExperience()`, wired to
+    `ProcessLifecycleOwner`'s `ON_START` in `MainActivity` (a `DisposableEffect`, not an
+    Activity-level `onResume` — the latter also fires for incidental in-app blips like a permission
+    dialog or an orientation change, which must NOT replay the splash over whatever the user is
+    doing). `replayLaunchExperience()` resets `autoScanTriggeredThisLaunch` and sets
+    `screen = Screen.SPLASH`; `finishSplash()` (its `onFinished` callback from `SplashScreen`) was
+    generalized to land on `Screen.DASHBOARD` (with `triggerAutoScanOnce()`, §7.19) whenever an
+    account already exists, not just `Screen.SIGNIN` — previously true only implicitly, because a
+    genuine cold start's `accountFlow` collector always won that race and moved `screen` off
+    `SPLASH` before the splash's own ~1.85s timer could fire `finishSplash()` at all. Both guard on
+    `account == null` (still mid sign-in/onboarding — leave that flow alone) and on `screen ==
+    Screen.SPLASH` already (no double-replay). Never wire this to Activity-level lifecycle callbacks
+    instead of `ProcessLifecycleOwner` — that reintroduces replaying the splash over live screens
+    (Chat, Settings, mid-QR-scan) on every trivial pause/resume blip, not just a genuine app reopen.
 
 ---
 
@@ -662,7 +686,8 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | QR "Open link" doesn't open a browser | `MainActivity`'s `openUrlInBrowser` wiring | `MainActivity.kt` (`openUrlInBrowser`, `Intent.ACTION_VIEW`), `ui/screens/QrScannerScreen.kt` (`onOpenLink` param) | The button previously called `onRescan` by mistake — verify it's still wired to `onOpenLink`, not `onRescan` |
 | "Score/status resets after restart", "Dashboard shows scan needed even though I already scanned" | Last-scan snapshot persistence | `data/SettingsRepository.kt` (`lastScanFlow`/`tp_last_scan`, `StoredScanData`), `state/AppViewModel.kt` (`toStored()`/`toDomain()` mapping, the `lastScanFlow` collector in `init`, the `saveLastScan` call at the end of `startScan()`) | §7.5b (why `permApps`/`liveHwDevices` are excluded), `state/Derived.kt` (`securityScore`/`scanStatus` — both gated on `hasScanned`) |
 | Scan pipeline (new check, new finding type) | `DeviceScanner` orchestration | `scan/DeviceScanner.kt` | `ScanResult.coveredCategories` (§5b gate), `data/Models.kt` (Finding/Category) |
-| "App doesn't auto-scan on open", "auto-scan fires more than once" | Launch-time auto-scan trigger | `state/AppViewModel.kt` (`triggerAutoScanOnce`, `autoScanTriggeredThisLaunch`, its two call sites in the `accountFlow` collector and `completeOnboarding()`) | §7.19 — never wire this into `goDashboard()` or another `setScreen(Screen.DASHBOARD)` call |
+| "App doesn't auto-scan on open", "auto-scan fires more than once" | Launch-time auto-scan trigger | `state/AppViewModel.kt` (`triggerAutoScanOnce`, `autoScanTriggeredThisLaunch`, its call sites in the `accountFlow` collector, `completeOnboarding()`, and `finishSplash()`) | §7.19 — never wire this into `goDashboard()` or another `setScreen(Screen.DASHBOARD)` call |
+| "Splash doesn't show every time the app is opened", "reopening the app skips straight to the last screen" | Splash replay on foreground | `state/AppViewModel.kt` (`replayLaunchExperience`, `finishSplash`), `MainActivity.kt` (the `ProcessLifecycleOwner`/`DisposableEffect` wiring) | §7.25 — must stay on `ProcessLifecycleOwner`, never an Activity-level `onResume` |
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |

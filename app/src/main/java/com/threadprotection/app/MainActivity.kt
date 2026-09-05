@@ -22,12 +22,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -102,6 +106,22 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     snapshotFlow { state.screen }.first { it != Screen.SPLASH }
                     handleTargetScreenIntent(intent)
+                }
+
+                // User-requested, repeatedly and explicitly: the branded splash (and the real scan
+                // behind it) should appear "whenever somebody opened the application," not only on
+                // a true cold process start. ProcessLifecycleOwner tracks the whole app's foreground
+                // state, not this one Activity's — unlike an Activity-level onResume, it does NOT
+                // re-fire for incidental in-app blips (a permission dialog, a picked file, an
+                // orientation change), only for a genuine "the user left every screen of this app
+                // and came back" transition. See AppViewModel.replayLaunchExperience()'s doc for why
+                // its own guard makes the very first (cold-start) ON_START a safe no-op here.
+                DisposableEffect(Unit) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_START) viewModel.replayLaunchExperience()
+                    }
+                    ProcessLifecycleOwner.get().lifecycle.addObserver(observer)
+                    onDispose { ProcessLifecycleOwner.get().lifecycle.removeObserver(observer) }
                 }
 
                 // The app's own day/night toggle is independent of the system theme, so status/nav

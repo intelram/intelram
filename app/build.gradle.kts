@@ -67,6 +67,10 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    // ProcessLifecycleOwner — whole-app foreground/background transitions, distinct from a single
+    // Activity's onResume (which also fires for incidental in-app blips like a permission dialog).
+    // See AppViewModel.replayLaunchExperience()'s doc for why this app needs that distinction.
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.androidx.compose.bom))
