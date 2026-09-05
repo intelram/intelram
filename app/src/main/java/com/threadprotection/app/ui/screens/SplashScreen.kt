@@ -164,6 +164,104 @@ fun SplashScreen(onFinished: () -> Unit) {
     }
 }
 
+/**
+ * The exact same branded visual as [SplashScreen] (hexagon gem, radar sweep, "Threat Intelligence"
+ * title, progress bar) but driven entirely by the real, live scan already running in
+ * `AppViewModel.runAutoScanOnSplash()` rather than a simulated counter. No internal timer — this
+ * composable is purely reactive to whatever real progress the caller passes in; the ViewModel
+ * itself decides when the real scan is done and moves off `Screen.SPLASH`.
+ *
+ * User-requested, explicitly and repeatedly: opening the app should show exactly one continuous
+ * scanning screen — this one — and land straight on the homepage when it finishes, not hand off to
+ * a second, separately-styled "now scanning" screen (`ScanningScreen`) first. See
+ * `AppViewModel.runAutoScanOnSplash()`'s doc for the full flow.
+ */
+@Composable
+fun RealScanSplashScreen(progressPct: Float, scannedCount: Int, phaseLabel: String?) {
+    val palette = LocalTpPalette.current
+    val smoothProgress by animateFloatAsState(
+        targetValue = (progressPct / 100f).coerceIn(0f, 1f),
+        animationSpec = tween(220, easing = LinearEasing),
+        label = "realScanProgress",
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "realScanMotion")
+    val sweepAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(2200, easing = LinearEasing)),
+        label = "realScanRadarSweep",
+    )
+    val haloPulse by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1400, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+        label = "realScanHaloPulse",
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                RadarSweepRing(size = 176.dp, angleDeg = sweepAngle, accent = palette.accent)
+                HexagonGemIcon(size = 132.dp, haloPulse = haloPulse)
+            }
+
+            Text(
+                text = "Threat Intelligence",
+                style = TpType.splashTitle,
+                color = palette.fg,
+                textAlign = TextAlign.Center,
+            )
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = "SCANNING · ${"%,d".format(scannedCount)} CHECKS",
+                    style = TpType.splashCaption,
+                    color = palette.muted,
+                    textAlign = TextAlign.Center,
+                )
+
+                Crossfade(targetState = phaseLabel?.takeIf { it.isNotBlank() } ?: "Starting scan…", label = "realScanPhase") { label ->
+                    Text(
+                        text = label.uppercase(),
+                        style = TpType.splashCaption.copy(fontSize = TpType.splashCaption.fontSize * 0.8f),
+                        color = palette.accent,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+
+                val barWidth = 180.dp
+                Box(
+                    modifier = Modifier
+                        .width(barWidth)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(palette.line),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(barWidth * smoothProgress)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Brush.horizontalGradient(listOf(palette.accent, palette.accentHover))),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /** A faint static ring plus one brighter arc that continuously rotates around it — the classic
  *  "radar sweep" read as scanning activity, framing the hexagon without competing with it. */
 @Composable

@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.threadprotection.app.data.DemoData
 import com.threadprotection.app.state.AppViewModel
 import com.threadprotection.app.state.Screen
+import com.threadprotection.app.state.SplashPhase
 import kotlinx.coroutines.flow.first
 import com.threadprotection.app.ui.screens.AiBrainScreen
 import com.threadprotection.app.ui.screens.AppPermissionDetailScreen
@@ -66,6 +67,7 @@ import com.threadprotection.app.ui.screens.ScanWebsiteScreen
 import com.threadprotection.app.ui.screens.ScanningScreen
 import com.threadprotection.app.ui.screens.SettingsScreen
 import com.threadprotection.app.ui.screens.SignInScreen
+import com.threadprotection.app.ui.screens.RealScanSplashScreen
 import com.threadprotection.app.ui.screens.SplashScreen
 import com.threadprotection.app.ui.screens.ThreatDetailScreen
 import com.threadprotection.app.ui.theme.LocalTpPalette
@@ -270,7 +272,16 @@ class MainActivity : ComponentActivity() {
                     when (state.screen) {
                         Screen.SPLASH -> {
                             BackHandler(enabled = true) { /* no-op: can't back out of the splash */ }
-                            SplashScreen(onFinished = viewModel::finishSplash)
+                            // Two phases of one continuous screen, not a splash followed by a
+                            // second scanning screen — see AppViewModel.runAutoScanOnSplash()'s doc.
+                            when (state.splashPhase) {
+                                SplashPhase.BRANDING -> SplashScreen(onFinished = viewModel::finishSplash)
+                                SplashPhase.REAL_SCAN -> RealScanSplashScreen(
+                                    progressPct = state.progress,
+                                    scannedCount = state.scannedCount,
+                                    phaseLabel = state.scanPhase.label,
+                                )
+                            }
                         }
 
                         Screen.SIGNIN -> SignInScreen(

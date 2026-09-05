@@ -78,12 +78,20 @@ data class ScanData(
 /** Live phase text shown on the Scanning screen while `DeviceScanner.scan()` runs. */
 data class ScanPhaseState(val index: Int = 0, val total: Int = 7, val label: String = "", val meta: String = "")
 
+/**
+ * Which sub-phase `Screen.SPLASH` is currently showing — see `AppViewModel.runAutoScanOnSplash()`'s
+ * doc for why the branded intro and the real on-open scan are two phases of one continuous screen
+ * rather than a handoff to a second, separately-styled scanning screen.
+ */
+enum class SplashPhase { BRANDING, REAL_SCAN }
+
 /** One real item as it's checked during a scan — package label + package name, a port, a hardware entry, etc. */
 data class ScanFeedEntry(val id: Long, val text: String)
 
 /** Mirrors the prototype's `state = {...}` object — see README §State — extended with real scan/auth/API-key state. */
 data class AppUiState(
     val screen: Screen = Screen.SPLASH,
+    val splashPhase: SplashPhase = SplashPhase.BRANDING,
     /** Screens visited before this one, oldest first — drives real Back navigation so leaving a
      *  detail screen returns where the user came from rather than always jumping to the Dashboard. */
     val backStack: List<Screen> = emptyList(),

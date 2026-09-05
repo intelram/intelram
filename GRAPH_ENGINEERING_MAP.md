@@ -4,10 +4,10 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit making the branded splash (and the real scan behind it)
-replay every time the app is reopened from the background, not only on a true cold process start
-(§7.25), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline — no
-device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
+**Last verified against:** the commit collapsing the app-open flow to one continuous scanning screen
+that lands straight on the homepage — no separate `Screen.SCANNING`/`Screen.RESULTS` hop — for a
+reopened app (§7.26), 2026-09-05. ~106 Kotlin files, 136 JVM unit tests (all passing, all offline —
+no device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
 hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
@@ -526,21 +526,21 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     preview phases that no longer match the scan that follows it. The splash's own progress/"checks"
     counter is still a simulated warm-up, not a real scan — see the file's own doc.
 19. **A real scan now runs automatically every time the user opens the app, not just on manual
-    "Scan Now."** User-requested, repeatedly and explicitly: opening the app should show the
-    branded splash and scan the real environment every time — first launch, a fresh cold start, or
-    reopening after the app was merely backgrounded (not killed) — never just display whatever was
-    cached from the last scan. `AppViewModel.triggerAutoScanOnce()` calls the real `startScan()` the
-    moment the user reaches `Screen.DASHBOARD` fresh off the splash, from any of three call sites:
-    the `accountFlow` collector's "landing" transition (returning user, persisted account, true cold
-    start), `completeOnboarding()` (brand-new account, true cold start), or `finishSplash()` when
-    `replayLaunchExperience()` (§7.25) has just replayed the splash for a later reopen.
-    `autoScanTriggeredThisLaunch` makes each landing a true one-shot — don't wire this into
-    `goDashboard()` or any other `setScreen(Screen.DASHBOARD)` call (`cancelScan()`, `leaveChat()`)
-    — those are ordinary in-session navigation, not "the app was just opened," and would re-trigger
-    a full scan on an unrelated screen change if hooked. This is a real, network-calling,
-    permission-auditing, port-probing scan — it takes several seconds and a small amount of
-    data/battery on every open now, not just when the user asks for it; that trade-off was explicit
-    in the request, not an oversight.
+    "Scan Now."** User-requested, repeatedly and explicitly: opening the app should scan the real
+    environment every time — first launch, a fresh cold start, or reopening after the app was
+    merely backgrounded (not killed) — never just display whatever was cached from the last scan.
+    `AppViewModel.triggerAutoScanOnce(flow)` runs it from any of three call sites: the `accountFlow`
+    collector's "landing" transition (returning user, persisted account, true cold start),
+    `completeOnboarding()` (brand-new account, true cold start), or `finishSplash()` when
+    `replayLaunchExperience()` (§7.25) has just replayed the splash for a later reopen. Which of the
+    two `AutoScanFlow` values each site passes decides which *screen experience* the scan runs
+    behind — see §7.26 — but `autoScanTriggeredThisLaunch` makes every one of them a true one-shot
+    regardless: don't wire this into `goDashboard()` or any other `setScreen(Screen.DASHBOARD)` call
+    (`cancelScan()`, `leaveChat()`) — those are ordinary in-session navigation, not "the app was just
+    opened," and would re-trigger a full scan on an unrelated screen change if hooked. This is a
+    real, network-calling, permission-auditing, port-probing scan — it takes several seconds and a
+    small amount of data/battery on every open now, not just when the user asks for it; that
+    trade-off was explicit in the request, not an oversight.
 20. **Leaving the chat conversation screen (Back) must never disconnect the call** —
     `AppViewModel.leaveChatConversation()` is pure navigation to `Screen.CHAT`; the live socket,
     `chatPeerName`, `chatMeshPeer` and `chatMessages` are left exactly as they are.
@@ -624,15 +624,38 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     Activity-level `onResume` — the latter also fires for incidental in-app blips like a permission
     dialog or an orientation change, which must NOT replay the splash over whatever the user is
     doing). `replayLaunchExperience()` resets `autoScanTriggeredThisLaunch` and sets
-    `screen = Screen.SPLASH`; `finishSplash()` (its `onFinished` callback from `SplashScreen`) was
-    generalized to land on `Screen.DASHBOARD` (with `triggerAutoScanOnce()`, §7.19) whenever an
-    account already exists, not just `Screen.SIGNIN` — previously true only implicitly, because a
-    genuine cold start's `accountFlow` collector always won that race and moved `screen` off
-    `SPLASH` before the splash's own ~1.85s timer could fire `finishSplash()` at all. Both guard on
-    `account == null` (still mid sign-in/onboarding — leave that flow alone) and on `screen ==
-    Screen.SPLASH` already (no double-replay). Never wire this to Activity-level lifecycle callbacks
-    instead of `ProcessLifecycleOwner` — that reintroduces replaying the splash over live screens
-    (Chat, Settings, mid-QR-scan) on every trivial pause/resume blip, not just a genuine app reopen.
+    `screen = Screen.SPLASH` + `splashPhase = SplashPhase.BRANDING` (§7.26 — the second field matters
+    too, or a reopen would resume mid-real-scan-phase instead of replaying the branded intro first).
+    Both guard on `account == null` (still mid sign-in/onboarding — leave that flow alone) and on
+    `screen == Screen.SPLASH` already (no double-replay). Never wire this to Activity-level lifecycle
+    callbacks instead of `ProcessLifecycleOwner` — that reintroduces replaying the splash over live
+    screens (Chat, Settings, mid-QR-scan) on every trivial pause/resume blip, not just a genuine app
+    reopen.
+26. **Opening the app shows exactly one scanning screen, then lands straight on the homepage — never
+    a splash followed by a second, separately-styled "now scanning" screen followed by a results
+    list.** User-requested, explicitly and repeatedly, after the two-screens version of §7.19/§7.25
+    read as redundant: "once it's scanned, then directly land on the homepage without doing second
+    scanning." `Screen.SPLASH` now has two phases (`AppUiState.splashPhase: SplashPhase`):
+    `BRANDING` (the original ~1.85s simulated-counter intro, `SplashScreen.kt`, unchanged) and
+    `REAL_SCAN` (`RealScanSplashScreen` — the *identical visual* — hexagon, radar sweep, "Threat
+    Intelligence" title, progress bar — but driven by the live `AppUiState.progress`/`scanPhase`/
+    `scannedCount` the real scan is actually producing, with no internal timer of its own).
+    `AppViewModel.runAutoScanOnSplash()` runs the real scan while staying in the `REAL_SCAN` phase —
+    never touching `Screen.SCANNING` — and lands directly on `Screen.DASHBOARD` when done — never
+    `Screen.RESULTS`. `finishSplash()` and the `accountFlow` collector's landing branch move
+    `splashPhase` to `REAL_SCAN` (staying on `Screen.SPLASH`) instead of jumping to `Screen.DASHBOARD`
+    immediately, specifically for the "returning user reopening an already set-up app" case.
+    **Deliberately NOT changed:** `completeOnboarding()` (finishing onboarding for a brand-new
+    account) and the `accountFlow` collector's `Screen.SIGNIN`/`Screen.CREATE_ACCOUNT` sub-case (a
+    fresh Google sign-in) still use the older `Screen.SCANNING` → `Screen.RESULTS` flow via
+    `AutoScanFlow.SCANNING_TO_RESULTS` — those are first-time, one-shot "here's what we found"
+    moments, not a *reopen* of the app, which is what this request was actually about; the manual
+    "Scan Now" button (`startScan()`) is untouched for the same reason. `runRealScan(scanner,
+    landingScreen)` is the one real scan pipeline shared by both flows (`startScan` passes
+    `Screen.RESULTS`, `runAutoScanOnSplash` passes `Screen.DASHBOARD`) — the actual scan, its
+    persistence, and its resolved/ignored-finding reconciliation are identical either way; only the
+    landing screen (and whether `Screen.SCANNING` is ever shown) differs. If a future change needs a
+    third landing screen, add another `AutoScanFlow` case rather than duplicating `runRealScan`.
 
 ---
 
@@ -688,6 +711,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | Scan pipeline (new check, new finding type) | `DeviceScanner` orchestration | `scan/DeviceScanner.kt` | `ScanResult.coveredCategories` (§5b gate), `data/Models.kt` (Finding/Category) |
 | "App doesn't auto-scan on open", "auto-scan fires more than once" | Launch-time auto-scan trigger | `state/AppViewModel.kt` (`triggerAutoScanOnce`, `autoScanTriggeredThisLaunch`, its call sites in the `accountFlow` collector, `completeOnboarding()`, and `finishSplash()`) | §7.19 — never wire this into `goDashboard()` or another `setScreen(Screen.DASHBOARD)` call |
 | "Splash doesn't show every time the app is opened", "reopening the app skips straight to the last screen" | Splash replay on foreground | `state/AppViewModel.kt` (`replayLaunchExperience`, `finishSplash`), `MainActivity.kt` (the `ProcessLifecycleOwner`/`DisposableEffect` wiring) | §7.25 — must stay on `ProcessLifecycleOwner`, never an Activity-level `onResume` |
+| "I see two scanning screens in a row when I open the app", "it lands on a results list instead of the homepage" | Which screen the on-open scan runs behind | `state/AppViewModel.kt` (`AutoScanFlow`, `runAutoScanOnSplash`, `runRealScan`), `ui/screens/SplashScreen.kt` (`RealScanSplashScreen`), `state/AppUiState.kt` (`SplashPhase`) | §7.26 — the reopen path must stay on `Screen.SPLASH`/`SplashPhase.REAL_SCAN` and land on `Screen.DASHBOARD`; don't let it drift back to `Screen.SCANNING`/`Screen.RESULTS` |
 | QR: new payload format | Classifier only | `qr/QrContentClassifier.kt` | §7.3 privacy gate, `QrContentClassifierTest.kt` |
 | QR: camera/scan speed/UX | Camera pipeline | `ui/components/QrCameraPreview.kt` | `ui/screens/QrScannerScreen.kt` |
 | URL/website reputation | Aggregator + one API client | `network/ThreatIntelRepository.kt` + relevant `network/*Api.kt` | `data/SettingsRepository.kt` (`ApiKeys`/`ApiKeyId` defined here, not in `Models.kt`), Settings screen key entry |

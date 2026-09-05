@@ -166,23 +166,34 @@ class AppViewModel(
                 // message, ignoring a finding, anything.
                 repo.accountFlow.distinctUntilChanged().collect { account ->
                     if (account == null) return@collect
-                    var landedOnDashboard = false
+                    var enteredRealScanFromSplash = false
+                    var landedOnDashboardFromSignIn = false
                     _state.update { s ->
                         // Only the sign-in transition navigates. Once the user is in the app, an
                         // account refresh must never move them off the screen they are on.
-                        val landing = s.screen == Screen.SPLASH ||
-                            s.screen == Screen.SIGNIN ||
-                            s.screen == Screen.CREATE_ACCOUNT
-                        if (landing) {
-                            landedOnDashboard = true
-                            s.copy(account = account, screen = Screen.DASHBOARD)
-                        } else {
-                            s.copy(account = account)
+                        when (s.screen) {
+                            // The common cold-start case: a returning user's persisted account
+                            // loads (almost always) before the splash's own ~1.85s timer finishes.
+                            // Stays on Screen.SPLASH and moves into its real-scan phase rather than
+                            // jumping to Dashboard immediately — see runAutoScanOnSplash()'s doc for
+                            // why the app-open experience must stay one continuous screen.
+                            Screen.SPLASH -> {
+                                enteredRealScanFromSplash = true
+                                s.copy(account = account, splashPhase = SplashPhase.REAL_SCAN)
+                            }
+                            // A brand-new Google sign-in (bypassing onboarding) — a first-time,
+                            // one-shot "just signed up" moment, not a reopen of the app, so this
+                            // deliberately keeps the older Screen.SCANNING → Screen.RESULTS flow,
+                            // exactly like completeOnboarding()'s demo-account equivalent below.
+                            Screen.SIGNIN, Screen.CREATE_ACCOUNT -> {
+                                landedOnDashboardFromSignIn = true
+                                s.copy(account = account, screen = Screen.DASHBOARD)
+                            }
+                            else -> s.copy(account = account)
                         }
                     }
-                    // A returning user (persisted account) auto-lands here straight from the
-                    // splash — this is the "opened the app" moment triggerAutoScanOnce exists for.
-                    if (landedOnDashboard) triggerAutoScanOnce()
+                    if (enteredRealScanFromSplash) triggerAutoScanOnce(AutoScanFlow.SPLASH_TO_DASHBOARD)
+                    if (landedOnDashboardFromSignIn) triggerAutoScanOnce(AutoScanFlow.SCANNING_TO_RESULTS)
                 }
             }
             safeLaunch {
@@ -766,25 +777,27 @@ class AppViewModel(
     // ───────────────────────── splash ─────────────────────────
 
     /**
-     * Called once the branded splash animation has played out.
+     * Called once the branded splash animation (`SplashPhase.BRANDING`) has played out.
      *
      * On a true cold start this is almost always a no-op: `accountFlow`'s collector (see `init`)
      * reads a returning user's account from disk and moves `screen` to DASHBOARD well before the
      * splash's own ~1.85s timer finishes, so by the time this fires `it.screen != Screen.SPLASH`
      * already. It only actually does something for a brand-new account (still SPLASH, no account
      * yet → SIGNIN) or for [replayLaunchExperience]'s repeat showing (still SPLASH, account already
-     * present from a prior launch → straight back to DASHBOARD, with a fresh scan).
+     * present from a prior launch → moves to `SplashPhase.REAL_SCAN`, still on `Screen.SPLASH`, and
+     * starts the real scan — see [runAutoScanOnSplash]'s doc for why this deliberately never hands
+     * off to `Screen.SCANNING`/`Screen.RESULTS` for this path).
      */
     fun finishSplash() {
-        var landedOnDashboard = false
+        var startRealScan = false
         _state.update { s ->
             when {
                 s.screen != Screen.SPLASH -> s
-                s.account != null -> { landedOnDashboard = true; s.copy(screen = Screen.DASHBOARD) }
+                s.account != null -> { startRealScan = true; s.copy(splashPhase = SplashPhase.REAL_SCAN) }
                 else -> s.copy(screen = Screen.SIGNIN)
             }
         }
-        if (landedOnDashboard) triggerAutoScanOnce()
+        if (startRealScan) triggerAutoScanOnce(AutoScanFlow.SPLASH_TO_DASHBOARD)
     }
 
     /**
@@ -808,7 +821,7 @@ class AppViewModel(
         if (_state.value.account == null) return
         if (_state.value.screen == Screen.SPLASH) return
         autoScanTriggeredThisLaunch = false
-        _state.update { it.copy(screen = Screen.SPLASH) }
+        _state.update { it.copy(screen = Screen.SPLASH, splashPhase = SplashPhase.BRANDING) }
     }
 
     // ───────────────────────── sign-in ─────────────────────────
@@ -882,8 +895,10 @@ class AppViewModel(
     fun completeOnboarding() {
         setScreen(Screen.DASHBOARD)
         // A brand-new account reaching Dashboard for the first time is just as much "opened the
-        // app" as a returning user's auto sign-in — see triggerAutoScanOnce's doc.
-        triggerAutoScanOnce()
+        // app" as a returning user's auto sign-in — see triggerAutoScanOnce's doc. Uses the older
+        // Screen.SCANNING → Screen.RESULTS flow deliberately: this is a first-time, one-shot
+        // "welcome, here's what we found" moment, not a reopen of an already-set-up app.
+        triggerAutoScanOnce(AutoScanFlow.SCANNING_TO_RESULTS)
     }
 
     // ───────────────────────── theme ─────────────────────────
@@ -960,35 +975,53 @@ class AppViewModel(
 
     // ───────────────────────── scanning (real device scan) ─────────────────────────
 
+    /** Which on-open scan experience [triggerAutoScanOnce] runs — see its doc. */
+    private enum class AutoScanFlow { SPLASH_TO_DASHBOARD, SCANNING_TO_RESULTS }
+
     /**
-     * Runs one real [startScan] automatically the moment the user reaches Dashboard fresh off the
-     * splash — whether that's auto sign-in (a persisted account), finishing onboarding for the
-     * first time, or [replayLaunchExperience] replaying the splash for a later reopen of the app.
-     * User-requested: every time the app is opened, not only the first time, it should scan the
-     * real environment and show a real result, rather than requiring a manual "Scan Now" tap first.
+     * Runs one real scan automatically the moment the user reaches Dashboard fresh off the splash —
+     * whether that's auto sign-in (a persisted account), finishing onboarding for the first time, a
+     * brand-new Google sign-in, or [replayLaunchExperience] replaying the splash for a later reopen
+     * of the app. User-requested: every time the app is opened, not only the first time, it should
+     * scan the real environment and show a real result, rather than requiring a manual "Scan Now"
+     * tap first.
      *
-     * [autoScanTriggeredThisLaunch] makes each of those a true one-shot: without it, this would
-     * also fire on an unrelated later account-flow re-emission (any DataStore write re-emits the
-     * whole account, not just an actual sign-in — see the comment on that collector) and re-launch
-     * a full scan out of nowhere in the middle of a session. [replayLaunchExperience] deliberately
-     * resets this guard back to `false` before replaying the splash, so the *next* landing gets its
-     * own fresh one-shot scan too.
+     * [flow] picks which of two visual experiences that scan runs behind:
+     * - [AutoScanFlow.SPLASH_TO_DASHBOARD] ([runAutoScanOnSplash]) — a *reopen* of an already set-up
+     *   app: stays on the one splash-styled screen throughout, then lands straight on Dashboard.
+     *   User-requested, explicitly and repeatedly, after the two-screens version below read as a
+     *   redundant "second scanning" step: "once it's scanned, then directly land on the homepage
+     *   without doing second scanning."
+     * - [AutoScanFlow.SCANNING_TO_RESULTS] ([startScan]) — a first-time, one-shot "here's what we
+     *   found" moment (finishing onboarding, or a brand-new sign-in): the older
+     *   `Screen.SCANNING` → `Screen.RESULTS` flow, deliberately left as it was — a first look at
+     *   one's own results in detail is a reasonable thing to show only the first time, not a
+     *   "reopen" this feature request was about.
+     *
+     * [autoScanTriggeredThisLaunch] makes each landing a true one-shot regardless of which flow:
+     * without it, this would also fire on an unrelated later account-flow re-emission (any DataStore
+     * write re-emits the whole account, not just an actual sign-in — see the comment on that
+     * collector) and re-launch a full scan out of nowhere in the middle of a session.
+     * [replayLaunchExperience] deliberately resets this guard back to `false` before replaying the
+     * splash, so the *next* landing gets its own fresh one-shot scan too.
      */
-    private fun triggerAutoScanOnce() {
+    private fun triggerAutoScanOnce(flow: AutoScanFlow) {
         if (autoScanTriggeredThisLaunch) return
         autoScanTriggeredThisLaunch = true
-        startScan()
+        when (flow) {
+            AutoScanFlow.SPLASH_TO_DASHBOARD -> runAutoScanOnSplash()
+            AutoScanFlow.SCANNING_TO_RESULTS -> startScan()
+        }
     }
 
     fun startScan() {
         val scanner = deviceScanner ?: return
         scanJob?.cancel()
-        var feedSeq = 0L
+        // Both resolutions and "Ignore for now" deliberately survive a rescan — they are
+        // re-validated inside runRealScan against whatever this scan actually finds, so a genuinely
+        // changed or worsened item reactivates on its own rather than the rescan blindly wiping
+        // either list.
         _state.update {
-            // Both resolutions and "Ignore for now" deliberately survive a rescan — they are
-            // re-validated below against whatever this scan actually finds, so a genuinely
-            // changed or worsened item reactivates on its own rather than the rescan blindly
-            // wiping either list.
             it.copy(
                 screen = Screen.SCANNING,
                 progress = 0f,
@@ -998,98 +1031,130 @@ class AppViewModel(
                 scanFeed = emptyList(),
             )
         }
-        scanJob = safeLaunch {
-            // See resolvedRecordsReady's doc: closes the cold-start race where a scan launched
-            // before the first disk read lands would otherwise treat every previously fixed or
-            // ignored threat as active again.
-            if (settingsRepository != null) {
-                resolvedRecordsReady.await()
-                ignoredRecordsReady.await()
-            }
-            val result = scanner.scan(_state.value.apiKeys) { update ->
-                _state.update {
-                    val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
-                    val feed = if (update.liveItem != null) {
-                        (listOf(ScanFeedEntry(feedSeq++, update.liveItem)) + it.scanFeed).take(SCAN_FEED_LIMIT)
-                    } else {
-                        it.scanFeed
-                    }
-                    it.copy(
-                        progress = pct,
-                        scannedCount = (pct / 100f * ESTIMATED_ITEMS).toInt(),
-                        scanPhase = ScanPhaseState(update.index, update.total, update.label, update.meta),
-                        scanFeed = feed,
-                    )
-                }
-            }
-            _state.update {
-                it.copy(
-                    progress = 100f,
-                    scanData = ScanData(
-                        findings = result.findings,
-                        permApps = result.permApps,
-                        hwDevices = result.hwDevices,
-                        appsScanned = result.appsScanned,
-                        ports = result.ports,
-                        portsFound = result.ports.size,
-                        portsProbed = result.portsProbed,
-                        osPatchLabel = result.osPatchLabel,
-                        feedsConfigured = result.feedsConfigured,
-                        feedsTotal = result.feedsTotal,
-                    ),
-                    liveHwDevices = result.hwDevices,
-                    scannedCount = result.appsScanned,
-                ).withResolvedApplied()
-            }
-            // Persisted so the Dashboard's score/status survives an app or phone restart — see
-            // StoredScanData's doc for what's deliberately left out (permApps, live hardware).
-            settingsRepository?.let { repo -> safeLaunch { repo.saveLastScan(_state.value.scanData.toStored()) } }
-            // A record whose fingerprint no longer matches means the problem came back, or got
-            // worse. Drop it from disk so it can be resolved again on its current terms rather
-            // than silently suppressing a threat the user never actually saw in this shape.
-            val snapshot = _state.value
-            val superseded = FindingIdentity.supersededRecords(result.findings, snapshot.resolvedRecords)
-            if (superseded.isNotEmpty()) {
-                Log.i(TAG, "scan: ${superseded.size} resolved finding(s) came back in a different shape — clearing their records")
-                settingsRepository?.clearResolvedFindings(superseded)
-            }
-            // Retire records whose problem this scan could see was gone. This is what lets a later
-            // return of the same issue register as a genuine re-emergence instead of being
-            // suppressed forever by the user's original resolution.
-            val cleared = FindingIdentity.clearedRecords(
-                findings = result.findings,
-                resolved = snapshot.resolvedRecords,
-                resolvedCategories = snapshot.resolvedCategories,
-                coveredCategories = result.coveredCategories,
+        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.RESULTS) }
+    }
+
+    /**
+     * The "opened the app" scan: identical real scan to [startScan] above, but stays on
+     * `Screen.SPLASH` (in its `SplashPhase.REAL_SCAN` phase — see `RealScanSplashScreen`) for the
+     * entire duration instead of switching to the separately-styled `Screen.SCANNING`, and lands
+     * directly on `Screen.DASHBOARD` — never `Screen.RESULTS` — when done. User-requested,
+     * explicitly and repeatedly: one continuous scanning screen per app open, then straight to the
+     * homepage, not a splash followed by a second "now scanning" screen followed by a results list.
+     */
+    private fun runAutoScanOnSplash() {
+        val scanner = deviceScanner ?: return
+        scanJob?.cancel()
+        _state.update {
+            it.copy(
+                progress = 0f,
+                scannedCount = 0,
+                fixInProgressId = null,
+                scanPhase = ScanPhaseState(),
+                scanFeed = emptyList(),
             )
-            if (cleared.isNotEmpty()) {
-                Log.i(TAG, "scan: ${cleared.size} resolved finding(s) confirmed gone — retiring their records")
-                settingsRepository?.markFindingsCleared(cleared)
-            }
-            // Same reconciliation as above, mirrored for "Ignore for now" so it carries the same
-            // durability and the same honesty about a changed or worsened issue reactivating.
-            val supersededIgnored = FindingIdentity.supersededRecords(result.findings, snapshot.ignoredRecords)
-            if (supersededIgnored.isNotEmpty()) {
-                Log.i(TAG, "scan: ${supersededIgnored.size} ignored finding(s) came back in a different shape — clearing their records")
-                settingsRepository?.clearIgnoredFindings(supersededIgnored)
-            }
-            val clearedIgnored = FindingIdentity.clearedRecords(
-                findings = result.findings,
-                resolved = snapshot.ignoredRecords,
-                resolvedCategories = snapshot.ignoredCategories,
-                coveredCategories = result.coveredCategories,
-            )
-            if (clearedIgnored.isNotEmpty()) {
-                Log.i(TAG, "scan: ${clearedIgnored.size} ignored finding(s) confirmed gone — retiring their records")
-                settingsRepository?.markIgnoredCleared(clearedIgnored)
-            }
-            val returned = _state.value.reEmergedIds
-            if (returned.isNotEmpty()) {
-                Log.w(TAG, "scan: ${returned.size} previously resolved threat(s) have re-emerged: $returned")
-            }
-            delay(400)
-            _state.update { it.copy(screen = Screen.RESULTS, hasScanned = true) }
         }
+        scanJob = safeLaunch { runRealScan(scanner, landingScreen = Screen.DASHBOARD) }
+    }
+
+    /**
+     * The real scan pipeline shared by [startScan] and [runAutoScanOnSplash] — identical work
+     * either way (the same live findings, the same persistence, the same resolved/ignored-finding
+     * reconciliation); only [landingScreen] differs, since that's the one thing the two call sites
+     * actually disagree about.
+     */
+    private suspend fun runRealScan(scanner: DeviceScanner, landingScreen: Screen) {
+        var feedSeq = 0L
+        // See resolvedRecordsReady's doc: closes the cold-start race where a scan launched
+        // before the first disk read lands would otherwise treat every previously fixed or
+        // ignored threat as active again.
+        if (settingsRepository != null) {
+            resolvedRecordsReady.await()
+            ignoredRecordsReady.await()
+        }
+        val result = scanner.scan(_state.value.apiKeys) { update ->
+            _state.update {
+                val pct = ((update.index.toFloat() + 1f) / update.total.toFloat()) * 100f
+                val feed = if (update.liveItem != null) {
+                    (listOf(ScanFeedEntry(feedSeq++, update.liveItem)) + it.scanFeed).take(SCAN_FEED_LIMIT)
+                } else {
+                    it.scanFeed
+                }
+                it.copy(
+                    progress = pct,
+                    scannedCount = (pct / 100f * ESTIMATED_ITEMS).toInt(),
+                    scanPhase = ScanPhaseState(update.index, update.total, update.label, update.meta),
+                    scanFeed = feed,
+                )
+            }
+        }
+        _state.update {
+            it.copy(
+                progress = 100f,
+                scanData = ScanData(
+                    findings = result.findings,
+                    permApps = result.permApps,
+                    hwDevices = result.hwDevices,
+                    appsScanned = result.appsScanned,
+                    ports = result.ports,
+                    portsFound = result.ports.size,
+                    portsProbed = result.portsProbed,
+                    osPatchLabel = result.osPatchLabel,
+                    feedsConfigured = result.feedsConfigured,
+                    feedsTotal = result.feedsTotal,
+                ),
+                liveHwDevices = result.hwDevices,
+                scannedCount = result.appsScanned,
+            ).withResolvedApplied()
+        }
+        // Persisted so the Dashboard's score/status survives an app or phone restart — see
+        // StoredScanData's doc for what's deliberately left out (permApps, live hardware).
+        settingsRepository?.let { repo -> safeLaunch { repo.saveLastScan(_state.value.scanData.toStored()) } }
+        // A record whose fingerprint no longer matches means the problem came back, or got
+        // worse. Drop it from disk so it can be resolved again on its current terms rather
+        // than silently suppressing a threat the user never actually saw in this shape.
+        val snapshot = _state.value
+        val superseded = FindingIdentity.supersededRecords(result.findings, snapshot.resolvedRecords)
+        if (superseded.isNotEmpty()) {
+            Log.i(TAG, "scan: ${superseded.size} resolved finding(s) came back in a different shape — clearing their records")
+            settingsRepository?.clearResolvedFindings(superseded)
+        }
+        // Retire records whose problem this scan could see was gone. This is what lets a later
+        // return of the same issue register as a genuine re-emergence instead of being
+        // suppressed forever by the user's original resolution.
+        val cleared = FindingIdentity.clearedRecords(
+            findings = result.findings,
+            resolved = snapshot.resolvedRecords,
+            resolvedCategories = snapshot.resolvedCategories,
+            coveredCategories = result.coveredCategories,
+        )
+        if (cleared.isNotEmpty()) {
+            Log.i(TAG, "scan: ${cleared.size} resolved finding(s) confirmed gone — retiring their records")
+            settingsRepository?.markFindingsCleared(cleared)
+        }
+        // Same reconciliation as above, mirrored for "Ignore for now" so it carries the same
+        // durability and the same honesty about a changed or worsened issue reactivating.
+        val supersededIgnored = FindingIdentity.supersededRecords(result.findings, snapshot.ignoredRecords)
+        if (supersededIgnored.isNotEmpty()) {
+            Log.i(TAG, "scan: ${supersededIgnored.size} ignored finding(s) came back in a different shape — clearing their records")
+            settingsRepository?.clearIgnoredFindings(supersededIgnored)
+        }
+        val clearedIgnored = FindingIdentity.clearedRecords(
+            findings = result.findings,
+            resolved = snapshot.ignoredRecords,
+            resolvedCategories = snapshot.ignoredCategories,
+            coveredCategories = result.coveredCategories,
+        )
+        if (clearedIgnored.isNotEmpty()) {
+            Log.i(TAG, "scan: ${clearedIgnored.size} ignored finding(s) confirmed gone — retiring their records")
+            settingsRepository?.markIgnoredCleared(clearedIgnored)
+        }
+        val returned = _state.value.reEmergedIds
+        if (returned.isNotEmpty()) {
+            Log.w(TAG, "scan: ${returned.size} previously resolved threat(s) have re-emerged: $returned")
+        }
+        delay(400)
+        _state.update { it.copy(screen = landingScreen, splashPhase = SplashPhase.BRANDING, hasScanned = true) }
     }
 
     /**
