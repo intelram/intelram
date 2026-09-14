@@ -100,7 +100,12 @@ class BluetoothChatManager(context: Context) {
                         intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                     } ?: return
                     deviceRegistry[device.address] = device
-                    val nearby = device.toNearbyDevice(isBonded = device.bondState == BluetoothDevice.BOND_BONDED)
+                    val isBonded = try {
+                        device.bondState == BluetoothDevice.BOND_BONDED
+                    } catch (e: SecurityException) {
+                        false
+                    }
+                    val nearby = device.toNearbyDevice(isBonded)
                     _discoveredDevices.value = (_discoveredDevices.value.filterNot { it.address == nearby.address } + nearby)
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_STARTED -> _isDiscovering.value = true
