@@ -7,6 +7,7 @@ import android.location.LocationManager
 import androidx.core.location.LocationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,17 +38,29 @@ class BluetoothChatViewModel(application: Application) : AndroidViewModel(applic
     fun enableBluetoothIntent(): Intent = manager.enableBluetoothIntent()
     fun discoverableIntent(): Intent = manager.discoverableIntent()
 
+    /**
+     * Both manager.start() (registers a BroadcastReceiver) and
+     * bondedDevices() (reads BluetoothAdapter.bondedDevices) make a Binder
+     * call into the system Bluetooth service — normally fast, but a
+     * synchronous IPC call is still not something to do on the caller's
+     * thread, since this is invoked from a Compose LaunchedEffect on the
+     * main dispatcher.
+     */
     fun onScreenEntered() {
-        manager.start()
-        refreshBondedDevices()
+        viewModelScope.launch(Dispatchers.IO) {
+            manager.start()
+            _bondedDevices.value = manager.bondedDevices()
+        }
     }
 
     fun onScreenLeft() {
-        manager.stop()
+        viewModelScope.launch(Dispatchers.IO) { manager.stop() }
     }
 
     fun refreshBondedDevices() {
-        _bondedDevices.value = manager.bondedDevices()
+        viewModelScope.launch(Dispatchers.IO) {
+            _bondedDevices.value = manager.bondedDevices()
+        }
     }
 
     fun startDiscovery() {
