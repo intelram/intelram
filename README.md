@@ -24,8 +24,8 @@ Results, and Settings share a bottom nav bar.
 - **Network posture** (`scan/DeviceScanner.kt`): a no-VPN-on-Wi-Fi advisory
   via `ConnectivityManager` — real, not simulated.
 - **QR codes** (`qr/`): CameraX + ZXing decode entirely on-device (no Play
-  Services model download), then `QrLinkHeuristic` flags common red flags —
-  raw-IP hosts, punycode, link shorteners, http instead of https, risky TLDs.
+  Services model download). See "QR link inspection" below for how a
+  decoded link is actually judged.
 
 Each finding carries a category, a plain-language explanation, and — where
 one exists — a real **Fix Now** action: `Intent.ACTION_DELETE` for an
@@ -77,6 +77,31 @@ two devices. Bluetooth resources (the server socket, the discovery receiver)
 are only held while a Nearby Chat screen is actually visible and are
 released the moment you navigate away, so discovery never keeps running,
 and battery draining, in the background.
+
+## QR link inspection
+
+A QR code's payload is judged **without ever rendering it** — no WebView, no
+page load, no JavaScript execution. Opening a suspicious page even in an
+embedded WebView isn't a sandbox: the device's real browser engine would
+still run the page's script and could still be exploited by it, which
+defeats the point of checking first. `qr/LinkInspector.kt` instead inspects
+only network-level metadata, the same technique real browsers use for their
+own link warnings:
+
+1. `QrLinkHeuristic` — structural red flags in the URL text itself (raw-IP
+   hosts, punycode, link shorteners, http instead of https, risky TLDs).
+2. The link's actual redirect chain, resolved via response headers only —
+   no response body is ever read, so nothing downloads.
+3. Whether the final destination's TLS certificate is valid.
+4. Google Safe Browsing's live threat-list lookup — the same database
+   Chrome and Firefox check — **if** a free API key is configured (Google
+   Cloud Console → enable "Safe Browsing API" → Credentials; see
+   `safe_browsing_api_key` in `res/values/strings.xml`). Skipped, never
+   faked, when the placeholder is still in place.
+
+These signals combine into a **Safe / Caution / Unsafe** verdict shown
+before the link ever opens, with the specific reasons and the final
+destination displayed — not just a bare judgment.
 
 ## Building
 

@@ -9,4 +9,14 @@
       Until you replace this placeholder, Sign In runs in an offline demo mode.
     -->
     <string name="google_web_client_id" translatable="false">YOUR_GOOGLE_OAUTH_WEB_CLIENT_ID</string>
+
+    <!--
+      Optional: a free Google Safe Browsing API key (Google Cloud Console >
+      APIs & Services > enable "Safe Browsing API" > Credentials > API key)
+      lets the QR scanner check a link's final destination against Google's
+      live malware/phishing threat list — the same one Chrome uses. Without
+      it, the QR scanner still checks redirect chains, TLS certificates, and
+      structural red flags; it just skips this one signal rather than faking it.
+    -->
+    <string name="safe_browsing_api_key" translatable="false">YOUR_SAFE_BROWSING_API_KEY</string>
 </resources>
