@@ -4,10 +4,9 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit removing the on-open scan's cosmetic pacing delays
-(§7.29), 2026-09-05. ~110 Kotlin files, 170 JVM unit tests (all passing, all offline — no
-device/emulator/`adb` exists in this environment; nothing in this app has ever been run on real
-hardware).
+**Last verified against:** the commit adding the email phishing check (§7.30), 2026-09-23.
+~112 Kotlin files, 184 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists
+in this environment; nothing in this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
 compileSdk 35`. No backend server for the core app — every consumer-facing feature is on-device or
@@ -781,6 +780,7 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
 | `state/BackStackRulesTest.kt` | Navigation stack push/pop/cap/no-loop-back |
 | `state/ResultsSyncTest.kt` | Severity grouping, `FixProgress`/score/button agreement |
 | `analyst/domain/PriorityScoringTest.kt` | Composite CVE priority formula — KEV/EPSS/CVSS precedence, boundary values, missing-score handling |
+| `network/EmailInspectorTest.kt` (14) | Sender-domain extraction from every "From" field shape, URL extraction/dedup/limit/order, `DmarcStatus` shape |
 
 All are pure-JVM (`org.junit.Test`), no Robolectric/instrumentation — they test extracted rule
 objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassifier`,
