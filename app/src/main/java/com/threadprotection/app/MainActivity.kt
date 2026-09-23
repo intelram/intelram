@@ -63,6 +63,7 @@ import com.threadprotection.app.ui.screens.OperatingSystemScreen
 import com.threadprotection.app.ui.screens.OtpSecurityScreen
 import com.threadprotection.app.ui.screens.QrScannerScreen
 import com.threadprotection.app.ui.screens.ResultsScreen
+import com.threadprotection.app.ui.screens.ScanEmailScreen
 import com.threadprotection.app.ui.screens.ScanWebsiteScreen
 import com.threadprotection.app.ui.screens.ScanningScreen
 import com.threadprotection.app.ui.screens.SettingsScreen
@@ -320,6 +321,7 @@ class MainActivity : ComponentActivity() {
                             onGoOtpSecurity = viewModel::goOtpSecurity,
                             onGoDataBreach = viewModel::goDataBreach,
                             onGoScanWebsite = viewModel::goScanWebsite,
+                            onGoScanEmail = viewModel::goScanEmail,
                             onGoHardwareDetail = viewModel::goHardwareDetail,
                             onGoPortsDetail = viewModel::goPortsDetail,
                             onGoOsDetail = viewModel::goOsDetail,
@@ -457,6 +459,21 @@ class MainActivity : ComponentActivity() {
                                 onGoSettings = viewModel::goSettings,
                                 onUrlChange = viewModel::setWebsiteUrl,
                                 onCheck = viewModel::checkWebsite,
+                            )
+                        }
+
+                        Screen.SCAN_EMAIL -> {
+                            BackHandler(enabled = true) { if (!viewModel.navigateBack()) viewModel.goDashboard() }
+                            ScanEmailScreen(
+                                state = state,
+                                onBack = viewModel::goDashboard,
+                                onGoQr = viewModel::goQr,
+                                onGoChat = viewModel::goChat,
+                                onGoBrain = viewModel::goBrain,
+                                onGoSettings = viewModel::goSettings,
+                                onSenderChange = viewModel::setEmailSender,
+                                onBodyChange = viewModel::setEmailBody,
+                                onCheck = viewModel::checkEmail,
                             )
                         }
 
@@ -683,7 +700,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Handles two different intents that can bring the user here from outside the app: this app's
+     * own deep-link scheme ([ACTION_OPEN_SCREEN], from the Quick Settings tile / notifications) and
+     * Android's standard Share sheet ([Intent.ACTION_SEND]) — "Share" on an email from Gmail or any
+     * mail app lands its subject/body straight on the email-check screen, already running. This is
+     * the entire "integration" with email apps this app has, and deliberately so — see
+     * EmailInspector's doc for why it never talks to Gmail's API directly.
+     */
     private fun handleTargetScreenIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+            val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: return
+            viewModel.receiveSharedEmailText(intent.getStringExtra(Intent.EXTRA_SUBJECT), text)
+            return
+        }
         if (intent?.action != ACTION_OPEN_SCREEN) return
         when (intent.getStringExtra(EXTRA_TARGET_SCREEN)) {
             TARGET_PERMS -> viewModel.goPerms()

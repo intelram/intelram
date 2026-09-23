@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Password
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -67,6 +68,7 @@ fun DashboardScreen(
     onGoOtpSecurity: () -> Unit,
     onGoDataBreach: () -> Unit,
     onGoScanWebsite: () -> Unit,
+    onGoScanEmail: () -> Unit,
     onGoHardwareDetail: () -> Unit,
     onGoPortsDetail: () -> Unit,
     onGoOsDetail: () -> Unit,
@@ -204,6 +206,14 @@ fun DashboardScreen(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Scan a website", style = TpType.cardTitle, color = palette.fg)
                     Text("Paste any link to check it before you open it", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
+                }
+                Text("›", color = palette.muted, fontSize = 22.sp)
+            }
+            ClickableCard(onClick = onGoScanEmail) {
+                DashboardIconBadge(Icons.Filled.MarkEmailRead, palette.accent, palette.accentTint12, palette.accentBorder30)
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Scan an email", style = TpType.cardTitle, color = palette.fg)
+                    Text("Paste or share a suspicious email to check the sender and every link", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
                 }
                 Text("›", color = palette.muted, fontSize = 22.sp)
             }

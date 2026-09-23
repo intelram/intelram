@@ -53,6 +53,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Share" on an email/message from Gmail or any mail app — see MainActivity's
+                 handleTargetScreenIntent() and EmailInspector's doc for why this, not a Gmail
+                 API/OAuth integration, is the entire "email app integration" this app has. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <service

@@ -54,6 +54,20 @@ data class UrlVerdict(
 }
 
 /**
+ * The verdict for a pasted/shared email — see [EmailInspector]'s doc for why this reads sender +
+ * body text rather than talking to Gmail directly. [links] carries a full [UrlVerdict] (the same
+ * pipeline the QR scanner uses) for every URL found in the body, not just a summary of them.
+ */
+data class EmailVerdict(
+    val senderDomain: String?,
+    val overall: Verdict,
+    val confidence: Int,
+    val signals: List<UrlSignal>,
+    val onDeviceFlags: List<String>,
+    val links: List<UrlVerdict>,
+)
+
+/**
  * Aggregates every free threat-intel source the user has configured (README §Threat intelligence)
  * plus always-on on-device heuristics, into a single verdict. Every network source degrades
  * silently (contributes UNKNOWN, not a crash) when its key is missing or the request fails —
@@ -348,6 +362,100 @@ class ThreatIntelRepository {
         nvd.searchCves(apiKey = apiKey?.takeIf { it.isNotBlank() }, keyword = productName, resultsPerPage = 5)
             .vulnerabilities.map { it.cve }
     }.orEmpty()
+
+    /**
+     * Judges a pasted/shared email the same way [checkUrl] judges a link — real evidence weighed
+     * both ways via [UrlVerdictScoring], not a single flag deciding the outcome.
+     *
+     * Two on-device checks are decisive by themselves (folded in as severity-3 flags, the same
+     * weight [UrlHeuristics] gives a technique that only exists to deceive):
+     * - the sender's own domain is a [BrandRegistry] look-alike (`paypal-secure.tk`)
+     * - the body claims to be a brand the sender domain doesn't belong to (a mail from
+     *   `noreply@random-mailer.net` "from PayPal")
+     *
+     * Everything else — [TechnicalInspector.inspectDmarc], domain age, Cloudflare's threat
+     * resolver, DNSSEC — is real corroboration, not a verdict on its own; a domain having none of
+     * these is common and unremarkable. Every link in the body is run through the exact same
+     * [checkUrl] pipeline the QR scanner uses, and the worst of them folds back in as one more
+     * signal so a single malicious link can't be missed just because the surrounding email text
+     * looked unremarkable.
+     */
+    suspend fun checkEmail(sender: String, body: String, keys: ApiKeys): EmailVerdict = coroutineScope {
+        val domain = EmailInspector.senderDomain(sender)
+        val onDeviceFlags = mutableListOf<String>()
+
+        domain?.let { d ->
+            BrandRegistry.impersonationIn(d)?.let { match ->
+                onDeviceFlags += "Sender address uses ${match.brand.display}'s name but \"$d\" is not one of ${match.brand.display}'s real domains"
+            }
+            BrandRegistry.brandNamedInText(body, d)?.let { brand ->
+                onDeviceFlags += "Message presents itself as ${brand.display}, but was sent from \"$d\" — not ${brand.display}'s own domain"
+            }
+        }
+        ContentInspector.URGENCY_PHRASES.firstOrNull { BrandRegistry.containsWord(body.lowercase(), it) }?.let {
+            onDeviceFlags += "Uses pressure/urgency wording common to scam emails (\"$it\")"
+        }
+
+        val domainSignalsDeferred = async { domain?.let { senderDomainSignals(it) }.orEmpty() }
+        val urls = EmailInspector.extractUrls(body)
+        val linkDeferreds = urls.map { url -> async { checkUrl(url, keys) } }
+
+        val links = linkDeferreds.map { it.await() }
+        val domainSignals = domainSignalsDeferred.await()
+        // The worst link's verdict folds back in as its own signal, so it counts in the same
+        // weighed scoring as everything else rather than being reported only as a side list.
+        val linkSignal = links.maxByOrNull { linkSeverity(it.overall) }?.takeIf { linkSeverity(it.overall) > 0 }?.let { worst ->
+            UrlSignal(
+                "Links in the message",
+                worst.overall,
+                "Worst of ${links.size} link${if (links.size == 1) "" else "s"} checked: ${worst.url.take(60)}",
+                if (worst.overall == Verdict.MALICIOUS) SignalWeight.DEFINITIVE else SignalWeight.STRONG,
+            )
+        }
+        val signals = domainSignals + listOfNotNull(linkSignal)
+        val flags = onDeviceFlags.map { UrlHeuristics.Flag(3, it) }
+        val hasAnyEvidence = signals.isNotEmpty() || links.isNotEmpty()
+
+        val outcome = UrlVerdictScoring.evaluate(UrlVerdictScoring.Input(signals = signals, flags = flags, hasAnyEvidence = hasAnyEvidence))
+        EmailVerdict(
+            senderDomain = domain,
+            overall = outcome.verdict,
+            confidence = outcome.confidence,
+            signals = signals,
+            onDeviceFlags = onDeviceFlags,
+            links = links,
+        )
+    }
+
+    private fun linkSeverity(v: Verdict): Int = when (v) {
+        Verdict.MALICIOUS -> 3
+        Verdict.SUSPICIOUS -> 2
+        Verdict.SAFE -> 1
+        Verdict.UNKNOWN -> 0
+    }
+
+    private suspend fun senderDomainSignals(domain: String): List<UrlSignal> = coroutineScope {
+        val technicalDeferred = async { runCatching { TechnicalInspector.inspect("https://$domain") }.getOrNull() }
+        val dmarcDeferred = async { runCatching { TechnicalInspector.inspectDmarc(domain) }.getOrNull() }
+        val technical = technicalDeferred.await()
+        listOfNotNull(
+            domainAgeSignal(technical),
+            threatDnsSignal(technical),
+            dnsSecuritySignal(technical),
+            dmarcSignal(dmarcDeferred.await()),
+        )
+    }
+
+    /** Absence is common and unremarkable — same principle as [dnsSecuritySignal] — so this only
+     *  ever contributes positive corroboration, never counts against the sender. */
+    private fun dmarcSignal(dmarc: DmarcStatus?): UrlSignal? {
+        if (dmarc == null || !dmarc.present) return null
+        return if (dmarc.policy == "reject" || dmarc.policy == "quarantine") {
+            UrlSignal("Email authentication (DMARC)", Verdict.SAFE, "Domain enforces DMARC (p=${dmarc.policy}) — spoofed mail from this domain is rejected or quarantined by mail providers", SignalWeight.SUPPORTING)
+        } else {
+            UrlSignal("Email authentication (DMARC)", Verdict.SAFE, "Domain publishes a DMARC record (monitor-only, p=${dmarc.policy ?: "none"})", SignalWeight.SUPPORTING)
+        }
+    }
 
     private fun normalize(rawUrl: String): String {
         var s = rawUrl.trim()

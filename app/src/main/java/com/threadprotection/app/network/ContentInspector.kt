@@ -26,8 +26,11 @@ import okio.Buffer
  */
 object ContentInspector {
 
-    /** Reused near-verbatim across real phishing kits — each phrase alone is a strong tell. */
-    private val URGENCY_PHRASES = listOf(
+    /** Reused near-verbatim across real phishing kits — each phrase alone is a strong tell.
+     *  Shared with [EmailInspector]/[ThreatIntelRepository.checkEmail], since a scam email and a
+     *  scam landing page draw on the same handful of pressure phrases — one list, not two that can
+     *  quietly drift apart. */
+    internal val URGENCY_PHRASES = listOf(
         "verify your account immediately", "account will be suspended", "confirm your identity now",
         "your account has been limited", "unusual activity detected", "click here immediately",
         "act now or lose access", "your payment could not be processed", "update your billing information",

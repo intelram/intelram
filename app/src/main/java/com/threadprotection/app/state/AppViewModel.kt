@@ -711,6 +711,7 @@ class AppViewModel(
     }
 
     fun goScanWebsite() = setScreen(Screen.SCAN_WEBSITE)
+    fun goScanEmail() = setScreen(Screen.SCAN_EMAIL)
 
     fun goHardwareDetail() = setScreen(Screen.HARDWARE_DETAIL)
 
@@ -1404,6 +1405,43 @@ class AppViewModel(
             val verdict = threatIntel.checkUrl(url, _state.value.apiKeys)
             _state.update { it.copy(websiteVerdict = verdict, websiteChecking = false) }
         }
+    }
+
+    // ───────────────────────── scan an email (manual paste/share check) ─────────────────────────
+
+    fun setEmailSender(sender: String) {
+        _state.update { it.copy(emailSender = sender) }
+    }
+
+    fun setEmailBody(body: String) {
+        _state.update { it.copy(emailBody = body) }
+    }
+
+    /** Real check for a pasted or Android-shared email — see EmailInspector's doc for why this
+     *  reads text the user hands it rather than talking to Gmail directly. */
+    fun checkEmail() {
+        val sender = _state.value.emailSender.trim()
+        val body = _state.value.emailBody.trim()
+        if (body.isEmpty() || _state.value.emailChecking) return
+        _state.update { it.copy(emailChecking = true, emailVerdict = null) }
+        safeLaunch {
+            val verdict = threatIntel.checkEmail(sender, body, _state.value.apiKeys)
+            _state.update { it.copy(emailVerdict = verdict, emailChecking = false) }
+        }
+    }
+
+    /** Entry point for Android's Share sheet ("Share" from Gmail/any mail app onto this app) —
+     *  see MainActivity's ACTION_SEND intent handling. Lands directly on the result. */
+    fun receiveSharedEmailText(subject: String?, text: String) {
+        _state.update {
+            it.copy(
+                screen = Screen.SCAN_EMAIL,
+                emailSender = "",
+                emailBody = listOfNotNull(subject?.takeIf { s -> s.isNotBlank() }, text).joinToString("\n\n"),
+                emailVerdict = null,
+            )
+        }
+        checkEmail()
     }
 
     // ───────────────────────── hardware watch ─────────────────────────

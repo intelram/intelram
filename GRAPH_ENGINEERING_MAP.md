@@ -82,8 +82,8 @@ disagree about e.g. what counts as an "active threat".
 
 `Screen` enum (state/AppUiState.kt:25): `SPLASH, SIGNIN, CREATE_ACCOUNT, ONBOARDING, DASHBOARD,
 SCANNING, RESULTS, DETAIL, QR, BRAIN, PERMS, SETTINGS, OTP_SECURITY, DATA_BREACH, SCAN_WEBSITE,
-HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION, CHAT_HISTORY, CHAT_SESSION,
-APP_PERMISSION_DETAIL`.
+SCAN_EMAIL, HARDWARE_DETAIL, PORTS_DETAIL, OS_DETAIL, CHAT, CHAT_CONVERSATION, CHAT_HISTORY,
+CHAT_SESSION, APP_PERMISSION_DETAIL`.
 
 `Screen.isChatFeature` = CHAT / CHAT_CONVERSATION / CHAT_HISTORY / CHAT_SESSION — leaving all four
 tears down the BLE radio (`releaseChatRadioIfLeaving` in AppViewModel).
@@ -110,6 +110,7 @@ Navigation is **not** Jetpack Navigation — it's a `when(state.screen)` in `Mai
 | OTP_SECURITY | `OtpSecurityScreen.kt` | `goOtpSecurity()` |
 | DATA_BREACH | `DataBreachScreen.kt` | `checkMyBreaches()` → `ThreatIntelRepository.checkEmailBreaches` |
 | SCAN_WEBSITE | `ScanWebsiteScreen.kt` | `checkWebsite()` → `ThreatIntelRepository.checkUrl` |
+| SCAN_EMAIL | `ScanEmailScreen.kt` | `checkEmail()` → `ThreatIntelRepository.checkEmail`; also reachable via Android's Share sheet (§7.30) |
 | HARDWARE_DETAIL | `HardwareDetailScreen.kt` | `state.liveHwDevices` + `state.externalDevices` (real connection log) |
 | PORTS_DETAIL | `OpenPortsScreen.kt` | `state.scanData.ports` |
 | OS_DETAIL | `OperatingSystemScreen.kt` | `state.scanData.osPatchLabel` |
@@ -163,6 +164,8 @@ every writer):
   `qrAnalysis` (on-device classification, always populated), `qrTorchOn`
 - **Data breach / website check:** `breachResult`, `breachChecking`, `websiteUrl`,
   `websiteVerdict`, `websiteChecking`
+- **Email check:** `emailSender`, `emailBody`, `emailVerdict` (`EmailVerdict`), `emailChecking` —
+  see §7.30
 - **Hardware demo overlay (canned):** `hwAlert`, `hwIdx`, `hwHandled`, `hwOpen`
 - **External devices (real):** `externalDevices`, `deviceAlert`, `deviceTrust`,
   `bluetoothWatchBlind`
@@ -736,6 +739,33 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     identical either way; only the cosmetic waiting differs. If a future phase needs its own
     delay, wrap it in `pace()` too rather than a bare `delay()`, or it will silently reintroduce
     the slow-open complaint for that one phase only.
+30. **Email phishing check has no Gmail/OAuth integration, on purpose, and never will inside this
+    feature.** User asked "if somebody wants to scan gmail or any other emails whether that email
+    is a phishing or not what should I do?" — answered by building a check the user drives, not by
+    reading their inbox: reading a live inbox needs a consent/OAuth flow this app has no business
+    asking for, and it would only work for Gmail while every other mail app is left out anyway.
+    Instead: `EmailInspector.kt` (pure regex, no I/O) pulls a sender domain out of whatever shape a
+    "From" field is pasted in and every URL out of the body (capped at 5 — a wall of junk links
+    can't turn one check into dozens of live lookups); `ThreatIntelRepository.checkEmail(sender,
+    body, keys)` then reuses infrastructure this app already had rather than inventing a parallel
+    pipeline: `BrandRegistry.impersonationIn`/`brandNamedInText` for sender-domain and body
+    impersonation (same rules §7.27 fixed for websites), `ContentInspector.URGENCY_PHRASES` (made
+    `internal` for this reuse) for scam-pressure wording, `TechnicalInspector.inspect` for the
+    sender domain's age/TLS/DNS/Cloudflare-threat signals, a new `TechnicalInspector.inspectDmarc`
+    (TXT lookup at `_dmarc.<domain>`) for whether spoofed mail from that domain would even be
+    accepted, and the *exact* `checkUrl` pipeline the QR scanner uses for every link found in the
+    body — one worst-link result folds back in as its own `UrlSignal` (§ pattern below) so it scores
+    through the same `UrlVerdictScoring.evaluate` as everything else rather than living in a
+    separate side list. **DMARC absence is never penalized** — same "absence is common and
+    unremarkable" principle as DNSSEC (§5d) — `dmarcSignal` only ever returns positive corroboration
+    when a record *is* published, never a negative signal when it's missing. Reachable two ways:
+    the Dashboard's "Scan an email" card (`goScanEmail()`), and Android's Share sheet — a second
+    `<intent-filter>` on `MainActivity` for `ACTION_SEND`/`text/plain` means "Share" on an email
+    from Gmail or any mail app lands its subject+body on this screen and runs the check
+    immediately (`receiveSharedEmailText`, handled in `handleTargetScreenIntent` before the
+    existing `ACTION_OPEN_SCREEN` deep-link handling). If this is ever extended to talk to an email
+    provider's API directly, that is a materially different feature (needs OAuth, scope review, a
+    privacy-policy update) — do not casually bolt it onto `EmailInspector`.
 
 ---
 
@@ -799,6 +829,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/BrandRegistry.kt` (brands + official domains, shared with `UrlHeuristics`, never duplicated) | §5d, §7.27 — not a spell-checker; matches only `visibleText()` on whole words, and needs brand + password field + non-official host |
 | "Wi-Fi/network safety", "is this public network safe", "open network warning", "DNS hijacking" | Live network assessment | `scan/WifiSecurityScanner.kt` (cipher, captive portal, VPN/Private DNS, DNS hijack probe), `scan/DeviceScanner.kt` (its scan phase) | §7.28 — emits findings only, never a screen; unknown must never be reported as a weakness |
 | "A good website is reported suspicious", "every site says suspicious", "verdict is wrong" | Brand matching and verdict scoring | `network/BrandRegistry.kt`, `network/UrlVerdictScoring.kt`, `network/ContentInspector.kt` | §7.27 — run `UrlVerdictAccuracyTest` first; never reintroduce raw `contains(brand)` or a "one flag = suspicious" rule |
+| "Check if an email/Gmail message is phishing", "scan an email", "is this sender legit", "email came from the wrong domain", "DMARC check" | Email check feature | `network/EmailInspector.kt` (sender/URL extraction), `network/ThreatIntelRepository.kt` (`checkEmail`), `ui/screens/ScanEmailScreen.kt`, `MainActivity.kt` (`ACTION_SEND` handling) | §7.30 — no Gmail/OAuth integration by design; reuses `checkUrl`/`BrandRegistry`/`ContentInspector.URGENCY_PHRASES`; DMARC absence never counts against a sender |
 | "QR/website verdict blocks opening a link", "no way to open a flagged link" | Verdict-to-action policy | `ui/screens/QrScannerScreen.kt` (`showOpenAnywayConfirm`, the "Open anyway" text link, the confirm `AlertDialog`) | §7.24 — the verdict must stay informational; never reintroduce a hard block |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |
 | "Chat request doesn't notify/pop up (especially when the app is closed)" | Notification lifecycle vs. app lifecycle | `chat/BluetoothChatManager.kt` (`postChatRequest`/`cancelChatRequest` call sites), `service/NotificationHelper.kt` | §7.17 — must not depend on `AppViewModel`/`viewModelScope` being alive; `MainActivity.kt`'s `IncomingChatRequestOverlay` for the in-app side |

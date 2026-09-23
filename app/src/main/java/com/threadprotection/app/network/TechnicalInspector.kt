@@ -81,6 +81,14 @@ data class HttpTrace(
 /** Whether this domain's DNS answers are DNSSEC-signed and validated — see [DnsApi]'s doc. */
 data class DnssecStatus(val validated: Boolean, val nameservers: List<String>)
 
+/**
+ * Whether a domain publishes DMARC (email-spoofing protection) — used only for
+ * [ThreatIntelRepository.checkEmail], not the general website pipeline; a domain having no website
+ * at all can still send mail, so this is looked up independently via [TechnicalInspector.inspectDmarc]
+ * rather than folded into [TechnicalInspector.inspect].
+ */
+data class DmarcStatus(val present: Boolean, val policy: String?)
+
 /** One published DNS record set, e.g. all the MX records, shown verbatim in the technical details. */
 data class DnsRecordSet(val type: String, val records: List<String>)
 
@@ -226,6 +234,27 @@ object TechnicalInspector {
             blocked = ThreatDnsVerdictReader.isBlocked(response),
             checked = ThreatDnsVerdictReader.isBlocked(response) || ThreatDnsVerdictReader.isClean(response),
         )
+    }
+
+    /**
+     * DMARC tells a receiving mail server what to do with mail that fails to authenticate as coming
+     * from this domain (`p=reject`/`p=quarantine`/`p=none`), published as a TXT record at
+     * `_dmarc.<domain>`. Absence is common — most small organizations never publish one — and is
+     * deliberately never treated as suspicious on its own, mirroring how DNSSEC's absence is handled
+     * in [fetchDnssecStatus]: only its presence is used as positive corroboration in
+     * [ThreatIntelRepository.checkEmail].
+     */
+    suspend fun inspectDmarc(domain: String): DmarcStatus? = withTimeoutOrNull(6_000) {
+        runCatching {
+            val registrable = BrandRegistry.registrableDomain(domain)
+            val answer = dns.resolve("_dmarc.$registrable", "TXT")
+            val record = answer.Answer.mapNotNull { it.data?.trim('"') }.firstOrNull { it.contains("v=DMARC1", ignoreCase = true) }
+            if (record == null) {
+                DmarcStatus(present = false, policy = null)
+            } else {
+                DmarcStatus(present = true, policy = Regex("p=(\\w+)").find(record)?.groupValues?.get(1))
+            }
+        }.getOrNull()
     }
 
     private suspend fun fetchTlsDetails(host: String): TlsDetails? = withContext(Dispatchers.IO) {
