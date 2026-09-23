@@ -11,7 +11,7 @@ import java.security.MessageDigest
  * heuristics: dangerous-permission exposure, risky permission combinations, and
  * matches against [ThreatIntel]'s known-bad package name / APK hash lists.
  */
-class AppScanner(private val context: Context) {
+class AppScanner(private val context: Context, private val feedbackStore: FindingFeedbackStore) {
 
     fun scanInstalledApps(): List<ScannedApp> {
         val pm = context.packageManager
@@ -102,7 +102,10 @@ class AppScanner(private val context: Context) {
                 )
             }
 
-            val score = computeRiskScore(isSystemApp, dangerous.size, findings)
+            // Findings the user has already told the app aren't threats don't
+            // come back — that's the adaptive-learning effect in practice.
+            val activeFindings = findings.filterNot { feedbackStore.isDismissed(it.signature) }
+            val score = computeAppRiskScore(isSystemApp, dangerous.size, activeFindings)
             val level = riskLevelForScore(score)
 
             ScannedApp(
@@ -114,43 +117,11 @@ class AppScanner(private val context: Context) {
                 requestedPermissions = requestedPermissions,
                 dangerousPermissions = dangerous,
                 sha256 = sha256,
-                findings = findings,
+                findings = activeFindings,
                 riskScore = score,
                 riskLevel = level,
             )
         }.sortedByDescending { it.riskScore }
-    }
-
-    private fun computeRiskScore(
-        isSystemApp: Boolean,
-        dangerousPermissionCount: Int,
-        findings: List<Finding>,
-    ): Int {
-        var score = 0
-
-        for (finding in findings) {
-            score += when (finding.severity) {
-                RiskLevel.CRITICAL -> 45
-                RiskLevel.HIGH -> 20
-                RiskLevel.MEDIUM -> 12
-                RiskLevel.LOW -> 5
-                RiskLevel.CLEAN -> 0
-            }
-        }
-
-        if (!isSystemApp) {
-            score += (dangerousPermissionCount * 4).coerceAtMost(24)
-        }
-
-        return score.coerceIn(0, 100)
-    }
-
-    private fun riskLevelForScore(score: Int): RiskLevel = when {
-        score >= 80 -> RiskLevel.CRITICAL
-        score >= 55 -> RiskLevel.HIGH
-        score >= 30 -> RiskLevel.MEDIUM
-        score >= 10 -> RiskLevel.LOW
-        else -> RiskLevel.CLEAN
     }
 
     private fun getInstallerPackageName(pm: PackageManager, packageName: String): String? {
@@ -181,4 +152,40 @@ class AppScanner(private val context: Context) {
             null
         }
     }
+}
+
+/**
+ * Top-level (not private to [AppScanner]) so [com.intelram.shield.scan.ScanViewModel]
+ * can re-run the same scoring after a user dismisses a finding, without a full rescan.
+ */
+internal fun computeAppRiskScore(
+    isSystemApp: Boolean,
+    dangerousPermissionCount: Int,
+    findings: List<Finding>,
+): Int {
+    var score = 0
+
+    for (finding in findings) {
+        score += when (finding.severity) {
+            RiskLevel.CRITICAL -> 45
+            RiskLevel.HIGH -> 20
+            RiskLevel.MEDIUM -> 12
+            RiskLevel.LOW -> 5
+            RiskLevel.CLEAN -> 0
+        }
+    }
+
+    if (!isSystemApp) {
+        score += (dangerousPermissionCount * 4).coerceAtMost(24)
+    }
+
+    return score.coerceIn(0, 100)
+}
+
+internal fun riskLevelForScore(score: Int): RiskLevel = when {
+    score >= 80 -> RiskLevel.CRITICAL
+    score >= 55 -> RiskLevel.HIGH
+    score >= 30 -> RiskLevel.MEDIUM
+    score >= 10 -> RiskLevel.LOW
+    else -> RiskLevel.CLEAN
 }

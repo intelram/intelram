@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.LockPerson
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PrivacyTip
@@ -66,6 +67,7 @@ fun HomeScreen(
     greetingName: String,
     onScanNow: () -> Unit,
     onOpenQrScanner: () -> Unit,
+    onOpenEmailCheck: () -> Unit,
 ) {
     val uiState by scanViewModel.uiState.collectAsStateWithLifecycle()
     val realTime by scanViewModel.realTimeProtection.collectAsStateWithLifecycle()
@@ -75,6 +77,7 @@ fun HomeScreen(
         ScanFeature(Icons.Filled.NetworkCheck, "Wi-Fi & Network", "Checks your current connection"),
         ScanFeature(Icons.Filled.PrivacyTip, "Privacy Audit", "Flags nosy app permissions"),
         ScanFeature(Icons.Filled.QrCodeScanner, "QR Code Scanner", "Checks a code before you open it", onOpenQrScanner),
+        ScanFeature(Icons.Filled.Email, "Email & Link Check", "Spot phishing before you click", onOpenEmailCheck),
     )
 
     LazyColumn(

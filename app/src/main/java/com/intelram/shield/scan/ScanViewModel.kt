@@ -23,12 +23,16 @@ private const val KEY_REALTIME = "realtime_protection"
 class ScanViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, 0)
+    private val feedbackStore = FindingFeedbackStore(application)
 
     private val _uiState = MutableStateFlow<ScanUiState>(ScanUiState.Idle)
     val uiState: StateFlow<ScanUiState> = _uiState.asStateFlow()
 
     private val _realTimeProtection = MutableStateFlow(prefs.getBoolean(KEY_REALTIME, true))
     val realTimeProtection: StateFlow<Boolean> = _realTimeProtection.asStateFlow()
+
+    private val _dismissedFindingCount = MutableStateFlow(feedbackStore.dismissedCount())
+    val dismissedFindingCount: StateFlow<Int> = _dismissedFindingCount.asStateFlow()
 
     fun setRealTimeProtection(enabled: Boolean) {
         _realTimeProtection.value = enabled
@@ -55,8 +59,8 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val reportDeferred = viewModelScope.async(Dispatchers.Default) {
                 val context = getApplication<Application>()
-                val apps = AppScanner(context).scanInstalledApps()
-                val deviceFindings = DeviceScanner(context).runChecks()
+                val apps = AppScanner(context, feedbackStore).scanInstalledApps()
+                val deviceFindings = DeviceScanner(context, feedbackStore).runChecks()
                 ScanReport(
                     scannedAt = System.currentTimeMillis(),
                     apps = apps,
@@ -91,5 +95,39 @@ class ScanViewModel(application: Application) : AndroidViewModel(application) {
     fun findFinding(id: String): Finding? {
         val state = _uiState.value
         return if (state is ScanUiState.Done) state.report.findingById(id) else null
+    }
+
+    /**
+     * Marks a finding as "not a threat": persists it by [signature] so it's
+     * excluded from future scans, and immediately re-scores the current
+     * report so the UI reflects it without requiring a rescan.
+     */
+    fun dismissFinding(id: String) {
+        val state = _uiState.value
+        if (state !is ScanUiState.Done) return
+        val finding = state.report.findingById(id) ?: return
+
+        feedbackStore.dismiss(finding.signature)
+        _dismissedFindingCount.value = feedbackStore.dismissedCount()
+
+        val updatedApps = state.report.apps.map { app ->
+            val remaining = app.findings.filterNot { it.signature == finding.signature }
+            if (remaining.size == app.findings.size) {
+                app
+            } else {
+                val score = computeAppRiskScore(app.isSystemApp, app.dangerousPermissions.size, remaining)
+                app.copy(findings = remaining, riskScore = score, riskLevel = riskLevelForScore(score))
+            }
+        }
+        val updatedDeviceFindings = state.report.deviceFindings.filterNot { it.signature == finding.signature }
+
+        _uiState.value = ScanUiState.Done(
+            state.report.copy(apps = updatedApps, deviceFindings = updatedDeviceFindings),
+        )
+    }
+
+    fun resetLearnedExceptions() {
+        feedbackStore.clearAll()
+        _dismissedFindingCount.value = 0
     }
 }

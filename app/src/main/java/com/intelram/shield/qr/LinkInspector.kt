@@ -29,6 +29,8 @@ private const val TIMEOUT_MS = 4000
  *   4. Google Safe Browsing's live threat-list lookup, if a free API key is
  *      configured (see `safe_browsing_api_key` in strings.xml) — the same
  *      database Chrome and Firefox check. Skipped, not faked, if unset.
+ *   5. abuse.ch URLhaus — a free, keyless public threat-intel feed of
+ *      confirmed malware-distribution URLs, checked on every inspection.
  */
 class LinkInspector(private val context: Context) {
 
@@ -41,6 +43,7 @@ class LinkInspector(private val context: Context) {
                 verdict = LinkVerdict.NOT_A_LINK,
                 reasons = emptyList(),
                 safeBrowsingChecked = false,
+                urlhausChecked = false,
                 certificateValid = null,
             )
             is LinkSafety.Safe -> runInspection(payload, emptyList())
@@ -67,8 +70,14 @@ class LinkInspector(private val context: Context) {
             reasons += "Flagged by Google Safe Browsing as a known malicious or deceptive site"
         }
 
+        val urlhausHit = checkUrlhaus(finalUrl)
+        if (urlhausHit == true) {
+            reasons += "Listed on URLhaus as a known malware-distribution link"
+        }
+
         val verdict = when {
             safeBrowsingHit == true -> LinkVerdict.UNSAFE
+            urlhausHit == true -> LinkVerdict.UNSAFE
             certValid == false -> LinkVerdict.UNSAFE
             reasons.size >= 2 -> LinkVerdict.UNSAFE
             reasons.size == 1 -> LinkVerdict.CAUTION
@@ -82,6 +91,7 @@ class LinkInspector(private val context: Context) {
             verdict = verdict,
             reasons = reasons,
             safeBrowsingChecked = safeBrowsingHit != null,
+            urlhausChecked = urlhausHit != null,
             certificateValid = certValid,
         )
     }
@@ -181,6 +191,37 @@ class LinkInspector(private val context: Context) {
             if (responseCode != HttpURLConnection.HTTP_OK) return null
             val responseText = connection.inputStream.bufferedReader().use { it.readText() }
             JSONObject(responseText).has("matches")
+        } catch (e: Exception) {
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    /**
+     * Free, keyless public lookup against abuse.ch's URLhaus — a real,
+     * widely used malware-URL feed. Null on any network/parse failure
+     * (never fabricated as a clean result); true only when URLhaus has this
+     * exact URL on record.
+     */
+    private fun checkUrlhaus(urlStr: String): Boolean? {
+        var connection: HttpURLConnection? = null
+        return try {
+            val endpoint = URL("https://urlhaus-api.abuse.ch/v1/url/")
+            connection = (endpoint.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+                setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            }
+            val body = "url=" + java.net.URLEncoder.encode(urlStr, "UTF-8")
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+
+            val responseCode = connection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_OK) return null
+            val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+            JSONObject(responseText).optString("query_status") == "ok"
         } catch (e: Exception) {
             null
         } finally {

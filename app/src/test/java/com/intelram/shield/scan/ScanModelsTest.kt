@@ -111,4 +111,45 @@ class ScanModelsTest {
         assertEquals(target.id, report.findingById(target.id)?.id)
         assertNull(report.findingById("does-not-exist"))
     }
+
+    @Test
+    fun `signature is stable across findings with different random ids`() {
+        val a = testFinding(RiskLevel.HIGH, "Sideloaded and requests sensitive permissions")
+        val b = a.copy(id = "a-completely-different-id")
+        assertEquals(a.signature, b.signature)
+    }
+
+    @Test
+    fun `signature differs when title, category, or source app differs`() {
+        val base = testFinding(RiskLevel.HIGH, "Some finding")
+        val differentTitle = base.copy(title = "A different finding")
+        val differentCategory = base.copy(category = FindingCategory.PRIVACY)
+        val differentApp = base.copy(sourceApp = "Some App")
+
+        assertTrue(base.signature != differentTitle.signature)
+        assertTrue(base.signature != differentCategory.signature)
+        assertTrue(base.signature != differentApp.signature)
+    }
+
+    @Test
+    fun `computeAppRiskScore weighs critical findings heaviest and caps permission penalty`() {
+        val critical = testFinding(RiskLevel.CRITICAL)
+        assertEquals(45, computeAppRiskScore(isSystemApp = false, dangerousPermissionCount = 0, findings = listOf(critical)))
+        // Permission penalty caps at 24 (6+ dangerous permissions), regardless of count.
+        assertEquals(24, computeAppRiskScore(isSystemApp = false, dangerousPermissionCount = 20, findings = emptyList()))
+        // System apps are never penalized for permission count.
+        assertEquals(0, computeAppRiskScore(isSystemApp = true, dangerousPermissionCount = 20, findings = emptyList()))
+        // Score never exceeds 100.
+        val findings = List(5) { testFinding(RiskLevel.CRITICAL) }
+        assertEquals(100, computeAppRiskScore(isSystemApp = false, dangerousPermissionCount = 20, findings = findings))
+    }
+
+    @Test
+    fun `riskLevelForScore matches the documented thresholds`() {
+        assertEquals(RiskLevel.CLEAN, riskLevelForScore(9))
+        assertEquals(RiskLevel.LOW, riskLevelForScore(10))
+        assertEquals(RiskLevel.MEDIUM, riskLevelForScore(30))
+        assertEquals(RiskLevel.HIGH, riskLevelForScore(55))
+        assertEquals(RiskLevel.CRITICAL, riskLevelForScore(80))
+    }
 }

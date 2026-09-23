@@ -10,8 +10,9 @@ called. A branded splash screen shows on every cold start.
 
 Onboarding → Sign In (Google) → Home / Dashboard → Scanning (animated) →
 Results → Threat Detail (with a real Fix action) → QR Code Scanner →
-Nearby Chat (device list → conversation) → Settings. Home, Nearby Chat,
-Results, and Settings share a bottom nav bar.
+Email & Link Check (phishing checklist + link checker) → Nearby Chat (device
+list → conversation) → Settings. Home, Nearby Chat, Results, and Settings
+share a bottom nav bar.
 
 ## What it checks — for real
 
@@ -38,10 +39,48 @@ by request — that whole option is gone, not just hidden.
 
 ### What's intentionally left out
 
-Data-breach checking, a generic phishing/link scanner, and file/download
-scanning are **not** wired to fabricated results — they'd need a real paid
-API or backend this repo doesn't have credentials for. The dashboard only
-advertises detection categories the code actually implements.
+Data-breach checking and file/download scanning are **not** wired to
+fabricated results — they'd need a real paid API or backend this repo
+doesn't have credentials for. The dashboard only advertises detection
+categories the code actually implements. The Email & Link Check screen does
+**not** connect to Gmail or any inbox — Google doesn't grant that kind of
+access to an unverified app, and faking a "scanned your inbox" result would
+be exactly the kind of fabrication this project avoids. What it does instead
+is real: a phishing checklist, plus a link checker that runs a pasted URL
+through the same redirect/certificate/threat-feed pipeline as the QR
+scanner.
+
+## Adaptive learning
+
+The app's one honest form of "self-learning" (`scan/FindingFeedbackStore.kt`):
+tapping **"Not a Threat — Don't Flag Again"** on a finding's detail screen
+persists that decision by a stable signature (category + source app +
+title, not the random per-scan finding id), and `AppScanner` /
+`DeviceScanner` filter it out of every scan from then on — no rescan
+needed, the current report re-scores immediately. This is a local
+preference the scan engine consults, not a trained model or a cloud
+service — there's no neural net here, just code that remembers what you
+told it. Settings shows how many findings are currently dismissed and lets
+you reset them.
+
+## Threat intelligence feeds
+
+Link inspection (QR codes and the Email & Link Check screen) checks a URL's
+final destination against two independent, real feeds:
+
+- **Google Safe Browsing v4** — the same list Chrome and Firefox use. Needs
+  a free API key (see `safe_browsing_api_key` in `strings.xml`); skipped,
+  not faked, until you add one.
+- **abuse.ch URLhaus** — a free, keyless public feed of confirmed
+  malware-distribution URLs, checked on every inspection with no setup
+  required.
+
+Both are used purely as clean/flagged lookups; neither is a paid or
+proprietary NGFW-style feed, which would need a commercial license this
+repo doesn't have. Adding one (e.g. VirusTotal, a commercial threat-intel
+API) is a matter of dropping another `checkX()` function into
+`LinkInspector.kt` following the same "return `null` on any failure, never
+fabricate a verdict" pattern the existing two follow.
 
 ## Google Sign-In
 
@@ -98,10 +137,14 @@ own link warnings:
    Cloud Console → enable "Safe Browsing API" → Credentials; see
    `safe_browsing_api_key` in `res/values/strings.xml`). Skipped, never
    faked, when the placeholder is still in place.
+5. abuse.ch URLhaus — a free, keyless malware-URL feed, checked on every
+   inspection (see "Threat intelligence feeds" above).
 
 These signals combine into a **Safe / Caution / Unsafe** verdict shown
 before the link ever opens, with the specific reasons and the final
-destination displayed — not just a bare judgment.
+destination displayed — not just a bare judgment. The exact same pipeline
+and result card (`ui/components/LinkResultCard.kt`) back both the QR
+scanner and the Email & Link Check screen's paste-a-link checker.
 
 ## Building
 
@@ -117,9 +160,11 @@ export ANDROID_HOME=/opt/android-sdk   # wherever the SDK is installed
 
 ```
 app/src/main/java/com/intelram/shield/
-  scan/        ThreatIntel, AppScanner, DeviceScanner, ScanViewModel, ScanModels
+  scan/        ThreatIntel, AppScanner, DeviceScanner, ScanViewModel, ScanModels,
+               FindingFeedbackStore (adaptive dismiss-learning)
   auth/        AuthViewModel (real Google Sign-In + demo-mode fallback)
-  qr/          QrAnalyzer (CameraX + ZXing), QrLinkHeuristic
+  qr/          QrAnalyzer (CameraX + ZXing), QrLinkHeuristic, LinkInspector
+               (Safe Browsing + URLhaus)
   bluetooth/   BluetoothChatManager, BluetoothChatViewModel, BluetoothModels
   ui/theme/    Color, Type (Plus Jakarta Sans), Theme
   ui/components/  Shared buttons, toggle, score ring, bottom nav, badges

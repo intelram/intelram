@@ -49,7 +49,7 @@ import com.intelram.shield.ui.theme.Red
 import com.intelram.shield.ui.theme.Surface
 
 @Composable
-fun ThreatDetailScreen(finding: Finding?, onBack: () -> Unit) {
+fun ThreatDetailScreen(finding: Finding?, onBack: () -> Unit, onDismissFinding: (String) -> Unit) {
     if (finding == null) {
         Column(Modifier.fillMaxSize().background(Bg).padding(24.dp)) {
             Text("This finding is no longer available — try rescanning.", color = InkSoft)
@@ -161,7 +161,13 @@ fun ThreatDetailScreen(finding: Finding?, onBack: () -> Unit) {
                 actionMessage?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = InkSoft)
                 }
-                SecondaryButton(text = "Ignore This Risk", onClick = onBack)
+                SecondaryButton(
+                    text = "Not a Threat — Don't Flag Again",
+                    onClick = {
+                        onDismissFinding(finding.id)
+                        onBack()
+                    },
+                )
             }
         }
     }

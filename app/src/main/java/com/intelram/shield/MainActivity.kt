@@ -26,6 +26,7 @@ import com.intelram.shield.scan.ScanViewModel
 import com.intelram.shield.ui.components.BottomNavBar
 import com.intelram.shield.ui.components.NavTab
 import com.intelram.shield.ui.screens.ChatConversationScreen
+import com.intelram.shield.ui.screens.EmailLinkCheckScreen
 import com.intelram.shield.ui.screens.HomeScreen
 import com.intelram.shield.ui.screens.NearbyChatScreen
 import com.intelram.shield.ui.screens.OnboardingScreen
@@ -47,6 +48,7 @@ private object Routes {
     const val RESULTS = "results"
     const val THREAT_DETAIL = "threat/{findingId}"
     const val QR_SCAN = "qrscan"
+    const val EMAIL_CHECK = "emailcheck"
     const val NEARBY_CHAT = "nearbychat"
     const val CHAT_CONVERSATION = "chatconversation"
     const val SETTINGS = "settings"
@@ -126,6 +128,7 @@ class MainActivity : ComponentActivity() {
                                             navController.navigate(Routes.SCANNING)
                                         },
                                         onOpenQrScanner = { navController.navigate(Routes.QR_SCAN) },
+                                        onOpenEmailCheck = { navController.navigate(Routes.EMAIL_CHECK) },
                                     )
                                 }
                                 composable(Routes.SCANNING) {
@@ -168,10 +171,14 @@ class MainActivity : ComponentActivity() {
                                     ThreatDetailScreen(
                                         finding = scanViewModel.findFinding(id),
                                         onBack = { navController.popBackStack() },
+                                        onDismissFinding = scanViewModel::dismissFinding,
                                     )
                                 }
                                 composable(Routes.QR_SCAN) {
                                     QrScanScreen()
+                                }
+                                composable(Routes.EMAIL_CHECK) {
+                                    EmailLinkCheckScreen()
                                 }
                                 composable(Routes.NEARBY_CHAT) {
                                     NearbyChatScreen(
@@ -195,6 +202,7 @@ class MainActivity : ComponentActivity() {
                                                 popUpTo(0) { inclusive = true }
                                             }
                                         },
+                                        onOpenEmailCheck = { navController.navigate(Routes.EMAIL_CHECK) },
                                     )
                                 }
                             }

@@ -6,9 +6,10 @@ import android.net.NetworkCapabilities
 import android.provider.Settings
 
 /** Device-wide network posture checks. */
-class DeviceScanner(private val context: Context) {
+class DeviceScanner(private val context: Context, private val feedbackStore: FindingFeedbackStore) {
 
-    fun runChecks(): List<Finding> = listOfNotNull(networkAdvisoryFinding())
+    fun runChecks(): List<Finding> =
+        listOfNotNull(networkAdvisoryFinding()).filterNot { feedbackStore.isDismissed(it.signature) }
 
     /** Advises using a VPN when connected to Wi-Fi without one active. Real, not simulated. */
     private fun networkAdvisoryFinding(): Finding? {

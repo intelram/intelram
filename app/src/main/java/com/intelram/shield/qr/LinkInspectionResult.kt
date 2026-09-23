@@ -9,5 +9,6 @@ data class LinkInspectionResult(
     val verdict: LinkVerdict,
     val reasons: List<String>,
     val safeBrowsingChecked: Boolean,
+    val urlhausChecked: Boolean,
     val certificateValid: Boolean?,
 )

@@ -42,6 +42,14 @@ data class Finding(
     val sourceApp: String? = null,
 )
 
+/**
+ * A stable identity for a finding that survives across scans, unlike [Finding.id]
+ * (a fresh random UUID every scan). Used to remember which findings a user has
+ * told the app aren't threats, so they stay dismissed on the next scan.
+ */
+val Finding.signature: String
+    get() = "${category.name}|${sourceApp.orEmpty()}|$title"
+
 data class ScannedApp(
     val packageName: String,
     val appName: String,

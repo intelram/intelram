@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -43,9 +44,15 @@ import com.intelram.shield.ui.theme.Red
 import com.intelram.shield.ui.theme.Surface
 
 @Composable
-fun SettingsScreen(scanViewModel: ScanViewModel, authViewModel: AuthViewModel, onSignOut: () -> Unit) {
+fun SettingsScreen(
+    scanViewModel: ScanViewModel,
+    authViewModel: AuthViewModel,
+    onSignOut: () -> Unit,
+    onOpenEmailCheck: () -> Unit,
+) {
     val realTime by scanViewModel.realTimeProtection.collectAsStateWithLifecycle()
     val authState by authViewModel.state.collectAsStateWithLifecycle()
+    val dismissedCount by scanViewModel.dismissedFindingCount.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(Bg),
@@ -94,7 +101,51 @@ fun SettingsScreen(scanViewModel: ScanViewModel, authViewModel: AuthViewModel, o
             SettingsGroup {
                 InfoRow("Detection engine", "Runs entirely on this device")
                 InfoRow("Threat signature list", "Local sample list, bundled with the app")
-                InfoRow("QR link heuristic", "Checks decoded links for common red flags")
+                InfoRow("Link threat intel", "Google Safe Browsing + abuse.ch URLhaus")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenEmailCheck)
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Filled.Email, contentDescription = null, tint = InkSoft, modifier = Modifier.size(18.dp))
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                        Text("Email & Link Check", style = MaterialTheme.typography.titleMedium)
+                        Text("A phishing checklist, and a link checker for emails", style = MaterialTheme.typography.bodySmall, color = InkSoft)
+                    }
+                    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = InkFaint)
+                }
+            }
+        }
+
+        item { SectionLabel("Adaptive Learning") }
+        item {
+            SettingsGroup {
+                InfoRow(
+                    "Findings dismissed as \"not a threat\"",
+                    if (dismissedCount == 0) {
+                        "None yet — mark a finding \"Not a Threat\" on its detail screen to stop seeing it"
+                    } else {
+                        "$dismissedCount — won't be raised again on future scans"
+                    },
+                )
+                if (dismissedCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = scanViewModel::resetLearnedExceptions)
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Reset Learned Exceptions",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Red,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
             }
         }
 
