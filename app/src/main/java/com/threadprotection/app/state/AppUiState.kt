@@ -17,7 +17,9 @@ import com.threadprotection.app.data.Finding
 import com.threadprotection.app.data.HwDevice
 import com.threadprotection.app.data.HwSim
 import com.threadprotection.app.data.PermApp
+import com.threadprotection.app.data.StoredBreachAlert
 import com.threadprotection.app.network.BreachCheckResult
+import com.threadprotection.app.network.PasswordLeakResult
 import com.threadprotection.app.network.EmailVerdict
 import com.threadprotection.app.network.UrlVerdict
 import com.threadprotection.app.qr.QrAnalysis
@@ -177,6 +179,13 @@ data class AppUiState(
     val createAccountError: String? = null,
     val breachResult: BreachCheckResult? = null,
     val breachChecking: Boolean = false,
+    /** An unseen breach alert (from the background monitor or an in-app check) — shown as a popup
+     *  over whatever screen is open, but only when it belongs to the signed-in email. */
+    val pendingBreachAlert: StoredBreachAlert? = null,
+    /** When breach monitoring last completed a check, or null if it never has for this install. */
+    val breachLastCheckedAtMs: Long? = null,
+    val passwordLeakResult: PasswordLeakResult? = null,
+    val passwordLeakChecking: Boolean = false,
     val websiteUrl: String = "",
     val websiteVerdict: UrlVerdict? = null,
     val websiteChecking: Boolean = false,

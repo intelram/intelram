@@ -252,6 +252,50 @@ data class ApiKeys(val values: Map<ApiKeyId, String> = emptyMap()) {
     fun has(id: ApiKeyId): Boolean = get(id).isNotEmpty()
 }
 
+/** Plain-data mirror of `network.BreachRecord` for persistence — this layer doesn't depend on
+ *  the network package. `passwordStorage` is the enum's name. */
+@Serializable
+data class StoredBreachRecord(
+    val name: String,
+    val date: String,
+    val dataClasses: List<String>,
+    val records: Long? = null,
+    val domain: String? = null,
+    val description: String? = null,
+    val industry: String? = null,
+    val passwordStorage: String = "UNKNOWN",
+    val verified: Boolean = false,
+    val addedAt: String? = null,
+    val referenceUrl: String? = null,
+)
+
+/**
+ * What breach monitoring already knows about [email]: every breach name it has seen, so the next
+ * check can tell "new" from "already reported". Keyed on the email — a different signed-in address
+ * starts a fresh baseline rather than inheriting someone else's.
+ */
+@Serializable
+data class StoredBreachMonitor(
+    val email: String,
+    val knownBreachNames: List<String>,
+    val lastCheckedAtMs: Long,
+)
+
+/**
+ * A breach alert the user hasn't opened yet. Written by both the background worker and an in-app
+ * check, and shown as a popup the next time the app is in front — so an alert found while the app
+ * was closed (or with notifications blocked) is still seen. [firstLook] marks the one-time summary
+ * for an address being monitored for the first time, as opposed to genuinely new breaches.
+ */
+@Serializable
+data class StoredBreachAlert(
+    val email: String,
+    val breaches: List<StoredBreachRecord>,
+    val totalBreaches: Int,
+    val firstLook: Boolean,
+    val createdAtMs: Long,
+)
+
 /**
  * Persists app preferences: the day/night theme choice and signed-in account (matching the
  * prototype's `localStorage` use — see README §State), local email/password credentials for the
@@ -274,6 +318,8 @@ class SettingsRepository(private val context: Context) {
         val RESOLVED_FINDINGS = stringPreferencesKey("tp_resolved_findings")
         val IGNORED_FINDINGS = stringPreferencesKey("tp_ignored_findings")
         val LAST_SCAN = stringPreferencesKey("tp_last_scan")
+        val BREACH_MONITOR = stringPreferencesKey("tp_breach_monitor")
+        val PENDING_BREACH_ALERT = stringPreferencesKey("tp_pending_breach_alert")
         fun apiKey(id: ApiKeyId) = stringPreferencesKey(id.prefKey)
     }
 
@@ -486,6 +532,53 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveLastScan(data: StoredScanData) {
         context.dataStore.edit { prefs -> prefs[Keys.LAST_SCAN] = Json.encodeToString(data) }
+    }
+
+    // ───────────────────────── breach monitoring ─────────────────────────
+
+    val breachMonitorFlow: Flow<StoredBreachMonitor?> = prefs.map { prefs ->
+        prefs[Keys.BREACH_MONITOR]?.let { raw ->
+            runCatching { Json.decodeFromString<StoredBreachMonitor>(raw) }.getOrNull()
+        }
+    }
+
+    suspend fun saveBreachMonitor(monitor: StoredBreachMonitor) {
+        context.dataStore.edit { prefs -> prefs[Keys.BREACH_MONITOR] = Json.encodeToString(monitor) }
+    }
+
+    val pendingBreachAlertFlow: Flow<StoredBreachAlert?> = prefs.map { prefs ->
+        prefs[Keys.PENDING_BREACH_ALERT]?.let { raw ->
+            runCatching { Json.decodeFromString<StoredBreachAlert>(raw) }.getOrNull()
+        }
+    }
+
+    /**
+     * Adds [alert] to whatever unseen alert is already waiting, so two background checks that each
+     * find something before the user opens the app become one popup listing both — not one popup
+     * silently replacing the other. Returns the merged alert that's now pending.
+     */
+    suspend fun mergePendingBreachAlert(alert: StoredBreachAlert): StoredBreachAlert {
+        var merged = alert
+        context.dataStore.edit { prefs ->
+            val existing = prefs[Keys.PENDING_BREACH_ALERT]?.let { raw ->
+                runCatching { Json.decodeFromString<StoredBreachAlert>(raw) }.getOrNull()
+            }
+            if (existing != null && existing.email == alert.email) {
+                val names = existing.breaches.map { it.name }.toSet()
+                merged = alert.copy(
+                    breaches = existing.breaches + alert.breaches.filter { it.name !in names },
+                    // A first-look summary stays a first-look summary until the user has seen it.
+                    firstLook = existing.firstLook,
+                    createdAtMs = existing.createdAtMs,
+                )
+            }
+            prefs[Keys.PENDING_BREACH_ALERT] = Json.encodeToString(merged)
+        }
+        return merged
+    }
+
+    suspend fun clearPendingBreachAlert() {
+        context.dataStore.edit { prefs -> prefs.remove(Keys.PENDING_BREACH_ALERT) }
     }
 
     suspend fun deleteChatSession(sessionId: String) {

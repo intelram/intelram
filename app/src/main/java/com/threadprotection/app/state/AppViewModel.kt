@@ -37,6 +37,8 @@ import com.threadprotection.app.data.StoredPortFinding
 import com.threadprotection.app.data.StoredRemedy
 import com.threadprotection.app.data.StoredScanData
 import com.threadprotection.app.data.StoredSessionStatus
+import com.threadprotection.app.service.BreachMonitorWorker
+import com.threadprotection.app.service.BreachMonitoring
 import com.threadprotection.app.service.NotificationHelper
 import com.threadprotection.app.network.ThreatIntelRepository
 import com.threadprotection.app.scan.DeviceScanner
@@ -194,6 +196,17 @@ class AppViewModel(
                     }
                     if (enteredRealScanFromSplash) triggerAutoScanOnce(AutoScanFlow.SPLASH_TO_DASHBOARD)
                     if (landedOnDashboardFromSignIn) triggerAutoScanOnce(AutoScanFlow.SCANNING_TO_RESULTS)
+                    syncBreachMonitor()
+                }
+            }
+            safeLaunch {
+                repo.pendingBreachAlertFlow.distinctUntilChanged().collect { alert ->
+                    _state.update { it.copy(pendingBreachAlert = alert) }
+                }
+            }
+            safeLaunch {
+                repo.breachMonitorFlow.distinctUntilChanged().collect { monitor ->
+                    _state.update { it.copy(breachLastCheckedAtMs = monitor?.lastCheckedAtMs) }
                 }
             }
             safeLaunch {
@@ -210,6 +223,7 @@ class AppViewModel(
                     val settings = stored.toState()
                     _state.update { it.copy(settings = settings) }
                     syncScheduledScan(settings)
+                    syncBreachMonitor()
                 }
             }
             safeLaunch {
@@ -644,6 +658,7 @@ class AppViewModel(
 
     private fun persistProtectionSettings(next: ProtectionSettings) {
         syncScheduledScan(next)
+        syncBreachMonitor()
         settingsRepository?.let { repo -> safeLaunch { repo.setProtectionSettings(next.toStored()) } }
     }
 
@@ -877,8 +892,12 @@ class AppViewModel(
                 deviceTrust = emptyMap(),
                 deviceAlert = null,
                 scanData = ScanData(),
+                breachResult = null,
+                pendingBreachAlert = null,
+                passwordLeakResult = null,
             )
         }
+        appContext?.let { BreachMonitorWorker.cancel(it) }
         persistAccount(null)
     }
 
@@ -1388,7 +1407,50 @@ class AppViewModel(
         safeLaunch {
             val result = threatIntel.checkEmailBreaches(email)
             _state.update { it.copy(breachResult = result, breachChecking = false) }
+            // Same reconciliation the background monitor does, so a breach first spotted here is
+            // not announced again by the next background check — and a genuinely new one found
+            // here pops up exactly as it would from the background.
+            settingsRepository?.let { repo -> BreachMonitoring.recordCheck(repo, result, alertOnFirstLook = false) }
         }
+    }
+
+    /** Settings' "Data breach alerts" toggle, reachable from the Data breach screen too. */
+    fun toggleBreachMonitoring() = toggleProtectionSetting("breach")
+
+    /** Background monitoring runs while the toggle is on and someone is signed in. */
+    private fun syncBreachMonitor() {
+        val ctx = appContext ?: return
+        val s = _state.value
+        when {
+            !s.settings.breach -> BreachMonitorWorker.cancel(ctx)
+            s.account != null -> BreachMonitorWorker.ensureScheduled(ctx)
+        }
+    }
+
+    fun dismissBreachAlert() {
+        _state.update { it.copy(pendingBreachAlert = null) }
+        appContext?.let { NotificationHelper.cancelBreachAlert(it) }
+        settingsRepository?.let { repo -> safeLaunch { repo.clearPendingBreachAlert() } }
+    }
+
+    /** "See full report" on the popup: acknowledge the alert and land on the full results. */
+    fun openBreachReportFromAlert() {
+        dismissBreachAlert()
+        if (_state.value.screen != Screen.DATA_BREACH) goDataBreach() else checkMyBreaches()
+    }
+
+    /** The password is used for this one lookup and never stored — see [ThreatIntelRepository.checkPasswordLeak]. */
+    fun checkPasswordLeak(password: String) {
+        if (password.isEmpty() || _state.value.passwordLeakChecking) return
+        _state.update { it.copy(passwordLeakChecking = true, passwordLeakResult = null) }
+        safeLaunch {
+            val result = threatIntel.checkPasswordLeak(password)
+            _state.update { it.copy(passwordLeakResult = result, passwordLeakChecking = false) }
+        }
+    }
+
+    fun clearPasswordLeakResult() {
+        _state.update { it.copy(passwordLeakResult = null) }
     }
 
     // ───────────────────────── scan website (manual URL check) ─────────────────────────

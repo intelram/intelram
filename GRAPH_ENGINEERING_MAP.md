@@ -4,8 +4,8 @@
 file to identify the affected components, then read only those files. Do not re-survey the codebase
 from scratch — this map is kept current (see §11, maintenance rule).
 
-**Last verified against:** the commit adding the email phishing check (§7.30), 2026-09-23.
-~112 Kotlin files, 184 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists
+**Last verified against:** the commit adding breach monitoring and alerts (§7.31), 2026-09-24.
+~116 Kotlin files, 213 JVM unit tests (all passing, all offline — no device/emulator/`adb` exists
 in this environment; nothing in this app has ever been run on real hardware).
 
 **Stack.** Kotlin, Jetpack Compose (Material3), single-Activity MVVM. `minSdk 26 / targetSdk 35 /
@@ -107,7 +107,7 @@ Navigation is **not** Jetpack Navigation — it's a `when(state.screen)` in `Mai
 | APP_PERMISSION_DETAIL | `AppPermissionDetailScreen.kt` | reads `PermApp` from `scanData.permApps` |
 | SETTINGS | `SettingsScreen.kt` | `toggleTheme`, `toggleProtectionSetting`, `setScheduledScan*`, `setApiKey` |
 | OTP_SECURITY | `OtpSecurityScreen.kt` | `goOtpSecurity()` |
-| DATA_BREACH | `DataBreachScreen.kt` | `checkMyBreaches()` → `ThreatIntelRepository.checkEmailBreaches` |
+| DATA_BREACH | `DataBreachScreen.kt` | `checkMyBreaches()` → `ThreatIntelRepository.checkEmailBreaches`; `toggleBreachMonitoring()`, `checkPasswordLeak()` (§7.31) |
 | SCAN_WEBSITE | `ScanWebsiteScreen.kt` | `checkWebsite()` → `ThreatIntelRepository.checkUrl` |
 | SCAN_EMAIL | `ScanEmailScreen.kt` | `checkEmail()` → `ThreatIntelRepository.checkEmail`; also reachable via Android's Share sheet (§7.30) |
 | HARDWARE_DETAIL | `HardwareDetailScreen.kt` | `state.liveHwDevices` + `state.externalDevices` (real connection log) |
@@ -120,7 +120,9 @@ Navigation is **not** Jetpack Navigation — it's a `when(state.screen)` in `Mai
 
 **Global overlays** (rendered above the current screen in `MainActivity`, not part of the `when`):
 `IncomingChatRequestOverlay.kt` (state.incomingChatRequest), `ExternalDeviceAlertOverlay.kt`
-(state.deviceAlert), `HardwareAlertOverlay.kt` (state.hwAlert — demo-only canned data).
+(state.deviceAlert), `HardwareAlertOverlay.kt` (state.hwAlert — demo-only canned data),
+`BreachAlertOverlay.kt` (state.pendingBreachAlert — §7.31; drawn before the chat/call overlays so
+those stay on top).
 
 **Analyst Mode screens** (added on top of the 22 above, reached only from Settings → "Analyst
 Tools" — see §2). Routed through the same `Screen` enum/`when` in `MainActivity` so the existing
@@ -165,6 +167,9 @@ every writer):
   `websiteVerdict`, `websiteChecking`
 - **Email check:** `emailSender`, `emailBody`, `emailVerdict` (`EmailVerdict`), `emailChecking` —
   see §7.30
+- **Breach monitoring:** `pendingBreachAlert` (`StoredBreachAlert`, from DataStore — drives
+  `BreachAlertOverlay`), `breachLastCheckedAtMs`, `passwordLeakResult`, `passwordLeakChecking` —
+  see §7.31
 - **Hardware demo overlay (canned):** `hwAlert`, `hwIdx`, `hwHandled`, `hwOpen`
 - **External devices (real):** `externalDevices`, `deviceAlert`, `deviceTrust`,
   `bluetoothWatchBlind`
@@ -765,6 +770,45 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
     existing `ACTION_OPEN_SCREEN` deep-link handling). If this is ever extended to talk to an email
     provider's API directly, that is a materially different feature (needs OAuth, scope review, a
     privacy-policy update) — do not casually bolt it onto `EmailInspector`.
+31. **Breach monitoring actually monitors now — Settings' "Data breach alerts" toggle was dead.**
+    It was persisted (`ProtectionSettings.breach`) and nothing ever read it, so no breach alert had
+    ever fired. User-requested: "whenever the customer's email address gets breached… give popup…
+    with all necessary information, and also give recommendation." Pieces:
+    - `service/BreachMonitorWorker.kt` — periodic (12 h, network-constrained) check of the signed-in
+      email while the toggle is on. Scheduled by `AppViewModel.syncBreachMonitor()` from the account
+      and settings collectors; cancelled on toggle-off and sign-out. 12 h stays far inside
+      XposedOrNot's free limits (25/h, 100/day per IP); a failed check is deliberately *not* retried
+      with WorkManager backoff — hammering a rate-limited free API just fails the next check too.
+    - `BreachMonitoring.recordCheck()` (same file) is the **only** place a result is reconciled with
+      the stored baseline (`StoredBreachMonitor`: email + every breach name seen). Both the worker
+      and in-app "Check now" call it, so they can't disagree about what's new. Baseline names are
+      **unioned**, never replaced, so a breach briefly missing from the source doesn't re-alert as
+      "new" when it returns. A baseline for a different email is never inherited.
+    - First check of an address = **one** summary alert (`BreachAlertPlan.FirstLook`), not 200
+      alerts for old breaches; later checks alert only on names absent from the baseline. An
+      in-app check passes `alertOnFirstLook = false` — the user is already looking at the results.
+    - Alerts are persisted (`StoredBreachAlert`, merged by `mergePendingBreachAlert` so two
+      background finds become one popup) and shown by `BreachAlertOverlay` over any screen except
+      splash/sign-in/onboarding/a running scan, and only for the signed-in email. So an alert is
+      seen even with notifications blocked or the app closed when it was found. The notification
+      (`NotificationHelper.postBreachAlert`, fixed ID so it updates rather than stacks) deep-links to
+      `TARGET_DATA_BREACH`.
+    - `network/BreachAdvisor.kt` (pure, `BreachAdvisorTest`) turns records into severity and steps
+      **driven by what each breach exposed**, matched on XposedOrNot's exact data-class labels
+      ("Phone numbers" → SIM/port-out PIN; "Partial credit card data" → replacement card;
+      "Financial transactions" → scam warning, *not* a replacement card). **Stealer logs and combo
+      lists are not sites** — "change your AlienStealerLogs password" is meaningless — so
+      `kindOf()` detects them from the description text (the per-address API has no `breachType`,
+      and the `combolist.png` logo is also used as a generic fallback for real sites, so neither is
+      usable) and they get malware-scan / reuse advice instead.
+    - Password leak check: `PwnedPasswordsApi` (HIBP range API, k-anonymity, `Add-Padding`). Only
+      the first 5 hex chars of the SHA-1 leave the phone; matching is on-device
+      (`PasswordLeakCheck`). The password lives only in the composable's plain `remember` (never
+      `rememberSaveable` — it must not land in saved instance state) and is cleared once checked.
+    Verified live (no device here): the production `ThreatIntelRepository` calls were run from a
+    throwaway JVM test against the real services — 214 breaches mapped with risk Critical/100, 2
+    stealer logs + 3 combo lists classified, a clean address checked with no alert,
+    `password123` → 2,266,543 sightings, a random password → 0.
 
 ---
 
@@ -781,6 +825,8 @@ Settings and used by both the consumer scan pipeline and Analyst Mode.
 | `state/ResultsSyncTest.kt` | Severity grouping, `FixProgress`/score/button agreement |
 | `analyst/domain/PriorityScoringTest.kt` | Composite CVE priority formula — KEV/EPSS/CVSS precedence, boundary values, missing-score handling |
 | `network/EmailInspectorTest.kt` (14) | Sender-domain extraction from every "From" field shape, URL extraction/dedup/limit/order, `DmarcStatus` shape |
+| `network/BreachAdvisorTest.kt` (24) | Breach severity, per-exposure steps, stealer/combo detection on real descriptions, new-vs-known planning, baseline union, persistence round-trip, real API response decoding |
+| `network/PasswordLeakCheckTest.kt` (5) | SHA-1 format, range-response suffix matching incl. zero-count padding lines |
 
 All are pure-JVM (`org.junit.Test`), no Robolectric/instrumentation — they test extracted rule
 objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassifier`,
@@ -798,13 +844,15 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 - `AndroidManifest.xml`: declares `usb.host` feature (optional), Bluetooth permissions
   (`BLUETOOTH_SCAN`/`CONNECT`/`ADVERTISE`), `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED`,
   `FOREGROUND_SERVICE`; registers `ProtectionForegroundService`, `BootReceiver`,
-  `ChatRequestActionReceiver`, `AppPermissionsTileService`.
+  `ChatRequestActionReceiver`, `AppPermissionsTileService`. Background work is WorkManager, not
+  manifest-registered: `ScheduledScanWorker`, `TwoFactorReminderWorker`, `BreachMonitorWorker`,
+  `CveWatchlistSyncWorker`.
 - `GOOGLE_WEB_CLIENT_ID` (BuildConfig field, blank by default) — sign-in falls back to demo mode
   without it; see `auth/GoogleAuthClient.kt`.
 - No `.env`, no backend URL config — every network client's base URL is a public, free-tier API
   (NVD, Google Safe Browsing, VirusTotal, URLhaus, ThreatFox, PhishTank, AbuseIPDB, RDAP, IPInfo,
-  XposedOrNot), each gated behind the user's own key entered in Settings (except NVD and
-  XposedOrNot, which work keyless).
+  XposedOrNot, Pwned Passwords), each gated behind the user's own key entered in Settings (except
+  NVD, XposedOrNot and Pwned Passwords, which work keyless).
 
 ---
 
@@ -829,6 +877,7 @@ objects (`ChatStateRules`, `FindingIdentity`, `BackStackRules`, `QrContentClassi
 | "Detect a fake/phishing page's content", "spelling/design red flags on the scanned page" | Page-content heuristics (keyless) | `network/ContentInspector.kt`, `network/BrandRegistry.kt` (brands + official domains, shared with `UrlHeuristics`, never duplicated) | §5d, §7.27 — not a spell-checker; matches only `visibleText()` on whole words, and needs brand + password field + non-official host |
 | "Wi-Fi/network safety", "is this public network safe", "open network warning", "DNS hijacking" | Live network assessment | `scan/WifiSecurityScanner.kt` (cipher, captive portal, VPN/Private DNS, DNS hijack probe), `scan/DeviceScanner.kt` (its scan phase) | §7.28 — emits findings only, never a screen; unknown must never be reported as a weakness |
 | "A good website is reported suspicious", "every site says suspicious", "verdict is wrong" | Brand matching and verdict scoring | `network/BrandRegistry.kt`, `network/UrlVerdictScoring.kt`, `network/ContentInspector.kt` | §7.27 — run `UrlVerdictAccuracyTest` first; never reintroduce raw `contains(brand)` or a "one flag = suspicious" rule |
+| "Breach alerts don't fire", "tell me when my email is breached", "breach popup", "what to do after a breach", "has my password leaked" | Breach monitoring | `service/BreachMonitorWorker.kt` (worker + `BreachMonitoring.recordCheck`), `network/BreachAdvisor.kt`, `ui/screens/BreachAlertOverlay.kt`, `ui/screens/DataBreachScreen.kt` | §7.31 — one reconciliation path for worker and in-app check; baseline names are unioned; aggregates (stealer/combo) get their own advice |
 | "Check if an email/Gmail message is phishing", "scan an email", "is this sender legit", "email came from the wrong domain", "DMARC check" | Email check feature | `network/EmailInspector.kt` (sender/URL extraction), `network/ThreatIntelRepository.kt` (`checkEmail`), `ui/screens/ScanEmailScreen.kt`, `MainActivity.kt` (`ACTION_SEND` handling) | §7.30 — no Gmail/OAuth integration by design; reuses `checkUrl`/`BrandRegistry`/`ContentInspector.URGENCY_PHRASES`; DMARC absence never counts against a sender |
 | "QR/website verdict blocks opening a link", "no way to open a flagged link" | Verdict-to-action policy | `ui/screens/QrScannerScreen.kt` (`showOpenAnywayConfirm`, the "Open anyway" text link, the confirm `AlertDialog`) | §7.24 — the verdict must stay informational; never reintroduce a hard block |
 | Bluetooth chat connection bugs | State machine | `chat/BluetoothChatManager.kt`, `chat/ChatStateRules.kt` | §7.2, `ConnectionStateSyncTest.kt`, `state/AppViewModel.kt` chat section (line ~1079+) |

@@ -9,6 +9,7 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.threadprotection.app.MainActivity
 import com.threadprotection.app.R
+import com.threadprotection.app.data.StoredBreachAlert
 
 object NotificationHelper {
     const val CHANNEL_PERSISTENT = "protection_status"
@@ -19,6 +20,7 @@ object NotificationHelper {
     private const val NOTIF_ID_COMING_SOON = 9001
     private const val NOTIF_ID_CHAT_REQUEST = 9100
     private const val NOTIF_ID_INCOMING_CALL = 9101
+    private const val NOTIF_ID_BREACH = 9200
     private var nextAlertId = 2000
 
     fun ensureChannels(context: Context) {
@@ -80,6 +82,65 @@ object NotificationHelper {
             .build()
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         manager.notify(nextAlertId++, notification)
+    }
+
+    /**
+     * A data-breach alert from `BreachMonitorWorker`. One fixed ID: the pending alert it describes
+     * is already merged (see `SettingsRepository.mergePendingBreachAlert`), so a later check updates
+     * this notification rather than stacking a second one beside it. Tapping it opens the Data
+     * breach screen, where the same alert is waiting as a popup with the full details.
+     */
+    fun postBreachAlert(context: Context, alert: StoredBreachAlert) {
+        ensureChannels(context)
+        val names = alert.breaches.map { it.name }
+        val listed = when {
+            names.size <= 3 -> names.joinToString(", ")
+            else -> names.take(3).joinToString(", ") + " and ${names.size - 3} more"
+        }
+        val (title, text) = when {
+            alert.firstLook -> {
+                val n = alert.totalBreaches
+                "Your email appears in $n data breach${if (n == 1) "" else "es"}" to
+                    "${alert.email} was found in $n known breach${if (n == 1) "" else "es"}, including $listed. Tap to see what was exposed and what to do."
+            }
+            names.size == 1 -> {
+                val b = alert.breaches.first()
+                val exposed = b.dataClasses.take(4).joinToString(", ").lowercase()
+                "New data breach: ${b.name}" to
+                    "${alert.email} was found in the ${b.name} breach" +
+                    (if (b.date.isNotBlank()) " (${b.date})" else "") +
+                    (if (exposed.isNotBlank()) ". Exposed: $exposed." else ".") +
+                    " Tap for what to do now."
+            }
+            else -> "${names.size} new data breaches include your email" to
+                "${alert.email} was found in $listed. Tap for what was exposed and what to do now."
+        }
+        val openBreachScreen = PendingIntent.getActivity(
+            context, NOTIF_ID_BREACH,
+            Intent(context, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_SCREEN
+                putExtra(MainActivity.EXTRA_TARGET_SCREEN, MainActivity.TARGET_DATA_BREACH)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_tile_permissions)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .setAutoCancel(true)
+            .setContentIntent(openBreachScreen)
+            .build()
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(NOTIF_ID_BREACH, notification)
+    }
+
+    /** Clears the breach notification once the user has opened the alert in the app. */
+    fun cancelBreachAlert(context: Context) {
+        context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_BREACH)
     }
 
     /**

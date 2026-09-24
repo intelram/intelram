@@ -197,7 +197,7 @@ fun DashboardScreen(
                 DashboardIconBadge(Icons.Filled.PrivacyTip, palette.danger, palette.dangerTint12, palette.line3)
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Data breach security", style = TpType.cardTitle, color = palette.fg)
-                    Text("Check your email against live breach records", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
+                    Text("Live breach monitoring, alerts and a password leak check", style = TpType.caption.copy(fontSize = 14.5.sp), color = palette.muted)
                 }
                 Text("›", color = palette.muted, fontSize = 22.sp)
             }

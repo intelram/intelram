@@ -1,22 +1,61 @@
 package com.threadprotection.app.network
 
 import android.util.Base64
+import android.util.Log
 import com.threadprotection.app.data.ApiKeyId
 import com.threadprotection.app.data.ApiKeys
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import retrofit2.HttpException
+import java.io.IOException
 import java.net.IDN
 import java.net.InetAddress
 import java.net.URI
 
+private const val TAG = "ThreatIntel"
+
 enum class Verdict { SAFE, SUSPICIOUS, MALICIOUS, UNKNOWN }
 
-data class BreachRecord(val name: String, val date: String, val dataExposed: String, val records: Long?, val domain: String?)
+/** How the breached site had stored passwords, as XposedOrNot reports it. */
+enum class PasswordStorage { PLAINTEXT, EASY_TO_CRACK, HARD_TO_CRACK, UNKNOWN }
 
-data class BreachCheckResult(val email: String, val breaches: List<BreachRecord>, val checked: Boolean, val error: String? = null)
+/** Everything the breach source knows about one incident — see [XonBreachDetail]. */
+data class BreachRecord(
+    val name: String,
+    /** Year (sometimes a fuller date) the breach happened — not when it became public. */
+    val date: String,
+    val dataClasses: List<String>,
+    val records: Long?,
+    val domain: String?,
+    val description: String? = null,
+    val industry: String? = null,
+    val passwordStorage: PasswordStorage = PasswordStorage.UNKNOWN,
+    val verified: Boolean = false,
+    /** When the breach source added it (ISO-8601) — what "new breach" alerts are keyed on. */
+    val addedAt: String? = null,
+    val referenceUrl: String? = null,
+) {
+    val dataExposed: String get() = dataClasses.joinToString(", ")
+}
+
+data class BreachCheckResult(
+    val email: String,
+    val breaches: List<BreachRecord>,
+    val checked: Boolean,
+    val error: String? = null,
+    /** XposedOrNot's own overall exposure rating for this address, e.g. "Critical" / 100. */
+    val riskLabel: String? = null,
+    val riskScore: Int? = null,
+    /** Public paste-site dumps (Pastebin etc.) containing this address. */
+    val pasteCount: Int = 0,
+)
+
+/** Outcome of a Pwned Passwords lookup. [timesSeen] is only meaningful when [checked]. */
+data class PasswordLeakResult(val checked: Boolean, val timesSeen: Long = 0, val error: String? = null)
 
 /** How much a single [UrlSignal] is allowed to move the verdict — see [UrlVerdictScoring]. */
 enum class SignalWeight {
@@ -82,25 +121,82 @@ class ThreatIntelRepository {
     private val urlhaus by lazy { NetworkModule.create<UrlhausApi>(UrlhausApi.BASE_URL) }
     private val threatFox by lazy { NetworkModule.create<ThreatFoxApi>(ThreatFoxApi.BASE_URL) }
     private val xposedOrNot by lazy { NetworkModule.create<XposedOrNotApi>(XposedOrNotApi.BASE_URL) }
+    private val pwnedPasswords by lazy { NetworkModule.create<PwnedPasswordsApi>(PwnedPasswordsApi.BASE_URL) }
 
-    /** Real, free, keyless breach lookup — README §Data breach security. */
+    /**
+     * Real, free, keyless breach lookup — README §Data breach security. Also called from
+     * `BreachMonitorWorker` with no UI attached, so failures come back as a specific [error]
+     * string rather than being thrown.
+     */
     suspend fun checkEmailBreaches(email: String): BreachCheckResult {
-        val result = withGuard("XposedOrNot") { xposedOrNot.breachAnalytics(email) }
-            ?: return BreachCheckResult(email, emptyList(), checked = false, error = "Couldn't reach the breach database — check your connection and try again.")
-        val details = result.exposedBreaches?.breachesDetails.orEmpty()
+        val response = try {
+            withTimeoutOrNull(15_000) { xposedOrNot.breachAnalytics(email) }
+                ?: return BreachCheckResult(email, emptyList(), checked = false, error = "The breach database took too long to answer. Try again in a minute.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            Log.w(TAG, "XposedOrNot breach lookup failed: HTTP ${e.code()}")
+            val message = if (e.code() == 429) {
+                "The free breach database limits how often one device can check (about 25 an hour). Try again a little later."
+            } else {
+                "The breach database returned an error (HTTP ${e.code()}). Try again later."
+            }
+            return BreachCheckResult(email, emptyList(), checked = false, error = message)
+        } catch (e: IOException) {
+            Log.w(TAG, "XposedOrNot breach lookup failed", e)
+            return BreachCheckResult(email, emptyList(), checked = false, error = "Couldn't reach the breach database — check your connection and try again.")
+        }
+        val details = response.exposedBreaches?.breachesDetails.orEmpty()
+        val risk = response.breachMetrics?.risk?.firstOrNull()
         return BreachCheckResult(
             email = email,
             breaches = details.map { d ->
                 BreachRecord(
-                    name = d.breach ?: "Unknown site",
-                    date = d.xposedDate ?: "",
-                    dataExposed = d.xposedData?.replace(";", ", ") ?: "",
+                    name = d.breach?.takeIf { it.isNotBlank() } ?: "Unknown site",
+                    date = d.xposedDate.orEmpty(),
+                    dataClasses = d.xposedData.orEmpty().split(';').map { it.trim() }.filter { it.isNotEmpty() },
                     records = d.xposedRecords,
-                    domain = d.domain,
+                    domain = d.domain?.takeIf { it.isNotBlank() },
+                    description = d.details?.takeIf { it.isNotBlank() },
+                    industry = d.industry?.takeIf { it.isNotBlank() },
+                    passwordStorage = when (d.passwordRisk?.lowercase()) {
+                        "plaintext" -> PasswordStorage.PLAINTEXT
+                        "easytocrack" -> PasswordStorage.EASY_TO_CRACK
+                        "hardtocrack" -> PasswordStorage.HARD_TO_CRACK
+                        else -> PasswordStorage.UNKNOWN
+                    },
+                    verified = d.verified.equals("yes", ignoreCase = true),
+                    addedAt = d.added?.takeIf { it.isNotBlank() },
+                    referenceUrl = d.references?.takeIf { it.startsWith("https://") },
                 )
             },
             checked = true,
+            riskLabel = risk?.riskLabel?.takeIf { it.isNotBlank() },
+            riskScore = risk?.riskScore,
+            pasteCount = response.pastesSummary?.cnt ?: 0,
         )
+    }
+
+    /**
+     * Has this password appeared in a known breach? Only the first 5 characters of its SHA-1 are
+     * sent (see [PwnedPasswordsApi]); the password itself never leaves this function.
+     */
+    suspend fun checkPasswordLeak(password: String): PasswordLeakResult {
+        val hash = PasswordLeakCheck.sha1Hex(password)
+        return try {
+            val body = withTimeoutOrNull(15_000) {
+                pwnedPasswords.range(hash.take(5)).use { it.string() }
+            } ?: return PasswordLeakResult(checked = false, error = "The password database took too long to answer. Try again.")
+            PasswordLeakResult(checked = true, timesSeen = PasswordLeakCheck.countIn(body, hash.drop(5)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            Log.w(TAG, "Pwned Passwords lookup failed: HTTP ${e.code()}")
+            PasswordLeakResult(checked = false, error = "The password database returned an error (HTTP ${e.code()}). Try again later.")
+        } catch (e: IOException) {
+            Log.w(TAG, "Pwned Passwords lookup failed", e)
+            PasswordLeakResult(checked = false, error = "Couldn't reach the password database — check your connection and try again.")
+        }
     }
 
     suspend fun checkUrl(rawUrl: String, keys: ApiKeys): UrlVerdict = coroutineScope {

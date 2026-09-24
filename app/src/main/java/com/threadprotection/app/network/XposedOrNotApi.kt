@@ -22,6 +22,24 @@ interface XposedOrNotApi {
 @Serializable
 data class XonAnalyticsResponse(
     @SerialName("ExposedBreaches") val exposedBreaches: XonExposedBreaches? = null,
+    @SerialName("BreachMetrics") val breachMetrics: XonBreachMetrics? = null,
+    @SerialName("PastesSummary") val pastesSummary: XonPastesSummary? = null,
+)
+
+@Serializable
+data class XonBreachMetrics(
+    val risk: List<XonRisk>? = null,
+)
+
+@Serializable
+data class XonRisk(
+    @SerialName("risk_label") val riskLabel: String? = null,
+    @SerialName("risk_score") val riskScore: Int? = null,
+)
+
+@Serializable
+data class XonPastesSummary(
+    val cnt: Int? = null,
 )
 
 @Serializable
@@ -40,4 +58,7 @@ data class XonBreachDetail(
     @SerialName("xposed_date") val xposedDate: String? = null,
     @SerialName("xposed_records") val xposedRecords: Long? = null,
     val verified: String? = null,
+    val references: String? = null,
+    /** When XposedOrNot added this breach to its database (ISO-8601) — not when it happened. */
+    val added: String? = null,
 )

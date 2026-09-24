@@ -49,6 +49,7 @@ import com.threadprotection.app.ui.screens.ChatSessionScreen
 import com.threadprotection.app.ui.screens.ChatScreen
 import com.threadprotection.app.ui.screens.CreateAccountScreen
 import com.threadprotection.app.ui.screens.DashboardScreen
+import com.threadprotection.app.ui.screens.BreachAlertOverlay
 import com.threadprotection.app.ui.screens.DataBreachScreen
 import com.threadprotection.app.hardware.DeviceTransport
 import com.threadprotection.app.hardware.DeviceTrust
@@ -445,6 +446,10 @@ class MainActivity : ComponentActivity() {
                                 onGoBrain = viewModel::goBrain,
                                 onGoSettings = viewModel::goSettings,
                                 onCheck = viewModel::checkMyBreaches,
+                                onToggleMonitoring = viewModel::toggleBreachMonitoring,
+                                onCheckPassword = viewModel::checkPasswordLeak,
+                                onClearPasswordResult = viewModel::clearPasswordLeakResult,
+                                onOpenLink = openUrlInBrowser,
                             )
                         }
 
@@ -616,6 +621,23 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // A breach alert found in the background (or by an in-app check) pops up over
+                    // whatever the user is on, so it's seen even with notifications blocked. Only
+                    // for the signed-in address, and never over the splash, sign-in or a running
+                    // scan. Drawn before the chat/call overlays so those stay on top of it.
+                    state.pendingBreachAlert
+                        ?.takeIf { alert ->
+                            alert.email.equals(state.account?.email, ignoreCase = true) &&
+                                state.screen !in setOf(Screen.SPLASH, Screen.SIGNIN, Screen.CREATE_ACCOUNT, Screen.ONBOARDING, Screen.SCANNING)
+                        }
+                        ?.let { alert ->
+                            BreachAlertOverlay(
+                                alert = alert,
+                                onSeeReport = viewModel::openBreachReportFromAlert,
+                                onDismiss = viewModel::dismissBreachAlert,
+                            )
+                        }
+
                     // Sits outside the screen `when`, so an incoming chat request interrupts
                     // whatever the user is looking at — Dashboard, Settings, anywhere. Previously
                     // the Accept/Deny card lived only inside the Chat screen, so a request that
@@ -721,6 +743,7 @@ class MainActivity : ComponentActivity() {
             TARGET_SETTINGS -> viewModel.goSettings()
             TARGET_CHAT -> viewModel.goChat()
             TARGET_ANALYST_CVE -> viewModel.goAnalystCveSearch()
+            TARGET_DATA_BREACH -> viewModel.goDataBreach()
         }
     }
 
@@ -732,5 +755,6 @@ class MainActivity : ComponentActivity() {
         const val TARGET_SETTINGS = "settings"
         const val TARGET_CHAT = "chat"
         const val TARGET_ANALYST_CVE = "analyst_cve"
+        const val TARGET_DATA_BREACH = "data_breach"
     }
 }
