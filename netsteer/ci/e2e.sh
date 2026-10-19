@@ -47,6 +47,23 @@ traffic() { # parallel HTTP requests from the shell user, which is routed throug
 
 stats_line() { adb logcat -d -s NetSteer:I | grep " stats " | tail -1; }
 
+echo "== make sure Wi-Fi and mobile data are both on, and the app sees both validated"
+adb shell svc wifi enable
+adb shell svc data enable
+adb shell am start -n "$ACT" >/dev/null
+both=""
+for _ in $(seq 1 90); do
+  last=$(adb logcat -d -s NetSteer:I | grep " net: " | tail -1)
+  if echo "$last" | grep -q "CELLULAR validated=true" && echo "$last" | grep -q "WIFI validated=true"; then both=1; break; fi
+  sleep 1
+done
+adb logcat -d -s NetSteer:I | grep " net: " | tail -5
+if [ -z "$both" ]; then
+  adb shell dumpsys wifi | grep -iE "Wi-Fi is|mWifiInfo|current network|SSID" | head -15
+  adb shell dumpsys connectivity | sed -n '/Current Networks/,/^$/p' | head -40
+  fail "emulator did not provide validated Wi-Fi and mobile at the same time"
+fi
+
 echo "== start combining"
 start
 wait_vpn up || fail "VPN did not come up"
