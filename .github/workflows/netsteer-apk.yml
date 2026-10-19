@@ -3,7 +3,7 @@ name: NetSteer APK
 on:
   push:
     branches: [claude/determined-ride-izevb8]
-    paths: ["netsteer/**", ".github/workflows/netsteer-apk.yml"]
+    paths: ["netsteer/**", ".github/workflows/netsteer-apk.yml", ".gitmodules"]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +17,8 @@ jobs:
         working-directory: netsteer
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v5
         with:
@@ -24,33 +26,83 @@ jobs:
           java-version: "17"
 
       # ubuntu-latest ships the Android SDK (ANDROID_HOME) with licenses accepted;
-      # AGP installs any missing platform/build-tools on first build.
+      # AGP installs any missing platform/build-tools/NDK on first build.
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Unit tests
+      - name: Unit + integration tests (core)
         run: ./gradlew --no-daemon :core:test
 
       - name: Build debug APK
         run: ./gradlew --no-daemon :app:assembleDebug
 
-      - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk NetSteer-debug-${{ github.run_number }}.apk
+      - name: Check native libraries are packaged
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep libhev-socks5-tunnel.so
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -q "lib/$abi/libhev-socks5-tunnel.so" || { echo "missing $abi"; exit 1; }
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NetSteer-debug-apk
-          path: netsteer/NetSteer-debug-${{ github.run_number }}.apk
+          name: apk
+          path: netsteer/app/build/outputs/apk/debug/app-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-reports
+          path: netsteer/core/build/reports/tests
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: apk
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Emulator end-to-end test (Wi-Fi + mobile)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash netsteer/ci/e2e.sh apk/app-debug.apk
+
+  release:
+    needs: [build, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: apk
+
+      - name: Rename APK
+        run: cp apk/app-debug.apk NetSteer-combine-${{ github.run_number }}.apk
 
       - name: Publish pre-release with APK
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: netsteer-debug-${{ github.run_number }}
-          name: NetSteer debug build ${{ github.run_number }}
+          tag_name: netsteer-combine-${{ github.run_number }}
+          name: NetSteer combine build ${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           prerelease: true
           body: |
-            Debug-signed APK of NetSteer (Wi-Fi/cellular failover & network manager, not bandwidth bonding).
-            Install: download the APK on the phone, allow "Install unknown apps" for your browser/file manager, open it.
-            Or: `adb install -r NetSteer-debug-${{ github.run_number }}.apk`
-          files: netsteer/NetSteer-debug-${{ github.run_number }}.apk
+            NetSteer: uses Wi-Fi and mobile data at the same time (on-device VPN, no server).
+            Passed: core unit/integration tests and an emulator end-to-end test (both links carry traffic, stop/restart, Wi-Fi-off failover).
+            Install: open the APK on the phone and allow "Install unknown apps", or `adb install -r NetSteer-combine-${{ github.run_number }}.apk`.
+          files: NetSteer-combine-${{ github.run_number }}.apk

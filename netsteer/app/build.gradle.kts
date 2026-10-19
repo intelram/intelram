@@ -19,8 +19,23 @@ android {
         applicationId = "com.intelram.netsteer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
+
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        externalNativeBuild {
+            ndkBuild {
+                // Register hev's JNI methods on com.intelram.netsteer.tunnel.TProxy.
+                arguments += listOf(
+                    "APP_CFLAGS+=-DPKGNAME=com/intelram/netsteer/tunnel -DCLSNAME=TProxy -ffile-prefix-map=${rootDir}=.",
+                    "APP_LDFLAGS+=-Wl,--build-id=none",
+                )
+            }
+        }
+    }
+
+    externalNativeBuild {
+        ndkBuild { path = file("src/main/jni/Android.mk") }
     }
 
     signingConfigs {

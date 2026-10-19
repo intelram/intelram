@@ -34,5 +34,3 @@ data class NetworkSnapshot(
     val probe: ProbeStats? = null,
 )
 
-/** User-facing steering preference. Applies to this app's own traffic only. */
-enum class Preference { AUTO, PREFER_WIFI, PREFER_CELLULAR, WIFI_ONLY, CELLULAR_ONLY }

@@ -1,0 +1,3 @@
+APP_OPTIM := release
+APP_CFLAGS := -O3
+NDK_TOOLCHAIN_VERSION := clang

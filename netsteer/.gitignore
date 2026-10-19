@@ -6,3 +6,5 @@ keystore.properties
 *.keystore
 .idea/
 *.iml
+.cxx/
+.externalNativeBuild/
