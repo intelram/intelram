@@ -3,6 +3,7 @@ package com.intelram.netsteer
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.net.Network
 import android.net.VpnService
@@ -156,7 +157,10 @@ class CombineVpnService : VpnService() {
         tun = pfd
 
         val conf = File(noBackupFilesDir, "tunnel.yml")
-        conf.writeText(tunnelConfig(port, user, pass))
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        // Debug builds keep hev's warnings in app-private storage for troubleshooting.
+        val logFile = File(noBackupFilesDir, "tunnel.log").takeIf { debuggable }?.also { it.delete() }
+        conf.writeText(tunnelConfig(port, user, pass, logFile?.absolutePath))
         val started = try {
             TProxy.TProxyStartService(conf.absolutePath, pfd.fd)
         } catch (t: Throwable) { // UnsatisfiedLinkError if the native library is missing for this CPU
@@ -173,9 +177,12 @@ class CombineVpnService : VpnService() {
         jobs += scope.launch {
             // Keep the OS informed which networks carry VPN traffic (data accounting, metering).
             app.monitor.networks
-                .map { currentUplinks().map { it.network }.toSet() }
+                .map { currentUplinks().associate { it.id to it.network } }
                 .distinctUntilChanged()
-                .collect { nets -> runCatching { setUnderlyingNetworks(nets.toTypedArray().ifEmpty { null }) } }
+                .collect { links ->
+                    Log.i(TAG, "uplinks: ${links.keys.sorted()}")
+                    runCatching { setUnderlyingNetworks(links.values.toTypedArray().ifEmpty { null }) }
+                }
         }
         jobs += scope.launch {
             var tick = 0
@@ -246,7 +253,7 @@ class CombineVpnService : VpnService() {
         }
     }
 
-    private fun tunnelConfig(port: Int, user: String, pass: String) = """
+    private fun tunnelConfig(port: Int, user: String, pass: String, logPath: String?) = """
         |tunnel:
         |  mtu: $MTU
         |socks5:
@@ -266,6 +273,7 @@ class CombineVpnService : VpnService() {
         |  tcp-read-write-timeout: 300000
         |  udp-read-write-timeout: 60000
         |  log-level: warn
+        |  log-file: '${logPath ?: "null"}'
         |""".trimMargin()
 
     companion object {

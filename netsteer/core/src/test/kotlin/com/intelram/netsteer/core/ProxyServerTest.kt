@@ -188,6 +188,15 @@ class ProxyServerTest {
         }
     }
 
+    @Test fun listensOnIpv4LoopbackWhereHevDials() {
+        // hev is configured with address '127.0.0.1'; Android's getLoopbackAddress() would be ::1.
+        assertEquals("127.0.0.1", ProxyServer.LISTEN_ADDRESS.hostAddress)
+        Socket(InetAddress.getByName("127.0.0.1"), proxy.port).use { s ->
+            s.soTimeout = 5_000
+            assertTrue(handshake(s))
+        }
+    }
+
     @Test fun refusedMessageDetection() {
         assertTrue(ProxyServer.isRefused(java.net.ConnectException("failed to connect to /1.2.3.4 (port 80) after 7000ms: isConnected failed: ECONNREFUSED (Connection refused)")))
         assertTrue(ProxyServer.isRefused(java.net.ConnectException("Connection refused")))

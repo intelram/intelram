@@ -5,10 +5,15 @@ set -u
 APK="$1"
 PKG=com.intelram.netsteer
 ACT="$PKG/.MainActivity"
-fail() { echo "E2E FAIL: $*"; adb logcat -d -s NetSteer:V AndroidRuntime:E | tail -80; exit 1; }
+fail() {
+  echo "E2E FAIL: $*"
+  adb logcat -d -s NetSteer:V AndroidRuntime:E | tail -80
+  echo "--- hev tunnel log"; adb shell run-as "$PKG" cat no_backup/tunnel.log 2>&1 | tail -40
+  exit 1
+}
 
 echo "== device networks"
-adb shell dumpsys connectivity | grep -E "NetworkAgentInfo\{" | sed 's/^ *//' | cut -c1-220
+adb shell dumpsys connectivity | grep -oE "Transports: [A-Z|]+|VALIDATED" | sort | uniq -c
 
 echo "== install"
 adb install -r -g "$APK" || fail "install"
@@ -45,8 +50,12 @@ stats_line() { adb logcat -d -s NetSteer:I | grep " stats " | tail -1; }
 echo "== start combining"
 start
 wait_vpn up || fail "VPN did not come up"
-sleep 5 # let Wi-Fi + mobile callbacks and validation settle
-stats_line
+for _ in $(seq 1 45); do
+  adb logcat -d -s NetSteer:I | grep -q "uplinks: \[cell, wifi\]" && break
+  sleep 1
+done
+adb logcat -d -s NetSteer:I | grep "uplinks:" | tail -3
+adb logcat -d -s NetSteer:I | grep -q "uplinks: \[cell, wifi\]" || fail "Wi-Fi and mobile were not both available"
 
 echo "== traffic round 1"
 ok=$(traffic)

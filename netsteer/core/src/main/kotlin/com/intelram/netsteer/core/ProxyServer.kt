@@ -66,7 +66,8 @@ class ProxyServer(
     val failedConnections: Long get() = failures.get()
 
     fun start(): Int {
-        val s = ServerSocket(0, 512, InetAddress.getLoopbackAddress())
+        // Explicit IPv4: on Android InetAddress.getLoopbackAddress() is ::1, but hev dials 127.0.0.1.
+        val s = ServerSocket(0, 512, LISTEN_ADDRESS)
         server = s
         pool.execute {
             while (!s.isClosed) {
@@ -92,7 +93,10 @@ class ProxyServer(
             client.soTimeout = 15_000 // handshake only
             val input = DataInputStream(BufferedInputStream(client.getInputStream()))
             val out = client.getOutputStream()
-            if (!Socks5.serverHandshake(input, out, user, pass)) return
+            if (!Socks5.serverHandshake(input, out, user, pass)) {
+                log("SOCKS auth rejected")
+                return
+            }
             val req = Socks5.readRequest(input)
             client.soTimeout = 0
             when (req.cmd) {
@@ -112,6 +116,7 @@ class ProxyServer(
 
     private fun handleConnect(client: Socket, input: InputStream, out: OutputStream, dest: Socks5.Dest) {
         if (dest is Socks5.Dest.Ip && isBlocked(dest.address)) {
+            if (failures.incrementAndGet() <= 20) log("blocked destination in tunnel/local range")
             Socks5.writeReply(out, Socks5.REP_NOT_ALLOWED)
             return
         }
@@ -152,7 +157,7 @@ class ProxyServer(
             }
         }
         if (remote == null || link == null) {
-            failures.incrementAndGet()
+            if (failures.incrementAndGet() <= 20) log("connect failed: rep=$rep tried=$tried")
             Socks5.writeReply(out, rep)
             return
         }
@@ -296,6 +301,8 @@ class ProxyServer(
     }
 
     companion object {
+        val LISTEN_ADDRESS: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+
         /** Android reports every connect errno as ConnectException; only ECONNREFUSED means "destination said no". */
         fun isRefused(e: ConnectException): Boolean {
             val m = e.message ?: return false
