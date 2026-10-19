@@ -1,0 +1,6 @@
+# Local agent/plugin tool state (not project source)
+.claude-flow/
+.swarm/
+agentdb.rvf
+agentdb.rvf.lock
+ruvector.db
