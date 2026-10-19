@@ -34,14 +34,16 @@ wait_vpn() { # $1 = up|down
 }
 
 traffic() { # parallel HTTP requests from the shell user, which is routed through the VPN
-  local ok=0 i
+  local ok=0 i host path
   rm -f /tmp/e2e_*.txt
   for i in $(seq 1 16); do
-    host=$([ $((i % 2)) = 0 ] && echo example.com || echo www.google.com)
-    adb shell "printf 'GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\nUser-Agent: netsteer-e2e\r\n\r\n' | timeout 25 nc $host 80" > /tmp/e2e_$i.txt 2>&1 &
+    if [ $((i % 2)) = 0 ]; then host=connectivitycheck.gstatic.com; path=/generate_204; else host=www.google.com; path=/; fi
+    adb shell "printf 'GET $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\nUser-Agent: netsteer-e2e\r\n\r\n' | timeout 25 nc $host 80" > /tmp/e2e_$i.txt 2>&1 &
   done
   wait
-  for i in $(seq 1 16); do grep -q "^HTTP/1\.[01] [23]0[0-9]" /tmp/e2e_$i.txt && ok=$((ok + 1)); done
+  # Any HTTP status line proves the full path (DNS -> TUN -> hev -> proxy -> link -> server -> back).
+  for i in $(seq 1 16); do grep -q "^HTTP/1\.[01] [1-5][0-9][0-9]" /tmp/e2e_$i.txt && ok=$((ok + 1)); done
+  for i in $(seq 1 16); do echo "  req $i: $(head -1 /tmp/e2e_$i.txt | tr -d '\r' | cut -c1-80)" >&2; done
   echo "$ok"
 }
 
@@ -77,7 +79,7 @@ adb logcat -d -s NetSteer:I | grep -q "uplinks: \[cell, wifi\]" || fail "Wi-Fi a
 echo "== traffic round 1"
 ok=$(traffic)
 echo "successful HTTP responses: $ok/16"
-[ "$ok" -ge 14 ] || { head -c 600 /tmp/e2e_1.txt; fail "too many failed requests ($ok/16)"; }
+[ "$ok" -ge 15 ] || fail "too many failed requests ($ok/16)"
 sleep 6
 line=$(stats_line); echo "$line"
 wifi_rx=$(echo "$line" | sed -n 's/.*wifi=\([0-9]*\)\/.*/\1/p')
@@ -101,7 +103,7 @@ wait_vpn up || fail "VPN did not come up on restart"
 sleep 5
 ok=$(traffic)
 echo "successful HTTP responses after restart: $ok/16"
-[ "$ok" -ge 14 ] || fail "restart: too many failed requests ($ok/16)"
+[ "$ok" -ge 15 ] || fail "restart: too many failed requests ($ok/16)"
 
 echo "== failover: turn Wi-Fi off while combining"
 adb shell svc wifi disable
@@ -109,7 +111,7 @@ sleep 8
 ok=$(traffic)
 echo "successful HTTP responses on mobile only: $ok/16"
 adb shell svc wifi enable
-[ "$ok" -ge 14 ] || fail "failover to mobile failed ($ok/16)"
+[ "$ok" -ge 15 ] || fail "failover to mobile failed ($ok/16)"
 
 stop
 wait_vpn down || fail "VPN did not stop at end"
