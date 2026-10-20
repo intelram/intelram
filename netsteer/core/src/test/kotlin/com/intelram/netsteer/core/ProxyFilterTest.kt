@@ -158,6 +158,23 @@ class ProxyFilterTest {
         }
     }
 
+    @Test fun allowedHttpToBareIpWithHalfCloseGetsFullResponse() {
+        // Like `printf 'GET ...' | nc IP 80`: request then FIN before the upstream connection even exists.
+        val p = echoProxyFor(80).also { it.start() }
+        try {
+            val s = Socket(loop, p.port).apply { soTimeout = 5_000 }
+            hevConnect(s, 80)
+            val req = "GET / HTTP/1.1\r\nHost: www.example.org\r\nConnection: close\r\n\r\n".toByteArray()
+            s.getOutputStream().write(req)
+            s.shutdownOutput()
+            assertArrayEquals(req, s.getInputStream().readBytes())
+            s.close()
+            assertEquals(1, connects.get())
+        } finally {
+            p.close()
+        }
+    }
+
     @Test fun serverSpeaksFirstProtocolOn443StillWorks() {
         val p = echoProxyFor(443).also { it.start() }
         try {

@@ -1,13 +1,11 @@
 package com.intelram.netsteer.core
 
 import java.io.BufferedInputStream
-import java.io.ByteArrayInputStream
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.SequenceInputStream
 import java.net.ConnectException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -135,20 +133,20 @@ class ProxyServer(
             return
         }
 
-        var clientIn = input
+        var head: ByteArray? = null
         var sniffedHost: String? = null
         val sniff = f != null && dest is Socks5.Dest.Ip && (dest.port == 443 || dest.port == 80)
         if (sniff) {
             // The app connected to a bare IP (own DNS, DoH, hardcoded address). Accept, read the
             // first bytes to learn the real host (TLS SNI / HTTP Host), then decide. Nothing is decrypted.
             Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
-            val head = readHead(client, input, dest.port == 443)
-            sniffedHost = if (dest.port == 443) Sniffer.tlsSni(head, head.size) else Sniffer.httpHost(head, head.size)
+            val h = readHead(client, input, dest.port == 443)
+            head = h
+            sniffedHost = if (dest.port == 443) Sniffer.tlsSni(h, h.size) else Sniffer.httpHost(h, h.size)
             if (sniffedHost != null && f!!.blocks(sniffedHost)) {
                 onBlocked(sniffedHost)
                 return
             }
-            clientIn = SequenceInputStream(ByteArrayInputStream(head), input)
         }
 
         val hostKey = sniffedHost ?: when (dest) {
@@ -167,7 +165,13 @@ class ProxyServer(
         scheduler.opened(link.id)
         try {
             if (!sniff) Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
-            relay(client, clientIn, remote, c)
+            // Replay the sniffed bytes first. (Not via SequenceInputStream: at EOF it closes the
+            // socket's input stream, which closes the socket and loses the server's response.)
+            if (head != null && head.isNotEmpty()) {
+                remote.getOutputStream().write(head)
+                c.tx.addAndGet(head.size.toLong())
+            }
+            relay(client, input, remote, c)
         } finally {
             scheduler.closed(link.id)
             close(remote)
