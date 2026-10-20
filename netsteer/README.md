@@ -1,4 +1,4 @@
-# NetSteer: use Wi-Fi and mobile data at the same time (Android, no server)
+# NetSteer: Wi-Fi + mobile data together, and ad blocking (Android, no server)
 
 NetSteer is an on-device VPN that spreads your phone's connections across
 **Wi-Fi and mobile data simultaneously**, so traffic that uses several
@@ -24,6 +24,41 @@ source IP address. Wi-Fi and mobile have different public IPs, so splitting
 one connection's packets across both requires a cooperating server
 (MPTCP / bonding server). This project's constraint is *no server*, so it
 combines **per connection**, which is the maximum possible on a stock phone.
+
+## Ad & tracker blocking (AdGuard-style DNS filtering)
+
+NetSteer blocks ads and trackers for **all apps** the way AdGuard's DNS
+filtering does, with an extra network-level layer:
+
+| Layer | What it catches |
+|---|---|
+| **Domain filter on every new connection** (names come from NetSteer's own DNS) | Ad/tracker servers in apps and browsers |
+| **TLS SNI / HTTP Host check** for connections made to a bare IP address | Apps that use their own DNS, DNS-over-HTTPS, or hardcoded IPs |
+| **DNS answers** for queries sent to other resolvers (e.g. `8.8.8.8:53`) | Ad domains get NXDOMAIN |
+| **QUIC/UDP** to blocked names | Dropped; the app falls back to TCP and is blocked there too |
+
+- Filter lists (downloaded on the phone over HTTPS, refreshed every 4 days, on Wi-Fi when possible):
+  **AdGuard DNS filter** (~188k rules) and **Steven Black unified hosts** (~71k rules), plus a small built-in list
+  so blocking works before the first download. AdGuard rule syntax supported: `||domain^`, `@@` exceptions,
+  `$important`, `$badfilter`, hosts and plain-domain formats. Cosmetic, path and regex rules need page access
+  and are skipped (they are <0.3 % of the AdGuard DNS filter).
+- Compiled to sorted 64-bit hashes: ~1.6 MB RAM for ~240k rules, ~1 µs per lookup, cached on disk so it is not re-parsed on each start.
+- **Allowlist** in the app for anything that breaks. Stats: blocked today/total and most-blocked domains.
+- **No HTTPS decryption.** AdGuard's optional "HTTPS filtering" installs a certificate and decrypts traffic
+  (man-in-the-middle). NetSteer deliberately does not: it is a security risk, and since Android 7 most apps
+  ignore user certificates anyway. Consequence: ads served from the *same* servers as content (e.g. YouTube
+  video ads) cannot be blocked, by NetSteer or by AdGuard without root.
+
+## Battery
+
+- **Smart combining (default on):** while Wi-Fi is fine, everything stays on Wi-Fi and mobile data is not
+  even requested. Only when traffic stays above ~2 Mb/s for 3 s (a download, update, video loading) is
+  mobile brought up and new connections spread over both; after 30 s of light traffic mobile stops taking
+  new connections and is released 60 s later. Short connections never wake the mobile radio, which is what
+  drains batteries.
+- Screen off: stats sampled every 5 s and no notification redraws; screen on: redraw only when the text changes.
+- Idle connections (push notifications) are kept for up to 2 h instead of being cut and re-established.
+- No wakelocks, no polling timers in the relay; small thread stacks.
 
 ## How it works
 
@@ -122,3 +157,4 @@ FOREGROUND_SERVICE_SPECIAL_USE, POST_NOTIFICATIONS, plus the user's VPN consent.
 No location, contacts, storage, phone-state or accessibility access.
 
 Third-party code: hev-socks5-tunnel and its submodules (MIT/BSD), kotlinx-coroutines (Apache-2.0).
+Filter lists are downloaded by the device from their publishers and are not bundled: AdGuard DNS filter (GPL-3.0), Steven Black hosts (MIT).

@@ -18,7 +18,7 @@ import java.util.Locale
 /**
  * The ongoing notification. Its small icon (shown in the status bar) is drawn
  * at runtime as the live combined speed, e.g. "24" over "Mb/s", so the user
- * can see at a glance that combining is active and how fast it is.
+ * can see at a glance that NetSteer is active and how fast it is.
  */
 class StatusNotifier(private val ctx: Context) {
     private val nm = ctx.getSystemService(NotificationManager::class.java)!!
@@ -29,15 +29,18 @@ class StatusNotifier(private val ctx: Context) {
     }
 
     init {
-        val ch = NotificationChannel(CHANNEL, "Combining status", NotificationManager.IMPORTANCE_DEFAULT).apply {
+        val ch = NotificationChannel(CHANNEL, "NetSteer status", NotificationManager.IMPORTANCE_DEFAULT).apply {
             // DEFAULT importance guarantees a status-bar icon; silence it explicitly.
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
-            description = "Live speed while Wi-Fi and mobile data are combined"
+            description = "Live speed and ad blocking while NetSteer is on"
         }
         nm.createNotificationChannel(ch)
     }
+
+    /** Everything the notification shows; redraw only when this changes. */
+    fun contentKey(s: CombineStatus): String = title(s) + "|" + text(s) + "|" + mbps(s.totalBps)
 
     fun build(status: CombineStatus): Notification {
         val open = PendingIntent.getActivity(
@@ -49,32 +52,16 @@ class StatusNotifier(private val ctx: Context) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val icon = if (status.running) speedIcon(status.totalBps) else Icon.createWithResource(ctx, R.drawable.ic_stat_combine)
-
-        val title: String
-        val text: String
-        if (!status.running) {
-            title = "NetSteer"
-            text = status.message ?: "Starting…"
-        } else {
-            val up = status.links.filter { it.up }
-            title = when (up.size) {
-                0 -> "No network available"
-                1 -> "${up[0].label} only · ${mbps(status.totalBps)} Mb/s"
-                else -> "Combining ${up.joinToString(" + ") { it.label }} · ${mbps(status.totalBps)} Mb/s"
-            }
-            text = status.links.joinToString("   ") { l ->
-                if (l.up) "${l.label} ↓${mbps(l.rxBps)} ↑${mbps(l.txBps)}" else "${l.label} off"
-            }
-        }
+        val text = text(status)
         val detail = if (status.running) "$text\n${status.connections} active connections" else text
 
         val b = Notification.Builder(ctx, CHANNEL)
             .setSmallIcon(icon)
-            .setContentTitle(title)
+            .setContentTitle(title(status))
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(detail))
             .setContentIntent(open)
-            .addAction(Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_stat_combine), "Stop", stop).build())
+            .addAction(Notification.Action.Builder(Icon.createWithResource(ctx, R.drawable.ic_stat_combine), "Turn off", stop).build())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
@@ -84,6 +71,27 @@ class StatusNotifier(private val ctx: Context) {
     }
 
     fun update(status: CombineStatus) = nm.notify(ID, build(status))
+
+    private fun title(s: CombineStatus): String {
+        if (!s.running) return "NetSteer"
+        val up = s.links.filter { it.up }
+        val speed = "${mbps(s.totalBps)} Mb/s"
+        val wifiUp = up.any { it.label == "Wi-Fi" }
+        return when {
+            up.isEmpty() -> "No network available"
+            s.mobileActive && up.size == 2 -> "Combining Wi-Fi + Mobile · $speed"
+            s.combine && s.smart && wifiUp -> "Wi-Fi · $speed · mobile joins when needed"
+            else -> "${if (wifiUp) "Wi-Fi" else up[0].label} · $speed"
+        }
+    }
+
+    private fun text(s: CombineStatus): String {
+        if (!s.running) return s.message ?: "Starting…"
+        val links = s.links.filter { it.up && (it.label == "Wi-Fi" || s.mobileActive || it.rxBps + it.txBps > 0) }
+            .joinToString("   ") { l -> "${l.label} ↓${mbps(l.rxBps)} ↑${mbps(l.txBps)}" }
+        val ads = if (s.adBlock) "${String.format(Locale.US, "%,d", s.blockedToday)} ads blocked today" else "Ad blocking off"
+        return if (links.isEmpty()) ads else "$links   ·   $ads"
+    }
 
     private fun speedIcon(bps: Double): Icon {
         val size = 96

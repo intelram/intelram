@@ -50,10 +50,9 @@ data class NetworkState(
  * Tracks every Wi-Fi and cellular network with internet capability, plus the
  * system default network.
  *
- * Android normally tears cellular down shortly after Wi-Fi validates. With
- * [hotStandby] the monitor *requests* cellular (requestNetwork), which keeps the
- * radio attached so failover is instant. This costs battery and may incur
- * carrier keep-alive traffic; it is off by default.
+ * Tracking is passive. Android normally tears mobile data down shortly after
+ * Wi-Fi validates; [setMobileRequested] holds a requestNetwork(CELLULAR) to keep
+ * it connected, which costs battery, so callers hold it only while needed.
  */
 class NetworkMonitor(private val cm: ConnectivityManager) {
     private val _networks = MutableStateFlow<Map<Long, NetworkState>>(emptyMap())
@@ -64,18 +63,17 @@ class NetworkMonitor(private val cm: ConnectivityManager) {
 
     private val registered = mutableListOf<ConnectivityManager.NetworkCallback>()
     private var started = false
+    private var mobileRequest: ConnectivityManager.NetworkCallback? = null
+
+    /** Whether mobile data is currently being held up by us. */
+    val mobileRequested: Boolean @Synchronized get() = mobileRequest != null
 
     @Synchronized
-    fun start(hotStandby: Boolean) {
-        if (started) stop()
+    fun start() {
+        if (started) return
         started = true
-
-        val wifi = internetRequest(NetworkCapabilities.TRANSPORT_WIFI)
-        val cell = internetRequest(NetworkCapabilities.TRANSPORT_CELLULAR)
-
-        cm.registerNetworkCallback(wifi, tracker().also(registered::add))
-        val cellCb = tracker().also(registered::add)
-        if (hotStandby) cm.requestNetwork(cell, cellCb) else cm.registerNetworkCallback(cell, cellCb)
+        cm.registerNetworkCallback(internetRequest(NetworkCapabilities.TRANSPORT_WIFI), tracker().also(registered::add))
+        cm.registerNetworkCallback(internetRequest(NetworkCapabilities.TRANSPORT_CELLULAR), tracker().also(registered::add))
 
         cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { _systemDefault.value = network.networkHandle }
@@ -85,12 +83,17 @@ class NetworkMonitor(private val cm: ConnectivityManager) {
         }.also(registered::add))
     }
 
+    /** Keep mobile data connected (true) or let Android manage it (false). Idempotent. */
     @Synchronized
-    fun stop() {
-        registered.forEach { runCatching { cm.unregisterNetworkCallback(it) } }
-        registered.clear()
-        _networks.value = emptyMap()
-        started = false
+    fun setMobileRequested(on: Boolean) {
+        if (on && mobileRequest == null) {
+            val cb = object : ConnectivityManager.NetworkCallback() {} // state arrives via the tracker
+            runCatching { cm.requestNetwork(internetRequest(NetworkCapabilities.TRANSPORT_CELLULAR), cb) }
+                .onSuccess { mobileRequest = cb }
+        } else if (!on) {
+            mobileRequest?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+            mobileRequest = null
+        }
     }
 
     fun recordProbe(id: Long, stats: ProbeStats) =

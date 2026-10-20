@@ -11,6 +11,7 @@ fail() {
   echo "--- hev tunnel log"; adb shell run-as "$PKG" cat no_backup/tunnel.log 2>&1 | tail -40
   exit 1
 }
+log() { adb logcat -d -s NetSteer:I; }
 
 echo "== device networks"
 adb shell dumpsys connectivity | grep -oE "Transports: [A-Z|]+|VALIDATED" | sort | uniq -c
@@ -21,8 +22,10 @@ adb install -r -g "$APK" || fail "install"
 adb shell appops set "$PKG" ACTIVATE_VPN allow || fail "appops"
 adb logcat -c
 
-start() { adb shell am start -n "$ACT" -a "$PKG.START" >/dev/null; }
+# Debug-build hooks: START/STOP plus settings extras (see MainActivity.handleAction).
+start() { adb shell am start -n "$ACT" -a "$PKG.START" "$@" >/dev/null; }
 stop() { adb shell am start -n "$ACT" -a "$PKG.STOP" >/dev/null; }
+set_opts() { adb shell am start -n "$ACT" "$@" >/dev/null; }
 
 wait_vpn() { # $1 = up|down
   for _ in $(seq 1 30); do
@@ -33,7 +36,12 @@ wait_vpn() { # $1 = up|down
   return 1
 }
 
-traffic() { # parallel HTTP requests from the shell user, which is routed through the VPN
+# One HTTP request from the shell user (routed through the VPN); prints the status line or nothing.
+http() { # host path [connect-to]
+  adb shell "printf 'GET $2 HTTP/1.1\r\nHost: $1\r\nConnection: close\r\nUser-Agent: netsteer-e2e\r\n\r\n' | timeout 20 nc ${3:-$1} 80" 2>/dev/null | head -1 | tr -d '\r'
+}
+
+traffic() { # 16 parallel requests; echoes the number of HTTP responses
   local ok=0 i host path
   rm -f /tmp/e2e_*.txt
   for i in $(seq 1 16); do
@@ -47,7 +55,11 @@ traffic() { # parallel HTTP requests from the shell user, which is routed throug
   echo "$ok"
 }
 
-stats_line() { adb logcat -d -s NetSteer:I | grep " stats " | tail -1; }
+stats_line() { log | grep " stats " | tail -1; }
+cell_rx() { stats_line | sed -n 's/.*cell=\([0-9]*\)\/.*/\1/p'; }
+cell_opened() { stats_line | sed -n 's/.*opened=wifi:[0-9]*,cell:\([0-9]*\).*/\1/p'; }
+wifi_rx() { stats_line | sed -n 's/.*wifi=\([0-9]*\)\/.*/\1/p'; }
+fresh_stats() { sleep 6; stats_line; } # stats are logged every 5 s
 
 echo "== make sure Wi-Fi and mobile data are both on, and the app sees both validated"
 adb shell svc wifi enable
@@ -55,41 +67,115 @@ adb shell svc data enable
 adb shell am start -n "$ACT" >/dev/null
 both=""
 for _ in $(seq 1 90); do
-  last=$(adb logcat -d -s NetSteer:I | grep " net: " | tail -1)
+  last=$(log | grep " net: " | tail -1)
   if echo "$last" | grep -q "CELLULAR validated=true" && echo "$last" | grep -q "WIFI validated=true"; then both=1; break; fi
   sleep 1
 done
-adb logcat -d -s NetSteer:I | grep " net: " | tail -5
+log | grep " net: " | tail -3
 if [ -z "$both" ]; then
   adb shell dumpsys wifi | grep -iE "Wi-Fi is|mWifiInfo|current network|SSID" | head -15
-  adb shell dumpsys connectivity | sed -n '/Current Networks/,/^$/p' | head -40
   fail "emulator did not provide validated Wi-Fi and mobile at the same time"
 fi
 
-echo "== start combining"
-start
+echo "== start: combining always-on (battery saver off), ad blocking on"
+start --ez combine true --ez smart false --ez adblock true
 wait_vpn up || fail "VPN did not come up"
-for _ in $(seq 1 45); do
-  adb logcat -d -s NetSteer:I | grep -q "uplinks: \[cell, wifi\]" && break
-  sleep 1
-done
-adb logcat -d -s NetSteer:I | grep "uplinks:" | tail -3
-adb logcat -d -s NetSteer:I | grep -q "uplinks: \[cell, wifi\]" || fail "Wi-Fi and mobile were not both available"
+for _ in $(seq 1 45); do log | grep -q "uplinks: \[cell, wifi\]" && break; sleep 1; done
+log | grep "uplinks:" | tail -2
+log | grep -q "uplinks: \[cell, wifi\]" || fail "Wi-Fi and mobile were not both available"
 
-echo "== traffic round 1"
+echo "== traffic round 1 (both links)"
 ok=$(traffic)
 echo "successful HTTP responses: $ok/16"
 [ "$ok" -ge 15 ] || fail "too many failed requests ($ok/16)"
-sleep 6
-line=$(stats_line); echo "$line"
-wifi_rx=$(echo "$line" | sed -n 's/.*wifi=\([0-9]*\)\/.*/\1/p')
-cell_rx=$(echo "$line" | sed -n 's/.*cell=\([0-9]*\)\/.*/\1/p')
-[ "${wifi_rx:-0}" -gt 0 ] || fail "no bytes received over Wi-Fi"
-[ "${cell_rx:-0}" -gt 0 ] || fail "no bytes received over mobile"
-echo "both links carried traffic: wifi_rx=$wifi_rx cell_rx=$cell_rx"
+line=$(fresh_stats); echo "$line"
+w=$(wifi_rx); c=$(cell_rx)
+[ "${w:-0}" -gt 0 ] || fail "no bytes received over Wi-Fi"
+[ "${c:-0}" -gt 0 ] || fail "no bytes received over mobile"
+echo "both links carried traffic: wifi_rx=$w cell_rx=$c"
 
 echo "== notification present"
 adb shell dumpsys notification --noredact | grep -q "pkg=$PKG" || fail "no notification"
+
+echo "== ad blocking: filter lists download on the device"
+for _ in $(seq 1 120); do
+  n=$(log | grep " filters: " | tail -1 | sed -n 's/.*filters: \([0-9]*\) rules.*/\1/p')
+  [ "${n:-0}" -gt 100000 ] && break
+  sleep 1
+done
+log | grep " filters: " | tail -2
+[ "${n:-0}" -gt 100000 ] || fail "filter lists not downloaded/compiled (rules=${n:-0})"
+
+echo "== ad blocking: ad domain via DNS is blocked, normal site works"
+r=$(http doubleclick.net /); echo "  doubleclick.net -> '${r}'"
+[ -z "$r" ] || fail "doubleclick.net was not blocked"
+r=$(http pagead2.googlesyndication.com /pagead/show_ads.js); echo "  pagead2.googlesyndication.com -> '${r}'"
+[ -z "$r" ] || fail "googlesyndication was not blocked"
+r=$(http www.google.com /); echo "  www.google.com -> '${r}'"
+echo "$r" | grep -q "^HTTP/1" || fail "normal site broken by ad blocking"
+
+echo "== ad blocking: app using a bare IP (own DNS) is still blocked by Host header"
+GIP=$(getent ahostsv4 www.google.com | awk '{print $1}' | head -1)
+echo "  google IP: $GIP"
+r=$(http pagead2.googlesyndication.com / "$GIP"); echo "  Host: ad domain @ $GIP -> '${r}'"
+[ -z "$r" ] || fail "Host-header sniffing did not block"
+r=$(http www.google.com / "$GIP"); echo "  Host: www.google.com @ $GIP -> '${r}'"
+echo "$r" | grep -q "^HTTP/1" || fail "bare-IP request to allowed host failed"
+line=$(fresh_stats); echo "$line"
+echo "$line" | grep -q "blocked=0$" && fail "blocked counter did not increase"
+
+echo "== battery saver: light traffic must not touch mobile data"
+set_opts --ez smart true
+sleep 3
+c0=$(fresh_stats >/dev/null; cell_opened)
+ok=$(traffic)
+echo "successful HTTP responses (saver on): $ok/16"
+[ "$ok" -ge 15 ] || fail "saver mode: requests failed ($ok/16)"
+line=$(fresh_stats); echo "$line"
+c1=$(cell_opened)
+echo "  connections opened on mobile: before=$c0 after=$c1"
+if log | grep " stats " | tail -3 | grep -q "boost=true"; then
+  echo "  NOTE: device background traffic triggered a boost during this window (legitimate); not asserting idle mobile"
+else
+  [ -n "$c1" ] && [ "$c1" = "$c0" ] || fail "battery saver put light traffic on mobile"
+  echo "$line" | grep -q "mobileReq=false" || fail "battery saver kept requesting mobile data"
+  echo "  OK: mobile stayed idle and unrequested"
+fi
+
+echo "== battery saver: sustained download brings mobile in (boost)"
+BIG=""
+for u in "dl.google.com /android/repository/platform-tools-latest-linux.zip" \
+         "speedtest.tele2.net /100MB.zip" "proof.ovh.net /files/100Mb.dat" "ipv4.download.thinkbroadband.com /50MB.zip"; do
+  set -- $u
+  s=$(adb shell "printf 'HEAD $2 HTTP/1.1\r\nHost: $1\r\nConnection: close\r\n\r\n' | timeout 15 nc $1 80" 2>/dev/null | head -1 | tr -d '\r')
+  echo "  probe $1$2 -> $s"
+  if echo "$s" | grep -q " 200"; then BIG="$1 $2"; break; fi
+done
+if [ -z "$BIG" ]; then
+  echo "  WARNING: no large HTTP test file reachable; skipping the boost-on check"
+else
+  set -- $BIG
+  for k in 1 2 3 4; do
+    adb shell "end=\$((\$(date +%s)+25)); while [ \$(date +%s) -lt \$end ]; do printf 'GET $2 HTTP/1.1\r\nHost: $1\r\nConnection: close\r\n\r\n' | timeout 25 nc $1 80 >/dev/null; done" &
+  done
+  boosted=""
+  for _ in $(seq 1 20); do
+    sleep 1
+    stats_line | grep -q "boost=true" && { boosted=1; break; }
+  done
+  stats_line
+  [ -n "$boosted" ] || { wait; fail "sustained download did not turn on boost"; }
+  sleep 4 # mobile comes up
+  c2=$(cell_opened)
+  ok=$(traffic)
+  wait
+  line=$(fresh_stats); echo "$line"
+  c3=$(cell_opened)
+  echo "  connections opened on mobile during boost: before=$c2 after=$c3 (requests ok: $ok/16)"
+  [ "$ok" -ge 15 ] || fail "boost: requests failed ($ok/16)"
+  [ "$c3" -gt "$c2" ] || fail "boost did not put new connections on mobile"
+fi
+set_opts --ez smart false
 
 echo "== stop"
 stop
@@ -105,7 +191,7 @@ ok=$(traffic)
 echo "successful HTTP responses after restart: $ok/16"
 [ "$ok" -ge 15 ] || fail "restart: too many failed requests ($ok/16)"
 
-echo "== failover: turn Wi-Fi off while combining"
+echo "== failover: turn Wi-Fi off while running"
 adb shell svc wifi disable
 sleep 8
 ok=$(traffic)

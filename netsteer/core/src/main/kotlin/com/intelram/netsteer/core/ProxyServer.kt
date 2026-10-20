@@ -1,11 +1,13 @@
 package com.intelram.netsteer.core
 
 import java.io.BufferedInputStream
+import java.io.ByteArrayInputStream
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.SequenceInputStream
 import java.net.ConnectException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -15,6 +17,7 @@ import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -50,11 +53,16 @@ class ProxyServer(
     private val connectTimeoutMs: Int = 7_000,
     private val halfCloseTimeoutMs: Int = 120_000,
     private val isBlocked: (InetAddress) -> Boolean = ::isBlockedDestination,
+    /** Ad/tracker filter; null when ad blocking is off. Read per connection, so it can change live. */
+    private val filter: () -> HostFilter? = { null },
+    private val onBlocked: (String) -> Unit = {},
+    private val sniffTimeoutMs: Int = 3_000,
     private val log: (String) -> Unit = {},
 ) : Closeable {
     private val threadSeq = AtomicInteger()
     private val pool: ExecutorService = Executors.newCachedThreadPool { r ->
-        Thread(r, "netsteer-relay-${threadSeq.incrementAndGet()}").apply { isDaemon = true }
+        // Small stacks: relays only copy buffers, and there can be hundreds of them.
+        Thread(null, r, "netsteer-relay-${threadSeq.incrementAndGet()}", 256 * 1024L).apply { isDaemon = true }
     }
     private val open = ConcurrentHashMap.newKeySet<Closeable>()
     private val live = AtomicInteger()
@@ -120,29 +128,70 @@ class ProxyServer(
             Socks5.writeReply(out, Socks5.REP_NOT_ALLOWED)
             return
         }
-        val hostKey = when (dest) {
+        val f = filter()
+        if (f != null && dest is Socks5.Dest.Name && f.blocks(dest.host)) {
+            onBlocked(dest.host)
+            Socks5.writeReply(out, Socks5.REP_NOT_ALLOWED) // hev resets the app's connection at once
+            return
+        }
+
+        var clientIn = input
+        var sniffedHost: String? = null
+        val sniff = f != null && dest is Socks5.Dest.Ip && (dest.port == 443 || dest.port == 80)
+        if (sniff) {
+            // The app connected to a bare IP (own DNS, DoH, hardcoded address). Accept, read the
+            // first bytes to learn the real host (TLS SNI / HTTP Host), then decide. Nothing is decrypted.
+            Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
+            val head = readHead(client, input, dest.port == 443)
+            sniffedHost = if (dest.port == 443) Sniffer.tlsSni(head, head.size) else Sniffer.httpHost(head, head.size)
+            if (sniffedHost != null && f!!.blocks(sniffedHost)) {
+                onBlocked(sniffedHost)
+                return
+            }
+            clientIn = SequenceInputStream(ByteArrayInputStream(head), input)
+        }
+
+        val hostKey = sniffedHost ?: when (dest) {
             is Socks5.Dest.Ip -> dest.address.hostAddress
             is Socks5.Dest.Name -> dest.host
         }
+        val (remote, link, rep) = connectAny(dest, hostKey)
+        if (remote == null || link == null) {
+            if (failures.incrementAndGet() <= 20) log("connect failed: rep=$rep")
+            if (!sniff) Socks5.writeReply(out, rep) // after a sniff the reply was already sent: just close
+            return
+        }
+        track(remote)
+        val c = meter.counters(link.id)
+        c.opened.incrementAndGet()
+        scheduler.opened(link.id)
+        try {
+            if (!sniff) Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
+            relay(client, clientIn, remote, c)
+        } finally {
+            scheduler.closed(link.id)
+            close(remote)
+        }
+    }
+
+    /** Tries links in scheduler order until one connects. */
+    private fun connectAny(dest: Socks5.Dest, hostKey: String): Triple<Socket?, Uplink?, Int> {
         val tried = HashSet<String>()
         var rep = Socks5.REP_NETWORK_UNREACHABLE
-        var remote: Socket? = null
-        var link: Uplink? = null
-        while (remote == null) {
+        while (true) {
             val links = uplinks()
             val id = scheduler.pick(links.map { LinkScheduler.LinkInfo(it.id, meter.peak(it.id)) }, hostKey, stickyMode(), tried)
-                ?: break
+                ?: return Triple(null, null, rep)
             val candidate = links.first { it.id == id }
             tried += id
             try {
-                remote = connectVia(candidate, dest)
-                link = candidate
+                val s = connectVia(candidate, dest)
                 scheduler.connectSucceeded(id)
+                return Triple(s, candidate, Socks5.REP_SUCCEEDED)
             } catch (e: ConnectException) {
                 if (isRefused(e)) {
                     // The destination actively refused: the link works, another link won't help.
-                    rep = Socks5.REP_CONNECTION_REFUSED
-                    break
+                    return Triple(null, null, Socks5.REP_CONNECTION_REFUSED)
                 }
                 rep = Socks5.REP_HOST_UNREACHABLE
                 scheduler.connectFailed(id)
@@ -156,21 +205,30 @@ class ProxyServer(
                 scheduler.connectFailed(id)
             }
         }
-        if (remote == null || link == null) {
-            if (failures.incrementAndGet() <= 20) log("connect failed: rep=$rep tried=$tried")
-            Socks5.writeReply(out, rep)
-            return
-        }
-        track(remote)
-        val c = meter.counters(link.id)
-        scheduler.opened(link.id)
+    }
+
+    /**
+     * Reads the start of the client's stream: one full TLS record, or HTTP headers.
+     * Gives up after [sniffTimeoutMs] (server-speaks-first protocols) with whatever arrived.
+     */
+    private fun readHead(client: Socket, input: InputStream, tls: Boolean): ByteArray {
+        val buf = ByteArray(Sniffer.MAX_BYTES)
+        var n = 0
+        client.soTimeout = sniffTimeoutMs
         try {
-            Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
-            relay(client, input, remote, c)
+            while (n < buf.size) {
+                val want = if (tls) Sniffer.tlsRecordTotal(buf, n) ?: if (n > 0) break else buf.size else buf.size
+                if (n >= want) break
+                if (!tls && n > 0 && Sniffer.httpHeaderComplete(buf, n)) break
+                val r = input.read(buf, n, (if (tls) want else buf.size) - n)
+                if (r < 0) break
+                n += r
+            }
+        } catch (_: SocketTimeoutException) {
         } finally {
-            scheduler.closed(link.id)
-            close(remote)
+            client.soTimeout = 0
         }
+        return buf.copyOf(n)
     }
 
     private fun connectVia(link: Uplink, dest: Socks5.Dest): Socket {
@@ -181,7 +239,7 @@ class ProxyServer(
             }
         }
         // Prefer IPv4 (works on every link, including CLAT-only cellular); then IPv6.
-        val ordered = (addrs.filterIsInstance<Inet4Address>() + addrs.filterNot { it is Inet4Address }).take(4)
+        val ordered = (addrs.filterIsInstance<Inet4Address>() + addrs.filterNot { it is Inet4Address }).take(3)
         var last: IOException? = null
         for (a in ordered) {
             try {
@@ -219,7 +277,7 @@ class ProxyServer(
 
     /** One direction. On EOF, half-close the destination; on error, tear down both sockets. */
     private fun pump(src: InputStream, dst: OutputStream, counter: AtomicLong, lastActivity: AtomicLong, srcSock: Socket, dstSock: Socket) {
-        val buf = ByteArray(64 * 1024)
+        val buf = ByteArray(32 * 1024)
         try {
             while (true) {
                 val n = src.read(buf)
@@ -252,6 +310,7 @@ class ProxyServer(
         }
         track(ds)
         val c = meter.counters(link.id)
+        c.opened.incrementAndGet()
         scheduler.opened(link.id)
         try {
             Socks5.writeReply(out, Socks5.REP_SUCCEEDED)
@@ -262,7 +321,7 @@ class ProxyServer(
                     while (true) {
                         pkt.setLength(buf.size)
                         ds.receive(pkt)
-                        Socks5.writeUdpFrame(out, pkt.address, pkt.port, buf, 0, pkt.length)
+                        synchronized(out) { Socks5.writeUdpFrame(out, pkt.address, pkt.port, buf, 0, pkt.length) }
                         c.rx.addAndGet(pkt.length.toLong())
                     }
                 } catch (_: IOException) {
@@ -273,6 +332,25 @@ class ProxyServer(
             try {
                 while (true) {
                     val f = Socks5.readUdpFrame(input) ?: break
+                    val flt = filter()
+                    if (flt != null) {
+                        val d = f.dest
+                        if (d is Socks5.Dest.Name && flt.blocks(d.host)) {
+                            onBlocked(d.host) // e.g. QUIC to an ad domain: drop, the app falls back and is blocked on TCP too
+                            continue
+                        }
+                        if (d is Socks5.Dest.Ip && d.port == 53) {
+                            // DNS query to the app's own resolver: answer NXDOMAIN for blocked names.
+                            val q = Dns.queryName(f.payload, f.payload.size)
+                            if (q != null && flt.blocks(q)) {
+                                onBlocked(q)
+                                Dns.nxdomain(f.payload, f.payload.size)?.let { r ->
+                                    synchronized(out) { Socks5.writeUdpFrame(out, d.address, 53, r, 0, r.size) }
+                                }
+                                continue
+                            }
+                        }
+                    }
                     val target = when (val d = f.dest) {
                         is Socks5.Dest.Ip -> d.address
                         is Socks5.Dest.Name -> names[d.host] ?: runCatching {

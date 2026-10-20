@@ -11,9 +11,11 @@ class TrafficMeter(private val peakWindowSamples: Int = 30) {
     class Counters {
         val rx = AtomicLong()
         val tx = AtomicLong()
+        /** Connections (TCP + UDP sessions) ever placed on this link. */
+        val opened = AtomicLong()
     }
 
-    data class Rate(val rxBps: Double, val txBps: Double, val peakBps: Double, val rxTotal: Long, val txTotal: Long)
+    data class Rate(val rxBps: Double, val txBps: Double, val peakBps: Double, val rxTotal: Long, val txTotal: Long, val opened: Long = 0)
 
     private class History(var lastRx: Long, var lastTx: Long, var lastAt: Long) {
         val totals = ArrayDeque<Double>()
@@ -40,7 +42,7 @@ class TrafficMeter(private val peakWindowSamples: Int = 30) {
             while (h.totals.size > peakWindowSamples) h.totals.removeFirst()
             h.lastRx = rx; h.lastTx = tx; h.lastAt = nowMs
         }
-        Rate(h.rxBps, h.txBps, h.totals.maxOrNull() ?: 0.0, rx, tx)
+        Rate(h.rxBps, h.txBps, h.totals.maxOrNull() ?: 0.0, rx, tx, c.opened.get())
     }
 
     /** Latest peak throughput per link, for the scheduler. */

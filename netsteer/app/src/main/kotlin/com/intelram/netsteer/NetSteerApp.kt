@@ -1,12 +1,14 @@
 package com.intelram.netsteer
 
 import android.app.Application
-import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
 import android.util.Log
-import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -14,26 +16,33 @@ import kotlinx.coroutines.launch
 class NetSteerApp : Application() {
     lateinit var monitor: NetworkMonitor
         private set
+    lateinit var settings: Settings
+        private set
+    lateinit var filters: FilterManager
+        private set
     val prober = Prober()
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /**
-     * Keep each website on one network for 10 minutes. Fixes sites that tie a
-     * login session to one IP address, at the cost of less combining.
-     */
-    @Volatile var compatibilityMode: Boolean = false
-        set(value) {
-            field = value
-            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_COMPAT, value).apply()
-        }
+    val debuggable: Boolean get() = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     override fun onCreate() {
         super.onCreate()
-        compatibilityMode = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_COMPAT, false)
+        settings = Settings(this)
+        filters = FilterManager(this, settings)
         val cm = getSystemService(ConnectivityManager::class.java)!!
-        monitor = NetworkMonitor(cm).also { it.start(hotStandby = false) }
-        if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+        monitor = NetworkMonitor(cm).also { it.start() }
+
+        scope.launch(Dispatchers.IO) { filters.load() }
+        scope.launch(Dispatchers.IO) {
+            // Enabling/disabling a list changes what is compiled.
+            settings.values.map { it.listAdGuard to it.listStevenBlack }.distinctUntilChanged().drop(1).collect {
+                filters.load()
+            }
+        }
+
+        if (debuggable) {
             // Debug builds: log every change in what the app sees, for the emulator test and bug reports.
-            MainScope().launch {
+            scope.launch {
                 monitor.networks
                     .map { nets ->
                         nets.values.map { it.toSnapshot() }.sortedBy { it.transport }.joinToString("; ") {
@@ -44,10 +53,5 @@ class NetSteerApp : Application() {
                     .collect { Log.i("NetSteer", "net: $it") }
             }
         }
-    }
-
-    private companion object {
-        const val PREFS = "netsteer"
-        const val KEY_COMPAT = "compat_mode"
     }
 }
