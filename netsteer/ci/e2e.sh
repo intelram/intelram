@@ -23,7 +23,8 @@ adb shell appops set "$PKG" ACTIVATE_VPN allow || fail "appops"
 adb logcat -c
 
 # Debug-build hooks: START/STOP plus settings extras (see MainActivity.handleAction).
-start() { adb shell am start -n "$ACT" -a "$PKG.START" "$@" >/dev/null; }
+# --ez consent true stands in for the user tapping "Use mobile data" on the first-run cost dialog.
+start() { adb shell am start -n "$ACT" -a "$PKG.START" --ez consent true "$@" >/dev/null; }
 stop() { adb shell am start -n "$ACT" -a "$PKG.STOP" >/dev/null; }
 set_opts() { adb shell am start -n "$ACT" "$@" >/dev/null; }
 
@@ -180,6 +181,45 @@ else
   [ "$c3" -gt "$c2" ] || fail "boost did not put new connections on mobile"
 fi
 set_opts --ez smart false
+
+echo "== Internet Bonding: Wi-Fi scan (permissions granted at install with -g)"
+adb shell cmd location set-location-enabled true 2>/dev/null
+adb shell am start -n "$ACT" -a "$PKG.WIFI_SCAN" >/dev/null
+for _ in $(seq 1 30); do log | grep -q " wifiscan " && break; sleep 1; done
+log | grep " wifiscan " | tail -1
+log | grep " wifiscan " | tail -1 | grep -q "AndroidWifi" || fail "Wi-Fi scan did not find the emulator's network"
+
+echo "== Internet Bonding: add Wi-Fi sources (limit 4, duplicates/invalid rejected)"
+addwifi() { adb shell am start -n "$ACT" -a "$PKG.ADD_WIFI" --es ssid "$1" --es security "$2" ${3:+--es pass "$3"} >/dev/null; sleep 2; log | grep " bondwifi add ssid=$1 " | tail -1; }
+r=$(addwifi AndroidWifi OPEN); echo "  $r"; echo "$r" | grep -q "result=OK" || fail "could not add the emulator Wi-Fi"
+log | grep " bondwifi status " | tail -1
+log | grep " bondwifi status " | tail -1 | grep -q "AndroidWifi=CONNECTED" || fail "added current Wi-Fi not shown as CONNECTED"
+r=$(addwifi ShortPass WPA2_PSK abc); echo "  $r"; echo "$r" | grep -q "result=BAD_PASSWORD" || fail "too-short WPA2 password accepted"
+r=$(addwifi CorpNet ENTERPRISE x); echo "  $r"; echo "$r" | grep -q "result=UNSUPPORTED" || fail "enterprise network accepted"
+r=$(addwifi AndroidWifi OPEN); echo "  $r"; echo "$r" | grep -q "result=DUPLICATE" || fail "duplicate accepted"
+for n in NetSteerTest2 NetSteerTest3 NetSteerTest4; do
+  r=$(addwifi $n WPA2_PSK password123); echo "  $r"; echo "$r" | grep -q "result=OK" || fail "could not add $n"
+done
+r=$(addwifi NetSteerTest5 WPA2_PSK password123); echo "  $r"; echo "$r" | grep -q "result=FULL count=4" || fail "fifth Wi-Fi network was not rejected"
+log | grep " bondwifi status " | tail -1 | grep -q "NetSteerTest2=NOT_IN_RANGE\|NetSteerTest2=STANDBY" || fail "absent network has wrong status"
+ok=$(traffic); echo "successful HTTP responses with 4 added sources: $ok/16"
+[ "$ok" -ge 15 ] || fail "traffic broke after adding Wi-Fi sources ($ok/16)"
+adb shell am start -n "$ACT" -a "$PKG.REMOVE_WIFI" >/dev/null; sleep 2
+log | grep " bondwifi removed " | tail -1 | grep -q "count=0" || fail "removing Wi-Fi sources failed"
+
+echo "== Internet Bonding: mobile data off -> failover only; on -> load balancing"
+set_opts --ez usemobile false
+sleep 7
+l=$(log | grep " links " | tail -1); echo "  $l"
+echo "$l" | grep -q "mode=FAILOVER" || fail "mode should be FAILOVER with mobile off"
+echo "$l" | grep -q "cell=READY" || fail "mobile should be on standby when turned off"
+stats_line | grep -q "mobileReq=false" || fail "mobile data still requested after turning it off"
+ok=$(traffic); [ "$ok" -ge 15 ] || fail "traffic failed with mobile off ($ok/16)"
+set_opts --ez usemobile true
+sleep 7
+l=$(log | grep " links " | tail -1); echo "  $l"
+echo "$l" | grep -q "mode=LOAD_BALANCING" || fail "mode should be LOAD_BALANCING with Wi-Fi + mobile"
+echo "$l" | grep -q "wifi=ACTIVE(rtt=[0-9]" || fail "no health (latency) measured for Wi-Fi"
 
 echo "== speed test (per link and together)"
 adb shell am start -n "$ACT" -a "$PKG.SPEEDTEST" >/dev/null

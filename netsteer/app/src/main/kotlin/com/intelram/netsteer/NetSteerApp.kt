@@ -24,6 +24,10 @@ class NetSteerApp : Application() {
         private set
     lateinit var usage: UsageStore
         private set
+    lateinit var wifiConnections: WifiConnectionManager
+        private set
+    /** Per-link RTT/loss from the service's health probes. */
+    val health = com.intelram.netsteer.core.HealthBook()
     val prober = Prober()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -37,6 +41,7 @@ class NetSteerApp : Application() {
         monitor = NetworkMonitor(cm).also { it.start() }
         links = LinkRegistry(this, monitor)
         usage = UsageStore(this)
+        wifiConnections = WifiConnectionManager(this)
 
         scope.launch(Dispatchers.IO) { filters.load() }
         scope.launch(Dispatchers.IO) {

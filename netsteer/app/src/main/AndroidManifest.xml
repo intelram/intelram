@@ -13,7 +13,15 @@
     <!-- Dual Wi-Fi (multi-internet) requests and reading the Wi-Fi band. Normal permissions, no location. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <!-- Deliberately NOT requested: location, contacts, storage, phone state, boot, accessibility. -->
+    <!--
+      Wi-Fi scan results (Internet Bonding screen). Android requires location access for scan
+      results, plus NEARBY_WIFI_DEVICES on Android 13+. Requested at runtime ONLY when the user taps
+      "Scan Wi-Fi"; NetSteer never reads or stores the device's location.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <!-- Deliberately NOT requested: contacts, storage, phone state, boot, accessibility. -->
 
     <!-- "Exclude apps" lists launchable apps only (no QUERY_ALL_PACKAGES). -->
     <queries>
@@ -41,6 +49,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".BondingActivity"
+            android:exported="false"
+            android:label="Internet Bonding" />
 
         <!-- Only the system (holder of BIND_VPN_SERVICE) can bind; exported is required for that. -->
         <service

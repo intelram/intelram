@@ -39,8 +39,9 @@ class QuickTile : TileService() {
             startService(Intent(this, CombineVpnService::class.java).setAction(CombineVpnService.ACTION_STOP))
             return
         }
-        if (VpnService.prepare(this) != null) {
-            openApp() // VPN consent dialog must come from an activity
+        val set = (application as NetSteerApp).settings.current
+        if (VpnService.prepare(this) != null || (set.useMobile && !set.mobileConsent)) {
+            openApp() // VPN consent / mobile-data cost consent must come from an activity
             return
         }
         try {

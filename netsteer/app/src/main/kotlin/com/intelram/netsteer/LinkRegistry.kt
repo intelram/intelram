@@ -26,6 +26,10 @@ data class LinkStatus(
     val txBps: Double = 0.0,
     val connections: Int = 0,
     val usedTodayBytes: Long = 0,
+    /** Median TCP-connect time of the latest health probe, ms. */
+    val rttMs: Int? = null,
+    /** Share of the latest health probes that failed, 0..100. */
+    val lossPct: Int? = null,
 ) {
     val up: Boolean get() = state == LinkState.ACTIVE || state == LinkState.READY
 }
@@ -92,7 +96,11 @@ class LinkRegistry(ctx: Context, private val monitor: NetworkMonitor) {
     }
 
     /** User-facing status for every link, including expected-but-missing mobile data. */
-    fun describe(active: Set<String>, mobileHeld: Boolean, mobileWithheld: Boolean): List<LinkStatus> {
+    /**
+     * @param heldBack usable links deliberately not taking new connections, with the reason.
+     * @param mobileIdleReason shown for mobile when it isn't connected because we aren't requesting it.
+     */
+    fun describe(active: Set<String>, mobileHeld: Boolean, heldBack: Map<String, String> = emptyMap(), mobileIdleReason: String = "Standby"): List<LinkStatus> {
         val out = ArrayList<LinkStatus>()
         val ls = links()
         for (l in ls) {
@@ -102,18 +110,18 @@ class LinkRegistry(ctx: Context, private val monitor: NetworkMonitor) {
                 snap.captivePortal -> LinkState.NO_INTERNET to "Needs sign-in (captive portal)"
                 !l.usable && !snap.validated -> LinkState.NO_INTERNET to "Connected, but no internet"
                 !l.usable -> LinkState.NO_INTERNET to "Limited connectivity"
-                l.transport == Transport.CELLULAR && mobileWithheld -> LinkState.READY to "Ready · joins for big downloads (battery saver)"
+                l.id in heldBack -> LinkState.READY to heldBack.getValue(l.id)
                 l.id in active -> LinkState.ACTIVE to (if (snap.validated) "In use" else "In use (verified by NetSteer)")
                 else -> LinkState.READY to "Ready"
             }
             out += LinkStatus(l.id, l.label, state, detail)
         }
-        if (ls.none { it.transport == Transport.CELLULAR }) out += mobileMissing(mobileHeld)
+        if (ls.none { it.transport == Transport.CELLULAR }) out += mobileMissing(mobileHeld, mobileIdleReason)
         if (ls.none { it.transport == Transport.WIFI }) out.add(0, LinkStatus("wifi", "Wi-Fi", LinkState.OFF, "Not connected"))
         return out
     }
 
-    private fun mobileMissing(held: Boolean): LinkStatus {
+    private fun mobileMissing(held: Boolean, idleReason: String): LinkStatus {
         val sim = runCatching { telephony?.simState }.getOrNull()
         val dataOn = runCatching { telephony?.isDataEnabled }.getOrNull()
         val (state, detail) = when {
@@ -121,7 +129,7 @@ class LinkRegistry(ctx: Context, private val monitor: NetworkMonitor) {
             sim != null && sim != TelephonyManager.SIM_STATE_READY -> LinkState.OFF to "No SIM card ready"
             dataOn == false -> LinkState.OFF to "Mobile data is turned off in Android settings"
             held -> LinkState.CONNECTING to "Connecting… (if this stays, your carrier or phone may not allow mobile data while on Wi-Fi)"
-            else -> LinkState.READY to "Standby · joins for big downloads (battery saver)"
+            else -> LinkState.READY to idleReason
         }
         return LinkStatus("cell", "Mobile", state, detail)
     }

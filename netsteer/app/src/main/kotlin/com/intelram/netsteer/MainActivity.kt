@@ -104,6 +104,11 @@ class MainActivity : Activity() {
             topMargin = dp(16)
         })
 
+        root.addView(Button(this).apply {
+            text = "Internet Bonding: Wi-Fi sources & mobile data"
+            setOnClickListener { startActivity(Intent(this@MainActivity, BondingActivity::class.java)) }
+        })
+
         // Speed
         root.addView(section("Speed"))
         swCombine = switch("Use all networks together (Wi-Fi + mobile + others)") { v -> app.settings.update { it.copy(combine = v) } }.also(root::addView)
@@ -242,6 +247,8 @@ class MainActivity : Activity() {
                     smart = ex.getBoolean("smart", v.smart),
                     adBlock = ex.getBoolean("adblock", v.adBlock),
                     excludedApps = ex.getString("exclude")?.let { s -> s.split(',').filter { it.isNotBlank() }.toSet() } ?: v.excludedApps,
+                    useMobile = ex.getBoolean("usemobile", v.useMobile),
+                    mobileConsent = ex.getBoolean("consent", v.mobileConsent),
                 )
             }
         }
@@ -250,10 +257,51 @@ class MainActivity : Activity() {
             CombineVpnService.ACTION_STOP -> stopVpn()
             ACTION_UPDATE_FILTERS -> updateFilters()
             ACTION_SPEEDTEST -> runSpeedTest()
+            ACTION_WIFI_SCAN -> ui.launch {
+                val r = WifiScanner(this@MainActivity).scan()
+                Log.i("NetSteer", "wifiscan n=${r.networks.size} fresh=${r.fresh} problem=${r.problem} ssids=${r.networks.map { it.ssid }}")
+            }
+            ACTION_ADD_WIFI -> {
+                val ssid = intent.getStringExtra("ssid") ?: return
+                val sec = runCatching { com.intelram.netsteer.core.WifiSecurity.valueOf(intent.getStringExtra("security") ?: "OPEN") }.getOrDefault(com.intelram.netsteer.core.WifiSecurity.OPEN)
+                app.wifiConnections.listenForFailures()
+                val r = app.wifiConnections.add(ssid, sec, intent.getStringExtra("pass"))
+                Log.i("NetSteer", "bondwifi add ssid=$ssid result=$r count=${app.wifiConnections.count}")
+                @Suppress("DEPRECATION")
+                val cur = (getSystemService(android.net.wifi.WifiManager::class.java))?.connectionInfo?.ssid?.removeSurrounding("\"")
+                val st = app.wifiConnections.statuses(cur, app.links.links().any { it.id == "wifi" && it.usable }, emptySet(), rangeKnown = false)
+                Log.i("NetSteer", "bondwifi status " + st.joinToString(" ") { "${it.ssid}=${it.status}" })
+            }
+            ACTION_REMOVE_WIFI -> {
+                app.wifiConnections.entries().filter { e -> intent.getStringExtra("ssid").let { it == null || it == e.ssid } }
+                    .forEach { app.wifiConnections.remove(it.ssid, it.security) }
+                Log.i("NetSteer", "bondwifi removed count=${app.wifiConnections.count}")
+            }
         }
     }
 
     private fun requestStart() {
+        val s = app.settings.current
+        if (s.useMobile && !s.mobileConsent) {
+            // Never use mobile data without the user knowing it may cost money.
+            AlertDialog.Builder(this)
+                .setTitle("Use mobile data together with Wi-Fi?")
+                .setMessage(
+                    "NetSteer will send part of your traffic over mobile data even while Wi-Fi is connected. " +
+                        "This counts toward your mobile plan and may cause carrier charges, especially when roaming. " +
+                        "You can change this any time under Internet Bonding.",
+                )
+                .setPositiveButton("Use mobile data") { _, _ ->
+                    app.settings.update { it.copy(mobileConsent = true) }
+                    requestStart()
+                }
+                .setNegativeButton("Wi-Fi only") { _, _ ->
+                    app.settings.update { it.copy(useMobile = false, mobileConsent = true) }
+                    requestStart()
+                }
+                .show()
+            return
+        }
         val consent = VpnService.prepare(this)
         if (consent != null) startActivityForResult(consent, REQ_VPN) else launchService()
     }
@@ -349,7 +397,7 @@ class MainActivity : Activity() {
             setColor(if (s.running) Color.rgb(198, 40, 40) else Color.rgb(25, 118, 210))
         }
 
-        val links = if (s.running) s.links else app.links.describe(app.links.uplinks().map { it.id }.toSet(), mobileHeld = false, mobileWithheld = false)
+        val links = if (s.running) s.links else app.links.describe(app.links.uplinks().map { it.id }.toSet(), mobileHeld = false)
             .map { it.copy(state = if (it.state == LinkState.ACTIVE) LinkState.READY else it.state, usedTodayBytes = app.usage.today(it.id)) }
         val active = links.filter { it.state == LinkState.ACTIVE }
         if (!s.running) {
@@ -465,7 +513,7 @@ class MainActivity : Activity() {
             val d = DiagnosisClassifier.classify(app.prober.probe(s))
             "${label(s)}: ${d.verdict}\n${d.detail}\nFix: ${d.remedy}"
         }
-        val linkReport = app.links.describe(app.links.uplinks().map { it.id }.toSet(), app.monitor.mobileRequested, false)
+        val linkReport = app.links.describe(app.links.uplinks().map { it.id }.toSet(), app.monitor.mobileRequested)
             .joinToString("\n") { "${it.label}: ${it.state} – ${it.detail}" }
         diagView.text = reports.joinToString("\n\n") + "\n\nLinks:\n" + linkReport
     }
@@ -504,6 +552,9 @@ class MainActivity : Activity() {
         private const val REQ_NOTIF = 11
         private const val ACTION_UPDATE_FILTERS = "com.intelram.netsteer.UPDATE_FILTERS"
         private const val ACTION_SPEEDTEST = "com.intelram.netsteer.SPEEDTEST"
+        private const val ACTION_WIFI_SCAN = "com.intelram.netsteer.WIFI_SCAN"
+        private const val ACTION_ADD_WIFI = "com.intelram.netsteer.ADD_WIFI"
+        private const val ACTION_REMOVE_WIFI = "com.intelram.netsteer.REMOVE_WIFI"
         const val ACTION_TILE_START = "com.intelram.netsteer.TILE_START"
         const val EXTRA_TOKEN = "token"
 

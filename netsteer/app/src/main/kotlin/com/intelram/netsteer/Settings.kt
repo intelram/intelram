@@ -23,6 +23,10 @@ class Settings(ctx: Context) {
         val dualWifi: Boolean = true,
         /** Packages that bypass NetSteer entirely (e.g. banking apps that refuse VPNs). */
         val excludedApps: Set<String> = emptySet(),
+        /** Use mobile data together with Wi-Fi. Off: mobile only when no Wi-Fi works (failover). */
+        val useMobile: Boolean = true,
+        /** The user acknowledged that mobile data use may cost money on their plan. */
+        val mobileConsent: Boolean = false,
     )
 
     private val prefs = ctx.getSharedPreferences("netsteer", Context.MODE_PRIVATE)
@@ -49,6 +53,8 @@ class Settings(ctx: Context) {
             .putStringSet("allowlist", v.allowlist)
             .putBoolean("dual_wifi", v.dualWifi)
             .putStringSet("excluded_apps", v.excludedApps)
+            .putBoolean("use_mobile", v.useMobile)
+            .putBoolean("mobile_consent", v.mobileConsent)
             .apply()
         _values.value = v
     }
@@ -72,5 +78,7 @@ class Settings(ctx: Context) {
         allowlist = prefs.getStringSet("allowlist", emptySet())!!.toSet(),
         dualWifi = prefs.getBoolean("dual_wifi", true),
         excludedApps = prefs.getStringSet("excluded_apps", emptySet())!!.toSet(),
+        useMobile = prefs.getBoolean("use_mobile", true),
+        mobileConsent = prefs.getBoolean("mobile_consent", false),
     )
 }
