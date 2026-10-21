@@ -57,7 +57,7 @@ traffic() { # 16 parallel requests; echoes the number of HTTP responses
 
 stats_line() { log | grep " stats " | tail -1; }
 cell_rx() { stats_line | sed -n 's/.*cell=\([0-9]*\)\/.*/\1/p'; }
-cell_opened() { stats_line | sed -n 's/.*opened=wifi:[0-9]*,cell:\([0-9]*\).*/\1/p'; }
+cell_opened() { stats_line | grep -o "opened=[^ ]*" | tr ',' '\n' | sed -n 's/.*cell:\([0-9]*\)$/\1/p'; }
 wifi_rx() { stats_line | sed -n 's/.*wifi=\([0-9]*\)\/.*/\1/p'; }
 fresh_stats() { sleep 6; stats_line; } # stats are logged every 5 s
 
