@@ -13,6 +13,22 @@ enum class WifiSecurity(val label: String, val needsPassword: Boolean, val suppo
     ENTERPRISE("Enterprise", true, false),
     UNKNOWN("Unknown", true, false);
 
+    /**
+     * Whether Android will accept [password] for this security type (it rejects bad ones
+     * only when the suggestion is added, with a generic "invalid" code).
+     * WPA2: 8-63 printable ASCII characters or a 64-digit hex key. WPA3-SAE: 8-128 ASCII.
+     */
+    fun acceptsPassword(password: String?): Boolean {
+        if (!needsPassword) return true
+        val p = password ?: return false
+        val ascii = p.all { it in ' '..'~' }
+        return when (this) {
+            WPA2_PSK, WPA2_WPA3 -> (ascii && p.length in 8..63) || (p.length == 64 && p.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' })
+            WPA3_SAE -> ascii && p.length in 8..128
+            else -> false
+        }
+    }
+
     companion object {
         fun parse(capabilities: String?): WifiSecurity {
             val c = (capabilities ?: "").uppercase()

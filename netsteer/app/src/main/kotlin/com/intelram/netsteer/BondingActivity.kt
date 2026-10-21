@@ -386,7 +386,7 @@ class BondingActivity : Activity() {
             WifiConnectionManager.Result.DUPLICATE -> "That network is already added."
             WifiConnectionManager.Result.UNSUPPORTED -> "This network's security type (e.g. Enterprise or WEP) can't be added here."
             WifiConnectionManager.Result.INVALID -> "Enter a valid network name."
-            WifiConnectionManager.Result.BAD_PASSWORD -> "Enter the network's password (WPA2/WPA3 passwords are 8–63 characters)."
+            WifiConnectionManager.Result.BAD_PASSWORD -> "Enter the network's password (WPA2: 8–63 characters, WPA3: 8–128)."
             WifiConnectionManager.Result.NOT_ALLOWED -> "Android didn't allow NetSteer to suggest networks. Check Settings › Apps › NetSteer › Wi-Fi control."
             WifiConnectionManager.Result.ERROR -> "Android refused the network. Try again."
         }

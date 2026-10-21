@@ -143,7 +143,7 @@ class WifiConnectionManager(private val ctx: Context) {
 
     private fun suggest(ssid: String, security: WifiSecurity, password: String?): Result {
         val w = wifi ?: return Result.ERROR
-        if (security.needsPassword && password.isNullOrEmpty()) return Result.BAD_PASSWORD
+        if (!security.acceptsPassword(password)) return Result.BAD_PASSWORD
         val s = try {
             build(ssid, security, password)
         } catch (e: IllegalArgumentException) {
@@ -164,6 +164,7 @@ class WifiConnectionManager(private val ctx: Context) {
             }
             WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_APP_DISALLOWED -> Result.NOT_ALLOWED
             WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_EXCEEDS_MAX_PER_APP -> Result.FULL
+            WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_INVALID -> if (security.needsPassword) Result.BAD_PASSWORD else Result.INVALID
             else -> Result.ERROR
         }
     }

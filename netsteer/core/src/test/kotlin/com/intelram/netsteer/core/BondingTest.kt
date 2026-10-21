@@ -18,6 +18,19 @@ class BondingTest {
         assertEquals(WifiSecurity.OPEN, WifiSecurity.parse(null))
     }
 
+    @Test fun passwordsCheckedAgainstAndroidRules() {
+        assertFalse(WifiSecurity.WPA2_PSK.acceptsPassword("abc"))
+        assertFalse(WifiSecurity.WPA2_PSK.acceptsPassword(null))
+        assertTrue(WifiSecurity.WPA2_PSK.acceptsPassword("password123"))
+        assertFalse(WifiSecurity.WPA2_PSK.acceptsPassword("x".repeat(64)))
+        assertTrue(WifiSecurity.WPA2_PSK.acceptsPassword("0123456789abcdef".repeat(4)))
+        assertFalse(WifiSecurity.WPA2_WPA3.acceptsPassword("pässwörd123"))
+        assertTrue(WifiSecurity.WPA3_SAE.acceptsPassword("y".repeat(100)))
+        assertFalse(WifiSecurity.WPA3_SAE.acceptsPassword("short"))
+        assertTrue(WifiSecurity.OPEN.acceptsPassword(null))
+        assertFalse(WifiSecurity.ENTERPRISE.acceptsPassword("password123"))
+    }
+
     @Test fun oneToFourAddedFifthRejected() {
         val s = WifiSelection()
         for (i in 1..4) {
