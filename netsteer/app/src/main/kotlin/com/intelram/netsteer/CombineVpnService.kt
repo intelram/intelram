@@ -303,10 +303,11 @@ class CombineVpnService : VpnService() {
                         rttMs = h?.rttMs, lossPct = h?.let { (it.lossRatio * 100).toInt() },
                     )
                 }
-            // Added Wi-Fi networks that Android can switch to also count as standby sources.
+            // Standby: links ready but not taking new connections (held back, or mobile that
+            // Android brings up when Wi-Fi fails), plus added Wi-Fi networks Android can switch to.
             val current = currentWifiSsid()
             val addedStandby = app.wifiConnections.entries().count { it.ssid != current }
-            val standby = heldBack.size + addedStandby
+            val standby = links.count { it.state == LinkState.READY } + addedStandby
             val mode = ConnectionMode.classify(running = true, active = taking.size, standby = standby)
 
             val status = CombineStatus(
@@ -317,7 +318,7 @@ class CombineVpnService : VpnService() {
                 combine = s.combine,
                 smart = s.smart,
                 boosting = d.boosting,
-                mobileHeld = d.requestMobile,
+                mobileHeld = requestMobile,
                 activeLinks = taking.size,
                 mode = mode,
                 standby = standby,
@@ -344,7 +345,7 @@ class CombineVpnService : VpnService() {
                     "$id=${rates[id]?.rxTotal ?: 0}/${rates[id]?.txTotal ?: 0}"
                 } + " opened=" + ids.joinToString(",") { id -> "$id:${rates[id]?.opened ?: 0}" } +
                     " conns=${px.activeConnections} failed=${px.failedConnections}" +
-                    " boost=${d.boosting} mobileReq=${d.requestMobile} blocked=${app.filters.blockedTotal.get()}")
+                    " boost=${d.boosting} mobileReq=$requestMobile blocked=${app.filters.blockedTotal.get()}")
                 Log.i(TAG, "links mode=${mode.name} " + links.joinToString("; ") { "${it.id}=${it.state}(rtt=${it.rttMs ?: "-"},loss=${it.lossPct ?: "-"})" })
             }
             if (now - lastSave >= 60_000) {

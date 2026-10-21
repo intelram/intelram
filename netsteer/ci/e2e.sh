@@ -216,7 +216,8 @@ echo "$l" | grep -q "cell=READY" || fail "mobile should be on standby when turne
 stats_line | grep -q "mobileReq=false" || fail "mobile data still requested after turning it off"
 ok=$(traffic); [ "$ok" -ge 15 ] || fail "traffic failed with mobile off ($ok/16)"
 set_opts --ez usemobile true
-sleep 7
+# Android needs a few seconds to bring mobile data back up after it was released.
+for _ in $(seq 1 25); do sleep 1; log | grep " links " | tail -1 | grep -q "mode=LOAD_BALANCING" && break; done
 l=$(log | grep " links " | tail -1); echo "  $l"
 echo "$l" | grep -q "mode=LOAD_BALANCING" || fail "mode should be LOAD_BALANCING with Wi-Fi + mobile"
 echo "$l" | grep -q "wifi=ACTIVE(rtt=[0-9]" || fail "no health (latency) measured for Wi-Fi"
