@@ -202,7 +202,7 @@ echo "successful HTTP responses while excluded: $ok/16"
 r=$(http doubleclick.net /); echo "  doubleclick.net from excluded shell -> '${r}'"
 echo "$r" | grep -q "^HTTP/1" || fail "excluded app's traffic still went through NetSteer (ad domain blocked)"
 n0=$(log | grep -c "excluded apps 0")
-set_opts --es exclude ""
+set_opts --es exclude ,  # "," = empty list (an empty arg is lost through adb shell)
 for _ in $(seq 1 20); do [ "$(log | grep -c "excluded apps 0")" -gt "$n0" ] && break; sleep 1; done
 [ "$(log | grep -c "excluded apps 0")" -gt "$n0" ] || fail "VPN did not reload after re-including the app"
 wait_vpn up || fail "VPN not up after second reload"
