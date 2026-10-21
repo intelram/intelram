@@ -57,9 +57,8 @@ class LinkRegistry(ctx: Context, private val monitor: NetworkMonitor) {
             val kind = kindOf(s) ?: return@mapNotNull null
             val id = idFor(s.id, kind)
             val snap = s.toSnapshot()
-            val partial = s.caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY) == true
             val probed = (probedOkAt[s.id] ?: 0) > now - PROBE_VALID_MS
-            val usable = s.caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true && !snap.captivePortal && !snap.blocked && !partial && (snap.validated || probed)
+            val usable = s.caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true && !snap.captivePortal && !snap.blocked && (snap.validated || probed)
             Link(id, labelFor(id), snap.transport, s, usable)
         }.sortedWith(compareBy({ ORDER.indexOf(it.id.takeWhile(Char::isLetter)) }, { it.id }))
     }
