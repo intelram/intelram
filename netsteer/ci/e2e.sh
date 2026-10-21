@@ -190,21 +190,17 @@ st=$(log | grep " speedtest " | tail -1)
 echo "$st" | grep -q "combined=[1-9]" || fail "speed test measured nothing"
 
 echo "== exclude an app: its traffic must bypass NetSteer (tunnel reloads itself)"
-o0=$(stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
 set_opts --es exclude com.android.shell
 for _ in $(seq 1 20); do log | grep -q "excluded apps 1" && break; sleep 1; done
 log | grep -q "excluded apps 1" || fail "VPN did not reload with the excluded app"
 wait_vpn up || fail "VPN not up after reload"
 sleep 3
-o1=$(fresh_stats >/dev/null; stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
 ok=$(traffic)
 echo "successful HTTP responses while excluded: $ok/16"
 [ "$ok" -ge 15 ] || fail "excluded app lost internet ($ok/16)"
-o2=$(fresh_stats >/dev/null; stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
-echo "  proxy connections opened: after reload=$o1 after traffic=$o2"
-s1=$(echo "$o1" | tr ',' '\n' | awk -F: '{t+=$2} END {print t+0}')
-s2=$(echo "$o2" | tr ',' '\n' | awk -F: '{t+=$2} END {print t+0}')
-[ $((s2 - s1)) -lt 8 ] || fail "excluded app's traffic still went through NetSteer ($s1 -> $s2)"
+# Decisive check: an excluded app bypasses NetSteer, so it is not ad-filtered either.
+r=$(http doubleclick.net /); echo "  doubleclick.net from excluded shell -> '${r}'"
+echo "$r" | grep -q "^HTTP/1" || fail "excluded app's traffic still went through NetSteer (ad domain blocked)"
 n0=$(log | grep -c "excluded apps 0")
 set_opts --es exclude ""
 for _ in $(seq 1 20); do [ "$(log | grep -c "excluded apps 0")" -gt "$n0" ] && break; sleep 1; done
@@ -213,6 +209,8 @@ wait_vpn up || fail "VPN not up after second reload"
 sleep 3
 ok=$(traffic)
 [ "$ok" -ge 15 ] || fail "traffic failed after re-including the app ($ok/16)"
+r=$(http doubleclick.net /); echo "  doubleclick.net after re-including -> '${r}'"
+[ -z "$r" ] || fail "re-included app is not filtered again"
 
 echo "== stop"
 stop
