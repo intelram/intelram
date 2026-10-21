@@ -45,6 +45,10 @@ class TrafficMeter(private val peakWindowSamples: Int = 30) {
         Rate(h.rxBps, h.txBps, h.totals.maxOrNull() ?: 0.0, rx, tx, c.opened.get())
     }
 
+    /** Throughput (rx + tx) at the latest sample, for the scheduler. */
+    @Synchronized
+    fun current(id: String): Double = history[id]?.let { it.rxBps + it.txBps } ?: 0.0
+
     /** Latest peak throughput per link, for the scheduler. */
     @Synchronized
     fun peak(id: String): Double = history[id]?.totals?.maxOrNull() ?: 0.0

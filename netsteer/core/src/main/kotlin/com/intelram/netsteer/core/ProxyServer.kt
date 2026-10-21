@@ -184,7 +184,7 @@ class ProxyServer(
         var rep = Socks5.REP_NETWORK_UNREACHABLE
         while (true) {
             val links = uplinks()
-            val id = scheduler.pick(links.map { LinkScheduler.LinkInfo(it.id, meter.peak(it.id)) }, hostKey, stickyMode(), tried)
+            val id = scheduler.pick(links.map { LinkScheduler.LinkInfo(it.id, meter.peak(it.id), meter.current(it.id)) }, hostKey, stickyMode(), tried)
                 ?: return Triple(null, null, rep)
             val candidate = links.first { it.id == id }
             tried += id
@@ -298,7 +298,7 @@ class ProxyServer(
 
     private fun handleUdp(client: Socket, input: DataInputStream, out: OutputStream) {
         val links = uplinks()
-        val id = scheduler.pick(links.map { LinkScheduler.LinkInfo(it.id, meter.peak(it.id)) })
+        val id = scheduler.pick(links.map { LinkScheduler.LinkInfo(it.id, meter.peak(it.id), meter.current(it.id)) })
         val link = links.firstOrNull { it.id == id }
         if (link == null) {
             failures.incrementAndGet()

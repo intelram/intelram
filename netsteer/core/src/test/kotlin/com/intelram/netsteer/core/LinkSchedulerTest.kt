@@ -60,14 +60,34 @@ class LinkSchedulerTest {
         assertEquals(15, picks.count { it == "wifi" })
     }
 
-    @Test fun closingFreesCapacity() {
-        val a = s.pick(equal)!!; s.opened(a)
-        val b = s.pick(equal)!!; s.opened(b)
-        assertTrue(a != b)
-        s.closed(a)
-        assertEquals(a, s.pick(equal))
-        s.closed(a); s.closed(a) // over-close never goes negative
-        assertEquals(0, s.active(a))
+    @Test fun idleLongLivedConnectionsDoNotMakeALinkLookBusy() {
+        // Regression (found on the emulator): 50 idle push/keep-alive sockets sat on mobile, so
+        // counting sockets starved it of new connections during a boost. Only real traffic counts.
+        repeat(50) { s.opened("cell") }
+        val links = listOf(LinkScheduler.LinkInfo("wifi", 40e6, currentBps = 35e6), LinkScheduler.LinkInfo("cell", 30e6, currentBps = 0.0))
+        now += 10_000
+        val c = (1..10).map { s.pick(links)!! }.groupingBy { it }.eachCount()
+        assertTrue("cell got ${c["cell"]}", (c["cell"] ?: 0) >= 9)
+    }
+
+    @Test fun saturatedLinkSpillsNewConnectionsToTheOther() {
+        val links = listOf(LinkScheduler.LinkInfo("wifi", 50e6, currentBps = 48e6), LinkScheduler.LinkInfo("cell", 20e6, currentBps = 2e6))
+        assertEquals("cell", s.pick(links))
+    }
+
+    @Test fun recentAssignmentsDecayAfterRamp() {
+        repeat(20) { s.pick(equal, exclude = setOf("cell")) } // burst on wifi
+        assertEquals("cell", s.pick(equal)) // wifi has 20 un-ramped assignments
+        now += 3_001
+        val after = (1..4).map { s.pick(equal) }.toSet()
+        assertEquals(setOf("wifi", "cell"), after) // back to alternating
+    }
+
+    @Test fun activeCountIsTrackedForDisplay() {
+        s.opened("wifi"); s.opened("wifi"); s.closed("wifi")
+        assertEquals(1, s.active("wifi"))
+        s.closed("wifi"); s.closed("wifi") // over-close never goes negative
+        assertEquals(0, s.active("wifi"))
     }
 
     @Test fun failingLinkCoolsDownThenRecovers() {

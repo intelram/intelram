@@ -89,10 +89,10 @@ apps ──▶ TUN interface (VpnService, 198.18.0.1, all IPv4)
 ```
 
 - **LinkScheduler** places each new connection on the link with the lowest
-  `(active connections + 1) / measured peak speed`, never letting a link drop
-  below 25 % of the best link's weight, so an unused link keeps getting tested.
-  Two failed connects in a row put a link in a 15 s cool-down; a refused
-  connection is not retried elsewhere because the destination said no.
+  `(current throughput + connections assigned in the last 3 s × 1 Mb/s) / capacity`, where capacity is the
+  link's recent peak (never below 25 % of the best link's, so an unused link keeps getting tested).
+  Idle long-lived connections (push, keep-alives) don't count as load. Two failed connects in a row put a
+  link in a 15 s cool-down; a refused connection is not retried elsewhere because the destination said no.
 - **DNS** is answered inside hev with mapped addresses (198.19.0.0/16), so the
   real name is resolved by NetSteer *on the link chosen for that connection*
   (correct CDN answers per link, no DNS leaks via the wrong network).
