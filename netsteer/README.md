@@ -25,6 +25,24 @@ one connection's packets across both requires a cooperating server
 (MPTCP / bonding server). This project's constraint is *no server*, so it
 combines **per connection**, which is the maximum possible on a stock phone.
 
+## Links NetSteer combines
+
+| Link | When it's used |
+|---|---|
+| Wi-Fi | Always, when connected |
+| **Second Wi-Fi** (dual Wi-Fi) | Phones with Android 13+ *multi-internet* Wi-Fi hardware: NetSteer requests a second internet Wi-Fi on the other band (or another saved router). Most phones have a single Wi-Fi radio that can join only one network at a time; on those, the app says so. |
+| Mobile data | **Always together with Wi-Fi by default ("Maximum speed").** With *Battery saver* on, only during sustained heavy traffic. |
+| USB Ethernet adapter | Automatically, when plugged in |
+| Bluetooth tethering | Automatically, when connected to another phone's Bluetooth hotspot |
+
+Every link is shown with its exact state and reason: *In use*, *Ready*, *Connecting…*,
+*Mobile data is turned off*, *No SIM*, *Connected but no internet*, *Blocked by Data Saver*.
+Networks Android hasn't validated (common for background mobile data on some carriers) are
+checked by NetSteer's own reachability probe and used if they work.
+
+Also: built-in **speed test** (each link alone, then all together), **data used today** per
+link, **exclude apps** (they bypass NetSteer), and a **Quick Settings tile**.
+
 ## Ad & tracker blocking (AdGuard-style DNS filtering)
 
 NetSteer blocks ads and trackers for **all apps** the way AdGuard's DNS
@@ -51,7 +69,7 @@ filtering does, with an extra network-level layer:
 
 ## Battery
 
-- **Smart combining (default on):** while Wi-Fi is fine, everything stays on Wi-Fi and mobile data is not
+- **Battery saver (optional, off by default since 0.4):** while Wi-Fi is fine, everything stays on Wi-Fi and mobile data is not
   even requested. Only when traffic stays above ~2 Mb/s for 3 s (a download, update, video loading) is
   mobile brought up and new connections spread over both; after 30 s of light traffic mobile stops taking
   new connections and is released 60 s later. Short connections never wake the mobile radio, which is what

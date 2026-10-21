@@ -3,9 +3,12 @@ package com.intelram.netsteer
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.net.Network
 import android.net.VpnService
+import android.net.wifi.ScanResult
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
@@ -14,7 +17,6 @@ import com.intelram.netsteer.core.BoostController
 import com.intelram.netsteer.core.LinkScheduler
 import com.intelram.netsteer.core.ProxyServer
 import com.intelram.netsteer.core.TrafficMeter
-import com.intelram.netsteer.core.Transport
 import com.intelram.netsteer.tunnel.TProxy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -36,7 +39,8 @@ import java.io.File
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class LinkStatus(val label: String, val up: Boolean, val rxBps: Double = 0.0, val txBps: Double = 0.0, val connections: Int = 0)
+/** Dual Wi-Fi availability, for the UI. */
+enum class DualWifi { UNSUPPORTED, OFF, SEARCHING, CONNECTED }
 
 data class CombineStatus(
     val running: Boolean = false,
@@ -48,22 +52,20 @@ data class CombineStatus(
     val boosting: Boolean = false,
     /** Mobile data is being held connected by us. */
     val mobileHeld: Boolean = false,
-    /** New connections may use mobile right now. */
-    val mobileActive: Boolean = false,
+    /** Number of links currently taking new connections. */
+    val activeLinks: Int = 0,
     val adBlock: Boolean = false,
     val blockedToday: Long = 0,
+    val dualWifi: DualWifi = DualWifi.UNSUPPORTED,
     val message: String? = null,
 )
 
 /**
- * On-device VPN: Wi-Fi + mobile combining and ad blocking.
+ * On-device VPN: link combining and ad blocking.
  *
  *   apps ──▶ TUN (this VPN) ──▶ hev-socks5-tunnel (native TCP/IP stack)
- *        ──▶ local SOCKS5 [ProxyServer] ──▶ ad filter ──▶ per-connection choice of Wi-Fi or mobile
- *
- * Battery: mobile data is only held up while [BoostController] sees sustained
- * heavy traffic (unless the user turned smart mode off); with the screen off
- * the service samples every 5 s and never redraws the notification.
+ *        ──▶ local SOCKS5 [ProxyServer] ──▶ ad filter ──▶ per-connection choice among
+ *            Wi-Fi, a second Wi-Fi (dual-Wi-Fi phones), mobile, USB Ethernet, Bluetooth tethering
  */
 class CombineVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -75,7 +77,6 @@ class CombineVpnService : VpnService() {
     private var proxy: ProxyServer? = null
     private var nativeStarted = false
     private val jobs = mutableListOf<Job>()
-    private val uplinkCache = HashMap<String, AndroidUplink>()
     private val updatingFilters = AtomicBoolean(false)
 
     /** Set by the boost controller: may new connections use mobile data? */
@@ -88,9 +89,18 @@ class CombineVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopVpn("Stopped")
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopVpn("Stopped")
+                return START_NOT_STICKY
+            }
+            ACTION_RELOAD -> {
+                if (tun != null) {
+                    teardown()
+                    startVpn()
+                }
+                return START_STICKY
+            }
         }
         // Must be in the foreground within seconds of startForegroundService().
         goForeground(CombineStatus(message = "Starting…"))
@@ -150,21 +160,28 @@ class CombineVpnService : VpnService() {
         }
         proxy = px
 
+        val excluded = app.settings.current.excludedApps
         val pfd = try {
-            Builder()
+            val b = Builder()
                 .setSession("NetSteer")
                 .setMtu(MTU)
                 .addAddress(TUN_ADDRESS, 32)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer(MAPPED_DNS)
-                .addDisallowedApplication(packageName) // our own sockets go straight to Wi-Fi/mobile
+                .addDisallowedApplication(packageName) // our own sockets go straight to the real networks
                 .setBlocking(false)
                 .setMetered(false) // inherit meteredness from the underlying networks
-                .setUnderlyingNetworks(allUplinks().map { it.network }.toTypedArray().ifEmpty { null })
+                .setUnderlyingNetworks(app.links.uplinks().map { it.network }.toTypedArray().ifEmpty { null })
                 .setConfigureIntent(
                     PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE),
                 )
-                .establish()
+            for (pkg in excluded) {
+                try {
+                    b.addDisallowedApplication(pkg) // the app bypasses NetSteer entirely
+                } catch (_: PackageManager.NameNotFoundException) {
+                }
+            }
+            b.establish()
         } catch (e: Exception) {
             Log.e(TAG, "establish failed", e)
             null
@@ -190,12 +207,13 @@ class CombineVpnService : VpnService() {
             return
         }
         nativeStarted = true
-        Log.i(TAG, "vpn started, proxy port $port")
+        app.usage.resetBaseline()
+        Log.i(TAG, "vpn started, proxy port $port, excluded apps ${excluded.size}")
 
         jobs += scope.launch {
             // Keep the OS informed which networks carry VPN traffic (data accounting, metering).
             app.monitor.networks
-                .map { allUplinks().associate { it.id to it.network } }
+                .map { app.links.uplinks().associate { it.id to it.network } }
                 .distinctUntilChanged()
                 .collect { links ->
                     Log.i(TAG, "uplinks: ${links.keys.sorted()}")
@@ -204,10 +222,24 @@ class CombineVpnService : VpnService() {
         }
         jobs += scope.launch { ticker(px, scheduler, meter, boost) }
         jobs += scope.launch {
+            // Networks Android hasn't validated (common for background mobile data on some
+            // carriers) are checked by us, so a working link isn't left on standby.
+            while (isActive) {
+                app.links.probeUnvalidated()
+                delay(if (power.isInteractive) 15_000 else 60_000)
+            }
+        }
+        jobs += scope.launch {
             // Filter lists: refresh at start (if stale) and check again every 6 hours.
             while (isActive) {
                 maybeUpdateFilters(force = false)
                 delay(6 * 3600_000L)
+            }
+        }
+        jobs += scope.launch {
+            // Excluding/including apps needs a new TUN interface.
+            app.settings.values.map { it.excludedApps }.distinctUntilChanged().drop(1).collect {
+                startService(Intent(this@CombineVpnService, CombineVpnService::class.java).setAction(ACTION_RELOAD))
             }
         }
     }
@@ -216,23 +248,32 @@ class CombineVpnService : VpnService() {
         var lastNotified = ""
         var lastNotifyAt = 0L
         var lastLogAt = 0L
-        var lastStatsSave = System.currentTimeMillis()
+        var lastSave = System.currentTimeMillis()
         while (true) {
             val interactive = power.isInteractive
             delay(if (interactive) 1_000 else 5_000)
             val now = System.currentTimeMillis()
             val rates = meter.sample(now)
             val s = app.settings.current
-            val up = allUplinks().map { it.id }.toSet()
-            val links = listOf(WIFI to "Wi-Fi", CELL to "Mobile").map { (id, label) ->
-                val r = rates[id]
-                LinkStatus(label, id in up, r?.rxBps ?: 0.0, r?.txBps ?: 0.0, scheduler.active(id))
-            }
-            val total = links.sumOf { it.rxBps + it.txBps }
+            val usable = app.links.uplinks().map { it.id }.toSet()
+            val total = rates.values.sumOf { it.rxBps + it.txBps }
 
-            val d = boost.update(now, total, wifiUp = WIFI in up, combine = s.combine, smart = s.smart)
+            val primaryUp = usable.any { !LinkRegistry.isMobile(it) }
+            val d = boost.update(now, total, wifiUp = primaryUp, combine = s.combine, smart = s.smart)
             mobileForNew = d.mobileForNewConnections
             app.monitor.setMobileRequested(d.requestMobile)
+            val dual = manageDualWifi(s.combine && s.dualWifi)
+
+            app.usage.record(rates.mapValues { it.value.rxTotal + it.value.txTotal })
+            val taking = usable.filter { mobileForNew || !LinkRegistry.isMobile(it) || !primaryUp }.toSet()
+            val links = app.links.describe(taking, mobileHeld = d.requestMobile, mobileWithheld = s.combine && s.smart && !mobileForNew && primaryUp)
+                .map { l ->
+                    val r = rates[l.id]
+                    l.copy(
+                        rxBps = r?.rxBps ?: 0.0, txBps = r?.txBps ?: 0.0,
+                        connections = scheduler.active(l.id), usedTodayBytes = app.usage.today(l.id),
+                    )
+                }
 
             val status = CombineStatus(
                 running = true,
@@ -243,9 +284,10 @@ class CombineVpnService : VpnService() {
                 smart = s.smart,
                 boosting = d.boosting,
                 mobileHeld = d.requestMobile,
-                mobileActive = d.mobileForNewConnections && CELL in up,
+                activeLinks = taking.size,
                 adBlock = s.adBlock,
                 blockedToday = app.filters.blockedToday.get(),
+                dualWifi = dual,
             )
             _status.value = status
 
@@ -260,26 +302,53 @@ class CombineVpnService : VpnService() {
             }
             if (now - lastLogAt >= 5_000) {
                 lastLogAt = now
-                // Machine-readable line, used by the emulator end-to-end test.
-                Log.i(TAG, "stats " + listOf(WIFI, CELL).joinToString(" ") { id ->
+                val ids = (rates.keys + listOf(WIFI, CELL)).distinct().sorted()
+                // Machine-readable lines, used by the emulator end-to-end test.
+                Log.i(TAG, "stats " + ids.joinToString(" ") { id ->
                     "$id=${rates[id]?.rxTotal ?: 0}/${rates[id]?.txTotal ?: 0}"
-                } + " opened=" + listOf(WIFI, CELL).joinToString(",") { id -> "$id:${rates[id]?.opened ?: 0}" } +
+                } + " opened=" + ids.joinToString(",") { id -> "$id:${rates[id]?.opened ?: 0}" } +
                     " conns=${px.activeConnections} failed=${px.failedConnections}" +
                     " boost=${d.boosting} mobileReq=${d.requestMobile} blocked=${app.filters.blockedTotal.get()}")
+                Log.i(TAG, "links " + links.joinToString("; ") { "${it.id}=${it.state}" })
             }
-            if (now - lastStatsSave >= 60_000) {
+            if (now - lastSave >= 60_000) {
                 app.filters.saveStats()
-                lastStatsSave = now
+                app.usage.save()
+                lastSave = now
             }
         }
     }
 
-    /** Download filter lists when stale, preferring Wi-Fi so mobile data isn't spent on it. */
+    /**
+     * Android 13+ "multi-internet": phones with a dual-Wi-Fi chip can hold a second internet
+     * Wi-Fi (other band or other router). Ask for it on the band the primary Wi-Fi isn't using.
+     */
+    private fun manageDualWifi(want: Boolean): DualWifi {
+        val wifiMgr = getSystemService(WifiManager::class.java)
+        val supported = Build.VERSION.SDK_INT >= 33 && wifiMgr != null && runCatching { wifiMgr.isStaConcurrencyForMultiInternetSupported }.getOrDefault(false)
+        if (!supported) return DualWifi.UNSUPPORTED
+        if (!want) {
+            app.monitor.setSecondWifiRequested(false, 0)
+            return DualWifi.OFF
+        }
+        val wifis = app.links.links().filter { it.id.startsWith("wifi") }
+        if (wifis.size >= 2) return DualWifi.CONNECTED
+        val primary = wifis.firstOrNull() ?: return DualWifi.SEARCHING
+        if (!app.monitor.secondWifiRequested) {
+            val freq = (primary.state.caps?.transportInfo as? WifiInfo)?.frequency ?: 0
+            val band = if (freq >= 4900) ScanResult.WIFI_BAND_24_GHZ else ScanResult.WIFI_BAND_5_GHZ
+            if (!app.monitor.setSecondWifiRequested(true, band)) return DualWifi.UNSUPPORTED
+        }
+        return DualWifi.SEARCHING
+    }
+
+    /** Download filter lists when stale, preferring an unmetered link so mobile data isn't spent on it. */
     fun maybeUpdateFilters(force: Boolean) {
         if (!app.settings.current.adBlock && !force) return
         if (!force && !app.filters.needsUpdate()) return
-        val wifi = allUplinks().firstOrNull { it.id == WIFI }?.network
-        val network: Network? = wifi ?: if (force || !app.filters.hasAnyDownloadedList()) allUplinks().firstOrNull()?.network else null
+        val ups = app.links.uplinks()
+        val unmetered = ups.firstOrNull { !LinkRegistry.isMobile(it.id) }?.network
+        val network = unmetered ?: if (force || !app.filters.hasAnyDownloadedList()) ups.firstOrNull()?.network else null
         if (network == null) return
         if (!updatingFilters.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
@@ -291,20 +360,28 @@ class CombineVpnService : VpnService() {
         }
     }
 
-    private fun stopVpn(message: String?) {
+    /** Stop the tunnel, proxy and background jobs, keeping the service and notification. */
+    private fun teardown() {
         // Join the ticker so it cannot re-post the notification or status after we clear them.
         runBlocking { withTimeoutOrNull(2_000) { jobs.forEach { it.cancelAndJoin() } } }
         jobs.clear()
-        val wasRunning = tun != null
         if (nativeStarted) runCatching { TProxy.TProxyStopService() }
         nativeStarted = false
         runCatching { tun?.close() }
         tun = null
         proxy?.close()
         proxy = null
-        synchronized(uplinkCache) { uplinkCache.clear() }
+    }
+
+    private fun stopVpn(message: String?) {
+        val wasRunning = tun != null
+        teardown()
         app.monitor.setMobileRequested(false)
-        if (wasRunning) app.filters.saveStats()
+        app.monitor.setSecondWifiRequested(false, 0)
+        if (wasRunning) {
+            app.filters.saveStats()
+            app.usage.save()
+        }
         _status.value = CombineStatus(running = false, message = message)
         if (wasRunning) Log.i(TAG, "vpn stopped: $message")
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -314,29 +391,9 @@ class CombineVpnService : VpnService() {
 
     /** Links offered to new connections: mobile is withheld unless combining/boosting wants it. */
     private fun uplinksForNewConnections(): List<AndroidUplink> {
-        val all = allUplinks()
+        val all = app.links.uplinks()
         if (mobileForNew) return all
-        return all.filter { it.id != CELL }.ifEmpty { all } // never strand traffic if only mobile is up
-    }
-
-    /** Validated Wi-Fi and mobile networks, as uplinks with stable ids ("wifi", "cell"). */
-    private fun allUplinks(): List<AndroidUplink> {
-        val states = app.monitor.networks.value.values
-            .filter { it.toSnapshot().let { s -> s.validated && !s.captivePortal } }
-        val byId = LinkedHashMap<String, Network>()
-        for (s in states) {
-            val id = when (s.transport) {
-                Transport.WIFI -> WIFI
-                Transport.CELLULAR -> CELL
-                else -> continue
-            }
-            byId.putIfAbsent(id, s.network)
-        }
-        synchronized(uplinkCache) {
-            return byId.map { (id, net) ->
-                uplinkCache[id]?.takeIf { it.network == net } ?: AndroidUplink(net, id).also { uplinkCache[id] = it }
-            }
-        }
+        return all.filterNot { LinkRegistry.isMobile(it.id) }.ifEmpty { all } // never strand traffic if only mobile is up
     }
 
     private fun tunnelConfig(port: Int, user: String, pass: String, logPath: String?) = """
@@ -366,6 +423,7 @@ class CombineVpnService : VpnService() {
     companion object {
         const val ACTION_START = "com.intelram.netsteer.START"
         const val ACTION_STOP = "com.intelram.netsteer.STOP"
+        const val ACTION_RELOAD = "com.intelram.netsteer.RELOAD"
         const val TAG = "NetSteer"
         const val WIFI = "wifi"
         const val CELL = "cell"

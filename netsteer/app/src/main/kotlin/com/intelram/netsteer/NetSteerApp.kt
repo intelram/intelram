@@ -20,6 +20,10 @@ class NetSteerApp : Application() {
         private set
     lateinit var filters: FilterManager
         private set
+    lateinit var links: LinkRegistry
+        private set
+    lateinit var usage: UsageStore
+        private set
     val prober = Prober()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -31,6 +35,8 @@ class NetSteerApp : Application() {
         filters = FilterManager(this, settings)
         val cm = getSystemService(ConnectivityManager::class.java)!!
         monitor = NetworkMonitor(cm).also { it.start() }
+        links = LinkRegistry(this, monitor)
+        usage = UsageStore(this)
 
         scope.launch(Dispatchers.IO) { filters.load() }
         scope.launch(Dispatchers.IO) {

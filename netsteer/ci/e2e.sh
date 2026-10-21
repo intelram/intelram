@@ -77,12 +77,16 @@ if [ -z "$both" ]; then
   fail "emulator did not provide validated Wi-Fi and mobile at the same time"
 fi
 
-echo "== start: combining always-on (battery saver off), ad blocking on"
-start --ez combine true --ez smart false --ez adblock true
+echo "== start with DEFAULT settings (fresh install must use Wi-Fi + mobile together)"
+start
 wait_vpn up || fail "VPN did not come up"
 for _ in $(seq 1 45); do log | grep -q "uplinks: \[cell, wifi\]" && break; sleep 1; done
 log | grep "uplinks:" | tail -2
 log | grep -q "uplinks: \[cell, wifi\]" || fail "Wi-Fi and mobile were not both available"
+sleep 6
+log | grep " links " | tail -1
+log | grep " links " | tail -1 | grep -q "cell=ACTIVE" || fail "mobile is not ACTIVE with default settings (standby bug)"
+log | grep " links " | tail -1 | grep -q "wifi=ACTIVE" || fail "Wi-Fi is not ACTIVE with default settings"
 
 echo "== traffic round 1 (both links)"
 ok=$(traffic)
@@ -176,6 +180,39 @@ else
   [ "$c3" -gt "$c2" ] || fail "boost did not put new connections on mobile"
 fi
 set_opts --ez smart false
+
+echo "== speed test (per link and together)"
+adb shell am start -n "$ACT" -a "$PKG.SPEEDTEST" >/dev/null
+for _ in $(seq 1 90); do log | grep -q " speedtest " && break; sleep 1; done
+log | grep " speedtest " | tail -1
+st=$(log | grep " speedtest " | tail -1)
+[ -n "$st" ] || fail "speed test did not finish"
+echo "$st" | grep -q "combined=[1-9]" || fail "speed test measured nothing"
+
+echo "== exclude an app: its traffic must bypass NetSteer (tunnel reloads itself)"
+o0=$(stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
+set_opts --es exclude com.android.shell
+for _ in $(seq 1 20); do log | grep -q "excluded apps 1" && break; sleep 1; done
+log | grep -q "excluded apps 1" || fail "VPN did not reload with the excluded app"
+wait_vpn up || fail "VPN not up after reload"
+sleep 3
+o1=$(fresh_stats >/dev/null; stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
+ok=$(traffic)
+echo "successful HTTP responses while excluded: $ok/16"
+[ "$ok" -ge 15 ] || fail "excluded app lost internet ($ok/16)"
+o2=$(fresh_stats >/dev/null; stats_line | sed -n 's/.*opened=\([^ ]*\).*/\1/p')
+echo "  proxy connections opened: after reload=$o1 after traffic=$o2"
+s1=$(echo "$o1" | tr ',' '\n' | awk -F: '{t+=$2} END {print t+0}')
+s2=$(echo "$o2" | tr ',' '\n' | awk -F: '{t+=$2} END {print t+0}')
+[ $((s2 - s1)) -lt 8 ] || fail "excluded app's traffic still went through NetSteer ($s1 -> $s2)"
+n0=$(log | grep -c "excluded apps 0")
+set_opts --es exclude ""
+for _ in $(seq 1 20); do [ "$(log | grep -c "excluded apps 0")" -gt "$n0" ] && break; sleep 1; done
+[ "$(log | grep -c "excluded apps 0")" -gt "$n0" ] || fail "VPN did not reload after re-including the app"
+wait_vpn up || fail "VPN not up after second reload"
+sleep 3
+ok=$(traffic)
+[ "$ok" -ge 15 ] || fail "traffic failed after re-including the app ($ok/16)"
 
 echo "== stop"
 stop

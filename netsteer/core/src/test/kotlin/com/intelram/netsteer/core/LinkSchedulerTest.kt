@@ -39,6 +39,27 @@ class LinkSchedulerTest {
         assertEquals(10, c["cell"])
     }
 
+    @Test fun threeOrMoreLinksAreAllUsed() {
+        // e.g. Wi-Fi + second Wi-Fi + mobile, or + USB Ethernet
+        val links = listOf(
+            LinkScheduler.LinkInfo("wifi", 40e6), LinkScheduler.LinkInfo("wifi2", 20e6),
+            LinkScheduler.LinkInfo("cell", 20e6), LinkScheduler.LinkInfo("eth", 0.0),
+        )
+        val c = openN(links, 90)
+        assertEquals(40, c["wifi"])
+        assertEquals(20, c["wifi2"])
+        assertEquals(20, c["cell"])
+        assertEquals(10, c["eth"]) // unmeasured link still gets its 25% floor share
+    }
+
+    @Test fun failingLinkAmongManyIsSkipped() {
+        val links = listOf(LinkScheduler.LinkInfo("wifi", 0.0), LinkScheduler.LinkInfo("wifi2", 0.0), LinkScheduler.LinkInfo("cell", 0.0))
+        s.connectFailed("wifi2"); s.connectFailed("wifi2")
+        val picks = (1..30).map { s.pick(links)!!.also { id -> s.opened(id) } }
+        assertTrue("wifi2" !in picks)
+        assertEquals(15, picks.count { it == "wifi" })
+    }
+
     @Test fun closingFreesCapacity() {
         val a = s.pick(equal)!!; s.opened(a)
         val b = s.pick(equal)!!; s.opened(b)

@@ -74,20 +74,19 @@ class StatusNotifier(private val ctx: Context) {
 
     private fun title(s: CombineStatus): String {
         if (!s.running) return "NetSteer"
-        val up = s.links.filter { it.up }
         val speed = "${mbps(s.totalBps)} Mb/s"
-        val wifiUp = up.any { it.label == "Wi-Fi" }
+        val active = s.links.filter { it.state == LinkState.ACTIVE }
         return when {
-            up.isEmpty() -> "No network available"
-            s.mobileActive && up.size == 2 -> "Combining Wi-Fi + Mobile · $speed"
-            s.combine && s.smart && wifiUp -> "Wi-Fi · $speed · mobile joins when needed"
-            else -> "${if (wifiUp) "Wi-Fi" else up[0].label} · $speed"
+            active.isEmpty() -> "Waiting for a network"
+            active.size >= 2 -> "Combining ${active.joinToString(" + ") { it.label }} · $speed"
+            s.combine && s.smart -> "${active[0].label} · $speed · others join for downloads"
+            else -> "${active[0].label} · $speed"
         }
     }
 
     private fun text(s: CombineStatus): String {
         if (!s.running) return s.message ?: "Starting…"
-        val links = s.links.filter { it.up && (it.label == "Wi-Fi" || s.mobileActive || it.rxBps + it.txBps > 0) }
+        val links = s.links.filter { it.state == LinkState.ACTIVE }
             .joinToString("   ") { l -> "${l.label} ↓${mbps(l.rxBps)} ↑${mbps(l.txBps)}" }
         val ads = if (s.adBlock) "${String.format(Locale.US, "%,d", s.blockedToday)} ads blocked today" else "Ad blocking off"
         return if (links.isEmpty()) ads else "$links   ·   $ads"

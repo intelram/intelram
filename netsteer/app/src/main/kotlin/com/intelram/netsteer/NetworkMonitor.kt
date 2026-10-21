@@ -5,6 +5,8 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
 import com.intelram.netsteer.core.NetworkSnapshot
 import com.intelram.netsteer.core.ProbeStats
 import com.intelram.netsteer.core.Transport
@@ -72,8 +74,7 @@ class NetworkMonitor(private val cm: ConnectivityManager) {
     fun start() {
         if (started) return
         started = true
-        cm.registerNetworkCallback(internetRequest(NetworkCapabilities.TRANSPORT_WIFI), tracker().also(registered::add))
-        cm.registerNetworkCallback(internetRequest(NetworkCapabilities.TRANSPORT_CELLULAR), tracker().also(registered::add))
+        for (t in TRACKED) cm.registerNetworkCallback(internetRequest(t), tracker().also(registered::add))
 
         cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { _systemDefault.value = network.networkHandle }
@@ -82,6 +83,33 @@ class NetworkMonitor(private val cm: ConnectivityManager) {
             }
         }.also(registered::add))
     }
+
+    private var secondWifiRequest: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Dual Wi-Fi (Android 13+ "multi-internet", only on phones whose Wi-Fi chip supports two
+     * connections): ask for a second internet Wi-Fi on [band]. The result shows up in [networks].
+     * @return false if the request could not be made.
+     */
+    @Synchronized
+    fun setSecondWifiRequested(on: Boolean, band: Int): Boolean {
+        if (!on) {
+            secondWifiRequest?.let { runCatching { cm.unregisterNetworkCallback(it) } }
+            secondWifiRequest = null
+            return true
+        }
+        if (secondWifiRequest != null) return true
+        if (Build.VERSION.SDK_INT < 33) return false
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(WifiNetworkSpecifier.Builder().setBand(band).build())
+            .build()
+        val cb = tracker()
+        return runCatching { cm.requestNetwork(req, cb) }.onSuccess { secondWifiRequest = cb }.isSuccess
+    }
+
+    val secondWifiRequested: Boolean @Synchronized get() = secondWifiRequest != null
 
     /** Keep mobile data connected (true) or let Android manage it (false). Idempotent. */
     @Synchronized
@@ -100,6 +128,15 @@ class NetworkMonitor(private val cm: ConnectivityManager) {
         _networks.update { m -> m[id]?.let { m + (id to it.copy(probe = stats)) } ?: m }
 
     fun find(id: Long): Network? = _networks.value[id]?.network
+
+    private companion object {
+        val TRACKED = intArrayOf(
+            NetworkCapabilities.TRANSPORT_WIFI,
+            NetworkCapabilities.TRANSPORT_CELLULAR,
+            NetworkCapabilities.TRANSPORT_ETHERNET,
+            NetworkCapabilities.TRANSPORT_BLUETOOTH,
+        )
+    }
 
     private fun internetRequest(transport: Int) = NetworkRequest.Builder()
         .addTransportType(transport)
