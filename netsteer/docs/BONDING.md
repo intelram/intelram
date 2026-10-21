@@ -141,8 +141,37 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 8. Verification report
 
-See the section appended below from the CI run on an Android 14 emulator
-(which has one Wi-Fi network and one mobile network). Real-device results
-(multi-internet hardware, wrong password, router without internet, throughput
-gains over separate physical links) are **not verified** by CI and must be
-checked on a phone using §6.
+Release `netsteer-combine-18` (0.5.0, commit `edd1df0`), CI run 39534914851.
+APK SHA-256 `f03a2726c5626aa7f38592284db1cf5792e06b1ce655dd4286858cb368509afc`.
+
+### 8.1 Tested and passed
+
+| Area | How | Result |
+|---|---|---|
+| Core logic (Wi-Fi selection, security parsing, password rules, mode classifier, health, scheduler, proxy, ad filter) | 72 JVM unit/integration tests | ✅ all pass |
+| Wi-Fi scan | Emulator (Android 14), real `startScan`/`getScanResults` | ✅ found `AndroidWifi` |
+| Add the current Wi-Fi | Real `addNetworkSuggestions` | ✅ `OK`, status **Connected · internet verified** |
+| Too-short WPA2 password | `abc` | ✅ rejected as `BAD_PASSWORD` |
+| Enterprise network | 802.1X entry | ✅ rejected as `UNSUPPORTED` |
+| Duplicate | Same SSID again | ✅ rejected as `DUPLICATE` |
+| Up to 4 / fifth rejected | Three more networks, then a fifth | ✅ count 4, fifth `FULL`; extras shown **standby** |
+| Traffic with 4 sources added | 16 HTTP requests | ✅ 16/16 |
+| Remove all | Remove action | ✅ count 0 |
+| Mobile off in NetSteer | Toggle | ✅ mode **Failover**, mobile **Ready**, not requested, traffic 16/16 |
+| Mobile on | Toggle | ✅ mode **Load balancing**, both links Active, latency measured |
+| Both links carry traffic | Byte counters per link | ✅ Wi-Fi and mobile both carried data |
+| Speed test | Real downloads per link and together | ✅ completed with measured figures |
+| Existing features | Ad blocking (DNS, Host header), battery saver, boost, app exclusion, stop/restart, Wi-Fi-off failover, crash check | ✅ unchanged and passing |
+| APK | androguard | ✅ 11 permissions as in §4; location is only checked for on/off (`isLocationEnabled`), never read; no dynamic code loading or shell execution; `BondingActivity` not exported |
+
+The emulator has one Wi-Fi network and one simulated mobile network on the same
+host connection, so its speed figures say nothing about real-world gains.
+
+### 8.2 Not verified (needs a real phone, use §6)
+
+- Wrong-password detection reported by Android on a real router (needs a failed join).
+- A second simultaneous Wi-Fi on multi-internet hardware (Android 13+ phones that support it).
+- Wi-Fi without internet (router WAN unplugged), captive portals, weak signal.
+- Real throughput gain from Wi-Fi + mobile on separate physical networks.
+- Battery use over a full day, behaviour across OEM battery managers, reboot with Always-on VPN.
+- Android 10–12 devices (CI runs Android 14 only).
